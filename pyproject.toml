@@ -1,0 +1,56 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agent-lexicon"
+version = "0.0.1"
+description = "A lightweight terminology memory layer for AI agents."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [
+  { name = "SkeinRank" }
+]
+keywords = [
+  "ai-agents",
+  "terminology",
+  "lexicon",
+  "rag",
+  "tool-use",
+  "governance"
+]
+classifiers = [
+  "Development Status :: 1 - Planning",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Typing :: Typed"
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/SkeinRank/agent-lexicon"
+Repository = "https://github.com/SkeinRank/agent-lexicon"
+Issues = "https://github.com/SkeinRank/agent-lexicon/issues"
+
+[project.scripts]
+agent-lexicon = "agent_lexicon.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agent_lexicon"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/src",
+  "/tests",
+  "/README.md",
+  "/LICENSE",
+  "/pyproject.toml",
+  "/.github/workflows"
+]

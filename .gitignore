@@ -1,0 +1,80 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Build / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Local env files
+.env
+.env.*
+!.env.example
+!.env.production.example
+
+# Poetry / uv / pyenv local markers
+.python-version
+
+# Docker/local runtime junk
+*.pid
+
+# Node
+node_modules/
+
+# Local SQLite databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Generated headless runtime snapshot artifacts
+snapshots/*.json
+
+# Local OpenRouter alias-scout cache artifacts
+examples/agents/openrouter_alias_scout/.cache/
+examples/agents/openrouter_alias_scout/reports/
+
+# Generated real Elasticsearch validation fixture artifacts
+examples/agents/openrouter_alias_scout/real_es_validation/documents.bulk.ndjson
+examples/agents/openrouter_alias_scout/real_es_validation/index_mapping.json
+
+# Generated benchmark reports and synthetic smoke corpora
+examples/benchmarks/platform_ops_v1/reports/
+
+# Generated pilot/support reports
+examples/pilots/reports/
+
+# Generated platform ops demo tour reports
+examples/platform_ops_demo/reports/
