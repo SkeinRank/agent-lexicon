@@ -56,6 +56,29 @@ proposal = ProposalCandidate(
 )
 ```
 
+
+## Development
+
+Install the development environment with Poetry:
+
+```bash
+poetry install --with dev
+```
+
+Run the test suite:
+
+```bash
+poetry run pytest -q
+```
+
+The repository also includes Make targets for the same workflow:
+
+```bash
+make install
+make test
+make check
+```
+
 ## Relationship to SkeinRank
 
 Agent Lexicon is intended to be the lightweight runtime SDK that agents can call

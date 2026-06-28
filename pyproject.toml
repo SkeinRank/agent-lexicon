@@ -52,5 +52,16 @@ include = [
   "/README.md",
   "/LICENSE",
   "/pyproject.toml",
-  "/.github/workflows"
+  "/.github/workflows",
+  "/Makefile",
+  "/poetry.lock"
 ]
+
+[tool.poetry.group.dev.dependencies]
+pytest = ">=8.0,<10.0"
+
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+pythonpath = ["src"]
