@@ -9,9 +9,15 @@ from .core import (
     EvidenceKind,
     EvidenceSpan,
     Lexicon,
+    LexiconResolver,
     ProposalCandidate,
     ProposalKind,
     ProposalStatus,
+    ResolutionAction,
+    ResolutionCandidate,
+    ResolutionDecision,
+    ResolutionMatch,
+    ResolutionStatus,
     RiskLevel,
     Scope,
     SurfaceEntry,
@@ -24,6 +30,7 @@ from .core import (
     lexicon_from_dict,
     load_lexicon,
     loads_lexicon,
+    resolve_text,
 )
 
 __all__ = [
@@ -35,9 +42,15 @@ __all__ = [
     "EvidenceKind",
     "EvidenceSpan",
     "Lexicon",
+    "LexiconResolver",
     "ProposalCandidate",
     "ProposalKind",
     "ProposalStatus",
+    "ResolutionAction",
+    "ResolutionCandidate",
+    "ResolutionDecision",
+    "ResolutionMatch",
+    "ResolutionStatus",
     "RiskLevel",
     "Scope",
     "SurfaceEntry",
@@ -50,6 +63,7 @@ __all__ = [
     "lexicon_from_dict",
     "load_lexicon",
     "loads_lexicon",
+    "resolve_text",
 ]
 
 __version__ = "0.0.1"

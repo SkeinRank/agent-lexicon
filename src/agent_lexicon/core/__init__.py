@@ -1,4 +1,4 @@
-"""Core schema objects for Agent Lexicon."""
+"""Core schema and runtime helpers for Agent Lexicon."""
 
 from __future__ import annotations
 
@@ -20,10 +20,16 @@ from .models import (
     ProposalCandidate,
     ProposalKind,
     ProposalStatus,
+    ResolutionAction,
+    ResolutionCandidate,
+    ResolutionDecision,
+    ResolutionMatch,
+    ResolutionStatus,
     RiskLevel,
     Scope,
     Term,
 )
+from .resolver import LexiconResolver, resolve_text
 
 __all__ = [
     "AgentLexiconLoadError",
@@ -32,9 +38,15 @@ __all__ = [
     "EvidenceKind",
     "EvidenceSpan",
     "Lexicon",
+    "LexiconResolver",
     "ProposalCandidate",
     "ProposalKind",
     "ProposalStatus",
+    "ResolutionAction",
+    "ResolutionCandidate",
+    "ResolutionDecision",
+    "ResolutionMatch",
+    "ResolutionStatus",
     "RiskLevel",
     "SurfaceEntry",
     "SurfaceKind",
@@ -47,4 +59,5 @@ __all__ = [
     "build_surface_matcher",
     "find_surface_matches",
     "loads_lexicon",
+    "resolve_text",
 ]

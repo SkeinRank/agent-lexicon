@@ -12,7 +12,7 @@ def test_matcher_finds_canonical_and_alias_surfaces() -> None:
     lexicon = load_lexicon(EXAMPLES_DIR / "lexicon.yaml")
     matcher = build_surface_matcher(lexicon)
 
-    matches = matcher.match("The customer cap and rate limit changed.")
+    matches = matcher.match("The customer cap and rate limit changed.", longest_only=True)
 
     assert [(match.term_id, match.kind, match.matched_text) for match in matches] == [
         ("billing.credit_limit", SurfaceKind.ALIAS, "customer cap"),

@@ -57,6 +57,27 @@ class AgentLexiconSmokeTests(unittest.TestCase):
         self.assertIn("billing.credit_limit alias billing -> 'customer cap'", completed.stdout)
         self.assertIn("api.rate_limit canonical api -> 'rate limit'", completed.stdout)
 
+
+    def test_cli_resolve_example(self) -> None:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "agent_lexicon",
+                "resolve",
+                "examples/customer_limits/lexicon.yaml",
+                "increase the limit",
+            ],
+            check=True,
+            text=True,
+            capture_output=True,
+            env=_subprocess_env(),
+        )
+        self.assertIn("Status: ambiguous", completed.stdout)
+        self.assertIn("Action: ask_clarification", completed.stdout)
+        self.assertIn("billing.credit_limit", completed.stdout)
+        self.assertIn("api.rate_limit", completed.stdout)
+
     def test_cli_validate_example(self) -> None:
         completed = subprocess.run(
             [

@@ -17,7 +17,8 @@ pip install agent-lexicon
 agent-lexicon --version
 python -m agent_lexicon --version
 agent-lexicon validate examples/customer_limits/lexicon.yaml
-agent-lexicon match examples/customer_limits/lexicon.yaml "The customer cap and rate limit changed."
+agent-lexicon match examples/customer_limits/lexicon.yaml "The customer cap and rate limit changed." --longest-only
+agent-lexicon resolve examples/customer_limits/lexicon.yaml "increase the limit"
 ```
 
 ## Core schema
@@ -87,7 +88,8 @@ Validate a document from the command line:
 
 ```bash
 agent-lexicon validate examples/customer_limits/lexicon.yaml
-agent-lexicon match examples/customer_limits/lexicon.yaml "The customer cap and rate limit changed."
+agent-lexicon match examples/customer_limits/lexicon.yaml "The customer cap and rate limit changed." --longest-only
+agent-lexicon resolve examples/customer_limits/lexicon.yaml "increase the limit"
 ```
 
 Load the same document from Python:
@@ -135,6 +137,41 @@ agent-lexicon match examples/customer_limits/lexicon.yaml "The customer cap and 
 
 The matcher supports scope filtering, case-sensitive aliases, deprecated surface
 filtering, and longest non-overlapping output for downstream resolver logic.
+
+
+## Runtime resolution
+
+The resolver turns surface matches into a deterministic runtime decision. It
+prefers longer non-overlapping surfaces, preserves same-span ambiguity, and
+returns one of three statuses: `resolved`, `ambiguous`, or `unknown`.
+
+```python
+from agent_lexicon import load_lexicon, resolve_text
+
+lexicon = load_lexicon("examples/customer_limits/lexicon.yaml")
+
+decision = resolve_text(lexicon, "increase the limit")
+print(decision.status.value)  # ambiguous
+print(decision.action.value)  # ask_clarification
+
+billing_decision = resolve_text(
+    lexicon,
+    "increase the limit",
+    scopes=("billing",),
+)
+print(billing_decision.primary_term_id)  # billing.credit_limit
+```
+
+Command line usage:
+
+```bash
+agent-lexicon resolve examples/customer_limits/lexicon.yaml "increase the limit"
+agent-lexicon resolve examples/customer_limits/lexicon.yaml "increase the limit" --scope billing
+```
+
+This gives agents a local way to stop before unsafe assumptions: if the same
+surface can mean multiple canonical terms, the recommended action is
+`ask_clarification`.
 
 ## Development
 

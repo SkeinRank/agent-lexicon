@@ -20,6 +20,8 @@ terms:
         scopes: [billing]
       - surface: account limit
         scopes: [billing]
+      - surface: limit
+        scopes: [billing]
     evidence:
       - source_path: docs/billing.md
         start_line: 12
@@ -34,6 +36,8 @@ terms:
       - surface: requests per minute
         scopes: [api]
       - surface: rpm limit
+        scopes: [api]
+      - surface: limit
         scopes: [api]
     evidence:
       - source_path: docs/api.md

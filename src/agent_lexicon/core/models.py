@@ -51,6 +51,22 @@ class RiskLevel(str, Enum):
     MEDIUM = "medium"
     HIGH = "high"
 
+class ResolutionStatus(str, Enum):
+    """Runtime term resolution status."""
+
+    UNKNOWN = "unknown"
+    RESOLVED = "resolved"
+    AMBIGUOUS = "ambiguous"
+
+
+class ResolutionAction(str, Enum):
+    """Recommended runtime action after resolving terminology."""
+
+    NO_MATCH = "no_match"
+    USE_TERMS = "use_terms"
+    ASK_CLARIFICATION = "ask_clarification"
+
+
 
 def _clean_text(value: str, *, field_name: str) -> str:
     if not isinstance(value, str):
@@ -316,6 +332,148 @@ class ProposalCandidate:
 
 
 @dataclass(frozen=True, slots=True)
+class ResolutionMatch:
+    """A serializable surface occurrence used by a resolution decision."""
+
+    term_id: str
+    surface: str
+    matched_text: str
+    start: int
+    end: int
+    kind: str
+    scopes: tuple[str, ...] = ()
+    deprecated: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "term_id", _clean_text(self.term_id, field_name="resolution match term_id"))
+        object.__setattr__(self, "surface", _clean_text(self.surface, field_name="resolution match surface"))
+        object.__setattr__(self, "matched_text", _clean_text(self.matched_text, field_name="resolution match matched_text"))
+        object.__setattr__(self, "kind", _clean_text(self.kind, field_name="resolution match kind"))
+        object.__setattr__(self, "scopes", _clean_tuple(self.scopes, field_name="resolution match scopes"))
+        if self.start < 0:
+            raise AgentLexiconModelError("resolution match start must be greater than or equal to 0")
+        if self.end <= self.start:
+            raise AgentLexiconModelError("resolution match end must be greater than start")
+        if not isinstance(self.deprecated, bool):
+            raise AgentLexiconModelError("resolution match deprecated must be a boolean")
+
+    @property
+    def length(self) -> int:
+        """Return the number of characters covered by the match."""
+        return self.end - self.start
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "term_id": self.term_id,
+            "surface": self.surface,
+            "matched_text": self.matched_text,
+            "start": self.start,
+            "end": self.end,
+            "kind": self.kind,
+            "scopes": list(self.scopes),
+            "deprecated": self.deprecated,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ResolutionCandidate:
+    """A canonical term candidate returned by the runtime resolver."""
+
+    term_id: str
+    canonical: str
+    description: str | None = None
+    scopes: tuple[str, ...] = ()
+    tags: tuple[str, ...] = ()
+    matched_surfaces: tuple[str, ...] = ()
+    match_count: int = 0
+    evidence_count: int = 0
+    deprecated: bool = False
+    score: float = 0.0
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "term_id", _clean_text(self.term_id, field_name="resolution candidate term_id"))
+        object.__setattr__(self, "canonical", _clean_text(self.canonical, field_name="resolution candidate canonical"))
+        object.__setattr__(self, "description", _clean_optional_text(self.description, field_name="resolution candidate description"))
+        object.__setattr__(self, "scopes", _clean_tuple(self.scopes, field_name="resolution candidate scopes"))
+        object.__setattr__(self, "tags", _clean_tuple(self.tags, field_name="resolution candidate tags"))
+        object.__setattr__(self, "matched_surfaces", _clean_tuple(self.matched_surfaces, field_name="resolution candidate matched_surfaces"))
+        if self.match_count < 0:
+            raise AgentLexiconModelError("resolution candidate match_count must be greater than or equal to 0")
+        if self.evidence_count < 0:
+            raise AgentLexiconModelError("resolution candidate evidence_count must be greater than or equal to 0")
+        if not isinstance(self.deprecated, bool):
+            raise AgentLexiconModelError("resolution candidate deprecated must be a boolean")
+        object.__setattr__(self, "score", float(self.score))
+        object.__setattr__(self, "metadata", _clean_metadata(self.metadata))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "term_id": self.term_id,
+            "canonical": self.canonical,
+            "description": self.description,
+            "scopes": list(self.scopes),
+            "tags": list(self.tags),
+            "matched_surfaces": list(self.matched_surfaces),
+            "match_count": self.match_count,
+            "evidence_count": self.evidence_count,
+            "deprecated": self.deprecated,
+            "score": self.score,
+            "metadata": dict(self.metadata),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ResolutionDecision:
+    """Resolver output that can be used by agents, CLI, and tests."""
+
+    text: str
+    status: ResolutionStatus
+    action: ResolutionAction
+    candidates: tuple[ResolutionCandidate, ...] = ()
+    matches: tuple[ResolutionMatch, ...] = ()
+    message: str | None = None
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.text, str):
+            raise AgentLexiconModelError("resolution decision text must be a string")
+        object.__setattr__(self, "status", ResolutionStatus(_enum_value(self.status)))
+        object.__setattr__(self, "action", ResolutionAction(_enum_value(self.action)))
+        if not isinstance(self.candidates, tuple):
+            object.__setattr__(self, "candidates", tuple(self.candidates))
+        if not isinstance(self.matches, tuple):
+            object.__setattr__(self, "matches", tuple(self.matches))
+        for candidate in self.candidates:
+            if not isinstance(candidate, ResolutionCandidate):
+                raise AgentLexiconModelError("resolution decision candidates must contain ResolutionCandidate objects")
+        for match in self.matches:
+            if not isinstance(match, ResolutionMatch):
+                raise AgentLexiconModelError("resolution decision matches must contain ResolutionMatch objects")
+        object.__setattr__(self, "message", _clean_optional_text(self.message, field_name="resolution decision message"))
+        object.__setattr__(self, "metadata", _clean_metadata(self.metadata))
+
+    @property
+    def primary_term_id(self) -> str | None:
+        """Return the resolved canonical id when there is exactly one candidate."""
+        if self.status != ResolutionStatus.RESOLVED or len(self.candidates) != 1:
+            return None
+        return self.candidates[0].term_id
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "text": self.text,
+            "status": self.status.value,
+            "action": self.action.value,
+            "primary_term_id": self.primary_term_id,
+            "candidates": [candidate.to_dict() for candidate in self.candidates],
+            "matches": [match.to_dict() for match in self.matches],
+            "message": self.message,
+            "metadata": dict(self.metadata),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class Lexicon:
     """A validated terminology document loaded from JSON or YAML."""
 
@@ -395,6 +553,11 @@ __all__ = [
     "ProposalKind",
     "ProposalStatus",
     "Lexicon",
+    "ResolutionAction",
+    "ResolutionCandidate",
+    "ResolutionDecision",
+    "ResolutionMatch",
+    "ResolutionStatus",
     "RiskLevel",
     "Scope",
     "Term",

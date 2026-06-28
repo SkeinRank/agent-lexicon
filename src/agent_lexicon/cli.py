@@ -6,7 +6,7 @@ import argparse
 from pathlib import Path
 
 from . import __version__, about
-from .core import AgentLexiconLoadError, find_surface_matches, load_lexicon
+from .core import AgentLexiconLoadError, ResolutionStatus, find_surface_matches, load_lexicon, resolve_text
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -54,6 +54,24 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Return the longest non-overlapping surface matches.",
     )
+
+    resolve_parser = subparsers.add_parser(
+        "resolve",
+        help="Resolve known terminology and report ambiguity.",
+    )
+    resolve_parser.add_argument("path", help="Path to a lexicon .json, .yaml, or .yml file.")
+    resolve_parser.add_argument("text", help="Text to resolve against the lexicon.")
+    resolve_parser.add_argument(
+        "--scope",
+        action="append",
+        default=None,
+        help="Limit resolution to a scope. Can be provided multiple times.",
+    )
+    resolve_parser.add_argument(
+        "--exclude-deprecated",
+        action="store_true",
+        help="Ignore deprecated aliases or deprecated terms.",
+    )
     return parser
 
 
@@ -75,6 +93,14 @@ def main(argv: list[str] | None = None) -> int:
             scopes=args.scope,
             include_deprecated=not args.exclude_deprecated,
             longest_only=args.longest_only,
+        )
+
+    if args.command == "resolve":
+        return _resolve_command(
+            path=Path(args.path),
+            text=args.text,
+            scopes=args.scope,
+            include_deprecated=not args.exclude_deprecated,
         )
 
     print(about())
@@ -131,5 +157,47 @@ def _match_command(
             f"{match.kind.value} "
             f"{scope_label}{deprecated_label} "
             f"-> {match.matched_text!r}"
+        )
+    return 0
+
+
+def _resolve_command(
+    *,
+    path: Path,
+    text: str,
+    scopes: list[str] | None,
+    include_deprecated: bool,
+) -> int:
+    try:
+        lexicon = load_lexicon(path)
+    except AgentLexiconLoadError as exc:
+        print(f"Invalid lexicon: {exc}")
+        return 1
+
+    decision = resolve_text(
+        lexicon,
+        text,
+        scopes=scopes,
+        include_deprecated=include_deprecated,
+    )
+    print(f"Status: {decision.status.value}")
+    print(f"Action: {decision.action.value}")
+    if decision.message:
+        print(f"Message: {decision.message}")
+
+    if decision.status == ResolutionStatus.UNKNOWN:
+        return 0
+
+    print("Candidates:")
+    for candidate in decision.candidates:
+        scope_label = ",".join(candidate.scopes) if candidate.scopes else "global"
+        surface_label = ", ".join(repr(surface) for surface in candidate.matched_surfaces)
+        deprecated_label = " deprecated" if candidate.deprecated else ""
+        print(
+            f"- {candidate.term_id} "
+            f"({candidate.canonical}) "
+            f"scopes={scope_label} "
+            f"matches={surface_label}" 
+            f"{deprecated_label}"
         )
     return 0
