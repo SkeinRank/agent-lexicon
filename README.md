@@ -17,6 +17,7 @@ pip install agent-lexicon
 agent-lexicon --version
 python -m agent_lexicon --version
 agent-lexicon validate examples/customer_limits/lexicon.yaml
+agent-lexicon match examples/customer_limits/lexicon.yaml "The customer cap and rate limit changed."
 ```
 
 ## Core schema
@@ -86,6 +87,7 @@ Validate a document from the command line:
 
 ```bash
 agent-lexicon validate examples/customer_limits/lexicon.yaml
+agent-lexicon match examples/customer_limits/lexicon.yaml "The customer cap and rate limit changed."
 ```
 
 Load the same document from Python:
@@ -101,6 +103,38 @@ lexicon_again = Lexicon.from_file("examples/customer_limits/lexicon.json")
 
 The loader validates duplicate ids, unknown scope references, alias collisions,
 and proposal references before returning a `Lexicon` object.
+
+
+## Surface matching
+
+Agent Lexicon can scan text for canonical terms and aliases from a loaded
+lexicon. The matcher is dependency-free and uses a trie with Aho-Corasick
+failure links, so it can be used by runtime agents before retrieval, tool calls,
+or local review workflows.
+
+```python
+from agent_lexicon import build_surface_matcher, load_lexicon
+
+lexicon = load_lexicon("examples/customer_limits/lexicon.yaml")
+matcher = build_surface_matcher(lexicon)
+
+matches = matcher.match(
+    "The customer cap and rate limit changed.",
+    longest_only=True,
+)
+
+for match in matches:
+    print(match.term_id, match.kind.value, match.matched_text)
+```
+
+Command line usage:
+
+```bash
+agent-lexicon match examples/customer_limits/lexicon.yaml "The customer cap and rate limit changed."
+```
+
+The matcher supports scope filtering, case-sensitive aliases, deprecated surface
+filtering, and longest non-overlapping output for downstream resolver logic.
 
 ## Development
 

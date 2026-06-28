@@ -38,6 +38,25 @@ class AgentLexiconSmokeTests(unittest.TestCase):
         )
         self.assertEqual(completed.stdout.strip(), "0.0.1")
 
+
+    def test_cli_match_example(self) -> None:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "agent_lexicon",
+                "match",
+                "examples/customer_limits/lexicon.yaml",
+                "The customer cap and rate limit changed.",
+            ],
+            check=True,
+            text=True,
+            capture_output=True,
+            env=_subprocess_env(),
+        )
+        self.assertIn("billing.credit_limit alias billing -> 'customer cap'", completed.stdout)
+        self.assertIn("api.rate_limit canonical api -> 'rate limit'", completed.stdout)
+
     def test_cli_validate_example(self) -> None:
         completed = subprocess.run(
             [
