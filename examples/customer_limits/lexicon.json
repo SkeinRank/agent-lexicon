@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "metadata": {
+    "name": "Customer limits JSON demo"
+  },
+  "scopes": [
+    {
+      "id": "billing",
+      "label": "Billing"
+    }
+  ],
+  "terms": [
+    {
+      "id": "billing.credit_limit",
+      "canonical": "credit limit",
+      "scopes": ["billing"],
+      "aliases": [
+        "customer cap",
+        {
+          "surface": "account limit",
+          "scopes": ["billing"]
+        }
+      ],
+      "evidence": [
+        {
+          "source_path": "docs/billing.md",
+          "start_line": 12,
+          "snippet": "Customer cap is the credit limit for an account.",
+          "kind": "positive"
+        }
+      ]
+    }
+  ]
+}

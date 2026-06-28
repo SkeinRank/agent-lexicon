@@ -1,0 +1,55 @@
+version: 1
+metadata:
+  name: Customer limits demo
+  description: Minimal terminology document for ambiguity and tool routing examples.
+scopes:
+  - id: billing
+    label: Billing
+    description: Customer account exposure and credit operations.
+  - id: api
+    label: API
+    description: Platform API throttling and request limits.
+terms:
+  - id: billing.credit_limit
+    canonical: credit limit
+    description: Maximum allowed customer credit exposure.
+    scopes: [billing]
+    tags: [customer, risk]
+    aliases:
+      - surface: customer cap
+        scopes: [billing]
+      - surface: account limit
+        scopes: [billing]
+    evidence:
+      - source_path: docs/billing.md
+        start_line: 12
+        snippet: Customer cap is the credit limit for an account.
+        kind: positive
+  - id: api.rate_limit
+    canonical: rate limit
+    description: Maximum request throughput allowed for an API client.
+    scopes: [api]
+    tags: [platform, throttling]
+    aliases:
+      - surface: requests per minute
+        scopes: [api]
+      - surface: rpm limit
+        scopes: [api]
+    evidence:
+      - source_path: docs/api.md
+        start_line: 8
+        snippet: Rate limit controls requests per minute for an API key.
+        kind: positive
+proposals:
+  - id: proposal.customer-limit.alias
+    kind: alias_candidate
+    surface: customer limit
+    candidate_term_id: billing.credit_limit
+    confidence: 0.76
+    risk: medium
+    scopes: [billing]
+    evidence:
+      - source_path: docs/support.md
+        start_line: 19
+        snippet: Support often says customer limit when discussing credit exposure.
+        kind: context

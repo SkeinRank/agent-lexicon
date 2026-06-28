@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Any, Mapping
 
 
@@ -314,6 +315,77 @@ class ProposalCandidate:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class Lexicon:
+    """A validated terminology document loaded from JSON or YAML."""
+
+    version: str = "1"
+    scopes: tuple[Scope, ...] = ()
+    terms: tuple[Term, ...] = ()
+    proposals: tuple[ProposalCandidate, ...] = ()
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "version", _clean_text(str(self.version), field_name="lexicon version"))
+        if self.version != "1":
+            raise AgentLexiconModelError("lexicon version must be '1'")
+        if not isinstance(self.scopes, tuple):
+            object.__setattr__(self, "scopes", tuple(self.scopes))
+        if not isinstance(self.terms, tuple):
+            object.__setattr__(self, "terms", tuple(self.terms))
+        if not isinstance(self.proposals, tuple):
+            object.__setattr__(self, "proposals", tuple(self.proposals))
+        for scope in self.scopes:
+            if not isinstance(scope, Scope):
+                raise AgentLexiconModelError("lexicon scopes must contain Scope objects")
+        for term in self.terms:
+            if not isinstance(term, Term):
+                raise AgentLexiconModelError("lexicon terms must contain Term objects")
+        for proposal in self.proposals:
+            if not isinstance(proposal, ProposalCandidate):
+                raise AgentLexiconModelError("lexicon proposals must contain ProposalCandidate objects")
+        object.__setattr__(self, "metadata", _clean_metadata(self.metadata))
+
+    @classmethod
+    def from_file(cls, path: str | Path, *, document_format: str | None = None) -> "Lexicon":
+        """Load a lexicon document from a JSON or YAML file."""
+        from .loader import load_lexicon
+
+        return load_lexicon(path, document_format=document_format)
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> "Lexicon":
+        """Build a validated lexicon from a mapping."""
+        from .loader import lexicon_from_dict
+
+        return lexicon_from_dict(payload)
+
+    def get_term(self, term_id: str) -> Term | None:
+        """Return a term by canonical id, or ``None`` when it is unknown."""
+        cleaned_term_id = _clean_text(term_id, field_name="term id")
+        for term in self.terms:
+            if term.id == cleaned_term_id:
+                return term
+        return None
+
+    def get_scope(self, scope_id: str) -> Scope | None:
+        """Return a scope by id, or ``None`` when it is unknown."""
+        cleaned_scope_id = _clean_text(scope_id, field_name="scope id")
+        for scope in self.scopes:
+            if scope.id == cleaned_scope_id:
+                return scope
+        return None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "version": self.version,
+            "scopes": [scope.to_dict() for scope in self.scopes],
+            "terms": [term.to_dict() for term in self.terms],
+            "proposals": [proposal.to_dict() for proposal in self.proposals],
+            "metadata": dict(self.metadata),
+        }
+
+
 __all__ = [
     "AgentLexiconModelError",
     "Alias",
@@ -322,6 +394,7 @@ __all__ = [
     "ProposalCandidate",
     "ProposalKind",
     "ProposalStatus",
+    "Lexicon",
     "RiskLevel",
     "Scope",
     "Term",

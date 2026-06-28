@@ -16,6 +16,7 @@ pip install agent-lexicon
 ```bash
 agent-lexicon --version
 python -m agent_lexicon --version
+agent-lexicon validate examples/customer_limits/lexicon.yaml
 ```
 
 ## Core schema
@@ -27,6 +28,7 @@ The package includes dependency-free core models for terminology workflows:
 - `Alias` — a surface form that points to a canonical term.
 - `EvidenceSpan` — a source-backed snippet with file path, line range, and evidence kind.
 - `ProposalCandidate` — a reviewable terminology change suggested by local analysis or an agent.
+- `Lexicon` — a validated terminology document containing scopes, terms, proposals, and metadata.
 
 Example:
 
@@ -56,6 +58,49 @@ proposal = ProposalCandidate(
 )
 ```
 
+## Lexicon documents
+
+Agent Lexicon can load and validate JSON or YAML terminology documents. The
+current document format is intentionally small and local-first:
+
+```yaml
+version: 1
+scopes:
+  - id: billing
+    label: Billing
+terms:
+  - id: billing.credit_limit
+    canonical: credit limit
+    scopes: [billing]
+    aliases:
+      - surface: customer cap
+        scopes: [billing]
+    evidence:
+      - source_path: docs/billing.md
+        start_line: 12
+        snippet: Customer cap is the credit limit for an account.
+        kind: positive
+```
+
+Validate a document from the command line:
+
+```bash
+agent-lexicon validate examples/customer_limits/lexicon.yaml
+```
+
+Load the same document from Python:
+
+```python
+from agent_lexicon import Lexicon, load_lexicon
+
+lexicon = load_lexicon("examples/customer_limits/lexicon.yaml")
+assert lexicon.get_term("billing.credit_limit") is not None
+
+lexicon_again = Lexicon.from_file("examples/customer_limits/lexicon.json")
+```
+
+The loader validates duplicate ids, unknown scope references, alias collisions,
+and proposal references before returning a `Lexicon` object.
 
 ## Development
 

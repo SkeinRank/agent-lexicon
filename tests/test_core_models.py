@@ -7,6 +7,7 @@ from agent_lexicon import (
     Alias,
     EvidenceKind,
     EvidenceSpan,
+    Lexicon,
     ProposalCandidate,
     ProposalKind,
     RiskLevel,
@@ -60,6 +61,15 @@ class CoreModelTests(unittest.TestCase):
         self.assertEqual(term.surfaces(include_deprecated=False), ("credit limit", "customer cap"))
         self.assertEqual(evidence.location(), "docs/billing.md:12-14")
         self.assertEqual(term.to_dict()["aliases"][0]["surface"], "customer cap")
+
+    def test_lexicon_container_serializes_terms_and_scopes(self) -> None:
+        scope = Scope(id="billing")
+        term = Term(id="billing.credit_limit", canonical="credit limit", scopes=("billing",))
+        lexicon = Lexicon(version="1", scopes=(scope,), terms=(term,), metadata={"name": "demo"})
+
+        self.assertEqual(lexicon.get_scope("billing"), scope)
+        self.assertEqual(lexicon.get_term("billing.credit_limit"), term)
+        self.assertEqual(lexicon.to_dict()["terms"][0]["id"], "billing.credit_limit")
 
     def test_alias_term_id_must_match_owner(self) -> None:
         alias = Alias(surface="rate limit", term_id="api.rate_limit")

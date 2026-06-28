@@ -7,7 +7,7 @@ test:
 	poetry run pytest -q
 
 test-unit:
-	poetry run python -m unittest discover -s tests -v
+	poetry run pytest -q tests
 
 check: test
 

@@ -1,11 +1,21 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
+from pathlib import Path
 import unittest
 
 import agent_lexicon
 from agent_lexicon.cli import main
+
+
+def _subprocess_env() -> dict[str, str]:
+    env = os.environ.copy()
+    existing_pythonpath = env.get("PYTHONPATH")
+    src_path = str(Path(__file__).resolve().parents[1] / "src")
+    env["PYTHONPATH"] = src_path if not existing_pythonpath else f"{src_path}{os.pathsep}{existing_pythonpath}"
+    return env
 
 
 class AgentLexiconSmokeTests(unittest.TestCase):
@@ -24,8 +34,25 @@ class AgentLexiconSmokeTests(unittest.TestCase):
             check=True,
             text=True,
             capture_output=True,
+            env=_subprocess_env(),
         )
         self.assertEqual(completed.stdout.strip(), "0.0.1")
+
+    def test_cli_validate_example(self) -> None:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "agent_lexicon",
+                "validate",
+                "examples/customer_limits/lexicon.yaml",
+            ],
+            check=True,
+            text=True,
+            capture_output=True,
+            env=_subprocess_env(),
+        )
+        self.assertIn("Valid lexicon", completed.stdout)
 
 
 if __name__ == "__main__":

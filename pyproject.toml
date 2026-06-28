@@ -49,6 +49,7 @@ packages = ["src/agent_lexicon"]
 include = [
   "/src",
   "/tests",
+  "/examples",
   "/README.md",
   "/LICENSE",
   "/pyproject.toml",
