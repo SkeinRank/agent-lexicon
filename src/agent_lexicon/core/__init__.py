@@ -1,8 +1,8 @@
-"""Agent Lexicon: shared terminology memory for AI agents."""
+"""Core schema objects for Agent Lexicon."""
 
 from __future__ import annotations
 
-from .core import (
+from .models import (
     AgentLexiconModelError,
     Alias,
     EvidenceKind,
@@ -16,8 +16,6 @@ from .core import (
 )
 
 __all__ = [
-    "__version__",
-    "about",
     "AgentLexiconModelError",
     "Alias",
     "EvidenceKind",
@@ -29,10 +27,3 @@ __all__ = [
     "Scope",
     "Term",
 ]
-
-__version__ = "0.0.1"
-
-
-def about() -> str:
-    """Return a short package description."""
-    return "Agent Lexicon: shared terminology memory for AI agents."
