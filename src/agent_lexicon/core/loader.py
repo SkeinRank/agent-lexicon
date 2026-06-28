@@ -291,6 +291,7 @@ def _parse_term(payload: Any, *, index: int) -> Term:
             aliases=tuple(_parse_alias(alias_payload, term_id=term_id, index=alias_index) for alias_index, alias_payload in enumerate(_list(item.get("aliases", []), field_name=f"terms[{index}].aliases"))),
             scopes=tuple(_list(item.get("scopes", []), field_name=f"terms[{index}].scopes")),
             tags=tuple(_list(item.get("tags", []), field_name=f"terms[{index}].tags")),
+            tools=tuple(_list(item.get("tools", []), field_name=f"terms[{index}].tools")),
             deprecated=bool(item.get("deprecated", False)),
             evidence=tuple(_parse_evidence(evidence_payload, field_name=f"terms[{index}].evidence[{evidence_index}]") for evidence_index, evidence_payload in enumerate(_list(item.get("evidence", []), field_name=f"terms[{index}].evidence"))),
             metadata=_mapping(item.get("metadata", {}), field_name=f"terms[{index}].metadata"),

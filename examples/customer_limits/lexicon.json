@@ -14,6 +14,7 @@
       "id": "billing.credit_limit",
       "canonical": "credit limit",
       "scopes": ["billing"],
+      "tools": ["billing.update_credit_limit"],
       "aliases": [
         "customer cap",
         {

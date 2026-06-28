@@ -19,6 +19,7 @@ python -m agent_lexicon --version
 agent-lexicon validate examples/customer_limits/lexicon.yaml
 agent-lexicon match examples/customer_limits/lexicon.yaml "The customer cap and rate limit changed." --longest-only
 agent-lexicon resolve examples/customer_limits/lexicon.yaml "increase the limit"
+agent-lexicon guard examples/customer_limits/lexicon.yaml "increase the limit" --tool api.update_rate_limit
 ```
 
 ## Core schema
@@ -74,6 +75,7 @@ terms:
   - id: billing.credit_limit
     canonical: credit limit
     scopes: [billing]
+    tools: [billing.update_credit_limit]
     aliases:
       - surface: customer cap
         scopes: [billing]
@@ -90,6 +92,7 @@ Validate a document from the command line:
 agent-lexicon validate examples/customer_limits/lexicon.yaml
 agent-lexicon match examples/customer_limits/lexicon.yaml "The customer cap and rate limit changed." --longest-only
 agent-lexicon resolve examples/customer_limits/lexicon.yaml "increase the limit"
+agent-lexicon guard examples/customer_limits/lexicon.yaml "increase the limit" --tool api.update_rate_limit
 ```
 
 Load the same document from Python:
@@ -166,12 +169,48 @@ Command line usage:
 
 ```bash
 agent-lexicon resolve examples/customer_limits/lexicon.yaml "increase the limit"
+agent-lexicon guard examples/customer_limits/lexicon.yaml "increase the limit" --tool api.update_rate_limit
 agent-lexicon resolve examples/customer_limits/lexicon.yaml "increase the limit" --scope billing
 ```
 
 This gives agents a local way to stop before unsafe assumptions: if the same
 surface can mean multiple canonical terms, the recommended action is
 `ask_clarification`.
+
+
+## Tool-call safety
+
+Agent Lexicon can check a requested tool call before the agent executes it. If
+terminology is ambiguous, the guard asks for clarification instead of allowing a
+risky tool call. If a term is resolved and declares allowed tools, the requested
+tool must match that term's tool list.
+
+```python
+from agent_lexicon import guard_tool_call, load_lexicon
+
+lexicon = load_lexicon("examples/customer_limits/lexicon.yaml")
+
+decision = guard_tool_call(
+    lexicon,
+    "increase the limit",
+    tool_name="api.update_rate_limit",
+)
+
+print(decision.status.value)  # needs_clarification
+print(decision.action.value)  # ask_clarification
+print(decision.is_allowed)    # False
+```
+
+Command line usage:
+
+```bash
+agent-lexicon guard examples/customer_limits/lexicon.yaml "increase the limit" --tool api.update_rate_limit
+agent-lexicon guard examples/customer_limits/lexicon.yaml "increase the limit" --tool billing.update_credit_limit --scope billing
+```
+
+The `guard` command returns `0` for allowed or no-match decisions and `2` when
+the tool call is blocked or needs clarification. This makes it usable in local
+agent wrappers and future CI checks.
 
 ## Development
 

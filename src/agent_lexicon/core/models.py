@@ -51,6 +51,7 @@ class RiskLevel(str, Enum):
     MEDIUM = "medium"
     HIGH = "high"
 
+
 class ResolutionStatus(str, Enum):
     """Runtime term resolution status."""
 
@@ -64,6 +65,23 @@ class ResolutionAction(str, Enum):
 
     NO_MATCH = "no_match"
     USE_TERMS = "use_terms"
+    ASK_CLARIFICATION = "ask_clarification"
+
+
+class ToolGuardStatus(str, Enum):
+    """Safety status for a requested tool call."""
+
+    ALLOWED = "allowed"
+    BLOCKED = "blocked"
+    NEEDS_CLARIFICATION = "needs_clarification"
+    NO_MATCH = "no_match"
+
+
+class ToolGuardAction(str, Enum):
+    """Recommended action after checking a requested tool call."""
+
+    PROCEED = "proceed"
+    BLOCK = "block"
     ASK_CLARIFICATION = "ask_clarification"
 
 
@@ -225,6 +243,7 @@ class Term:
     aliases: tuple[Alias, ...] = ()
     scopes: tuple[str, ...] = ()
     tags: tuple[str, ...] = ()
+    tools: tuple[str, ...] = ()
     deprecated: bool = False
     evidence: tuple[EvidenceSpan, ...] = ()
     metadata: Mapping[str, Any] = field(default_factory=dict)
@@ -235,6 +254,7 @@ class Term:
         object.__setattr__(self, "description", _clean_optional_text(self.description, field_name="term description"))
         object.__setattr__(self, "scopes", _clean_tuple(self.scopes, field_name="term scopes"))
         object.__setattr__(self, "tags", _clean_tuple(self.tags, field_name="term tags"))
+        object.__setattr__(self, "tools", _clean_tuple(self.tools, field_name="term tools"))
         if not isinstance(self.deprecated, bool):
             raise AgentLexiconModelError("term deprecated must be a boolean")
         if not isinstance(self.aliases, tuple):
@@ -268,6 +288,7 @@ class Term:
             "aliases": [alias.to_dict() for alias in self.aliases],
             "scopes": list(self.scopes),
             "tags": list(self.tags),
+            "tools": list(self.tools),
             "deprecated": self.deprecated,
             "evidence": [evidence_span.to_dict() for evidence_span in self.evidence],
             "metadata": dict(self.metadata),
@@ -474,6 +495,53 @@ class ResolutionDecision:
 
 
 @dataclass(frozen=True, slots=True)
+class ToolGuardDecision:
+    """Decision returned when checking whether a tool call is safe."""
+
+    text: str
+    tool_name: str
+    status: ToolGuardStatus
+    action: ToolGuardAction
+    resolution: ResolutionDecision
+    reason: str
+    allowed_tool_names: tuple[str, ...] = ()
+    matched_term_ids: tuple[str, ...] = ()
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.text, str):
+            raise AgentLexiconModelError("tool guard decision text must be a string")
+        object.__setattr__(self, "tool_name", _clean_text(self.tool_name, field_name="tool guard tool_name"))
+        object.__setattr__(self, "status", ToolGuardStatus(_enum_value(self.status)))
+        object.__setattr__(self, "action", ToolGuardAction(_enum_value(self.action)))
+        if not isinstance(self.resolution, ResolutionDecision):
+            raise AgentLexiconModelError("tool guard decision resolution must be a ResolutionDecision")
+        object.__setattr__(self, "reason", _clean_text(self.reason, field_name="tool guard reason"))
+        object.__setattr__(self, "allowed_tool_names", _clean_tuple(self.allowed_tool_names, field_name="tool guard allowed_tool_names"))
+        object.__setattr__(self, "matched_term_ids", _clean_tuple(self.matched_term_ids, field_name="tool guard matched_term_ids"))
+        object.__setattr__(self, "metadata", _clean_metadata(self.metadata))
+
+    @property
+    def is_allowed(self) -> bool:
+        """Return whether the tool call may proceed."""
+        return self.status in {ToolGuardStatus.ALLOWED, ToolGuardStatus.NO_MATCH}
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "text": self.text,
+            "tool_name": self.tool_name,
+            "status": self.status.value,
+            "action": self.action.value,
+            "is_allowed": self.is_allowed,
+            "reason": self.reason,
+            "allowed_tool_names": list(self.allowed_tool_names),
+            "matched_term_ids": list(self.matched_term_ids),
+            "resolution": self.resolution.to_dict(),
+            "metadata": dict(self.metadata),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class Lexicon:
     """A validated terminology document loaded from JSON or YAML."""
 
@@ -561,4 +629,7 @@ __all__ = [
     "RiskLevel",
     "Scope",
     "Term",
+    "ToolGuardAction",
+    "ToolGuardDecision",
+    "ToolGuardStatus",
 ]

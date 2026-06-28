@@ -78,6 +78,51 @@ class AgentLexiconSmokeTests(unittest.TestCase):
         self.assertIn("billing.credit_limit", completed.stdout)
         self.assertIn("api.rate_limit", completed.stdout)
 
+
+
+    def test_cli_guard_blocks_ambiguous_tool_call(self) -> None:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "agent_lexicon",
+                "guard",
+                "examples/customer_limits/lexicon.yaml",
+                "increase the limit",
+                "--tool",
+                "api.update_rate_limit",
+            ],
+            check=False,
+            text=True,
+            capture_output=True,
+            env=_subprocess_env(),
+        )
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("Status: needs_clarification", completed.stdout)
+        self.assertIn("Allowed: no", completed.stdout)
+
+    def test_cli_guard_allows_scoped_tool_call(self) -> None:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "agent_lexicon",
+                "guard",
+                "examples/customer_limits/lexicon.yaml",
+                "increase the limit",
+                "--tool",
+                "billing.update_credit_limit",
+                "--scope",
+                "billing",
+            ],
+            check=True,
+            text=True,
+            capture_output=True,
+            env=_subprocess_env(),
+        )
+        self.assertIn("Status: allowed", completed.stdout)
+        self.assertIn("Allowed: yes", completed.stdout)
+
     def test_cli_validate_example(self) -> None:
         completed = subprocess.run(
             [

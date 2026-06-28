@@ -21,6 +21,7 @@ def test_load_yaml_lexicon_example() -> None:
     assert lexicon.get_term("billing.credit_limit") is not None
     assert lexicon.get_scope("billing") is not None
     assert lexicon.terms[0].aliases[0].surface == "customer cap"
+    assert lexicon.terms[0].tools == ("billing.update_credit_limit",)
     assert lexicon.terms[0].evidence[0].location() == "docs/billing.md:12"
 
 
@@ -31,6 +32,7 @@ def test_load_json_lexicon_example() -> None:
     assert len(lexicon.terms) == 1
     assert lexicon.terms[0].aliases[0].surface == "customer cap"
     assert lexicon.terms[0].aliases[0].term_id == "billing.credit_limit"
+    assert lexicon.terms[0].tools == ("billing.update_credit_limit",)
 
 
 def test_loads_lexicon_accepts_yaml_text() -> None:

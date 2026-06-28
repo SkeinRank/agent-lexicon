@@ -6,7 +6,15 @@ import argparse
 from pathlib import Path
 
 from . import __version__, about
-from .core import AgentLexiconLoadError, ResolutionStatus, find_surface_matches, load_lexicon, resolve_text
+from .core import (
+    AgentLexiconLoadError,
+    ResolutionStatus,
+    ToolGuardStatus,
+    find_surface_matches,
+    guard_tool_call,
+    load_lexicon,
+    resolve_text,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -72,6 +80,29 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Ignore deprecated aliases or deprecated terms.",
     )
+
+    guard_parser = subparsers.add_parser(
+        "guard",
+        help="Check whether a requested tool call is safe for resolved terminology.",
+    )
+    guard_parser.add_argument("path", help="Path to a lexicon .json, .yaml, or .yml file.")
+    guard_parser.add_argument("text", help="Text that triggered the requested tool call.")
+    guard_parser.add_argument(
+        "--tool",
+        required=True,
+        help="Name of the tool the agent wants to call.",
+    )
+    guard_parser.add_argument(
+        "--scope",
+        action="append",
+        default=None,
+        help="Limit resolution to a scope. Can be provided multiple times.",
+    )
+    guard_parser.add_argument(
+        "--exclude-deprecated",
+        action="store_true",
+        help="Ignore deprecated aliases or deprecated terms.",
+    )
     return parser
 
 
@@ -99,6 +130,15 @@ def main(argv: list[str] | None = None) -> int:
         return _resolve_command(
             path=Path(args.path),
             text=args.text,
+            scopes=args.scope,
+            include_deprecated=not args.exclude_deprecated,
+        )
+
+    if args.command == "guard":
+        return _guard_command(
+            path=Path(args.path),
+            text=args.text,
+            tool_name=args.tool,
             scopes=args.scope,
             include_deprecated=not args.exclude_deprecated,
         )
@@ -201,3 +241,43 @@ def _resolve_command(
             f"{deprecated_label}"
         )
     return 0
+
+
+
+def _guard_command(
+    *,
+    path: Path,
+    text: str,
+    tool_name: str,
+    scopes: list[str] | None,
+    include_deprecated: bool,
+) -> int:
+    try:
+        lexicon = load_lexicon(path)
+    except AgentLexiconLoadError as exc:
+        print(f"Invalid lexicon: {exc}")
+        return 1
+
+    decision = guard_tool_call(
+        lexicon,
+        text,
+        tool_name=tool_name,
+        scopes=scopes,
+        include_deprecated=include_deprecated,
+    )
+    print(f"Status: {decision.status.value}")
+    print(f"Action: {decision.action.value}")
+    print(f"Allowed: {'yes' if decision.is_allowed else 'no'}")
+    print(f"Reason: {decision.reason}")
+    print(f"Resolution: {decision.resolution.status.value}")
+
+    if decision.matched_term_ids:
+        print("Matched terms:")
+        for term_id in decision.matched_term_ids:
+            print(f"- {term_id}")
+    if decision.allowed_tool_names:
+        print("Allowed tools:")
+        for allowed_tool_name in decision.allowed_tool_names:
+            print(f"- {allowed_tool_name}")
+
+    return 0 if decision.status in {ToolGuardStatus.ALLOWED, ToolGuardStatus.NO_MATCH} else 2

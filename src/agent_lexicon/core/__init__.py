@@ -28,8 +28,12 @@ from .models import (
     RiskLevel,
     Scope,
     Term,
+    ToolGuardAction,
+    ToolGuardDecision,
+    ToolGuardStatus,
 )
 from .resolver import LexiconResolver, resolve_text
+from .tool_guard import ToolGuard, guard_tool_call
 
 __all__ = [
     "AgentLexiconLoadError",
@@ -54,6 +58,11 @@ __all__ = [
     "SurfaceMatcher",
     "Scope",
     "Term",
+    "ToolGuard",
+    "ToolGuardAction",
+    "ToolGuardDecision",
+    "ToolGuardStatus",
+    "guard_tool_call",
     "lexicon_from_dict",
     "load_lexicon",
     "build_surface_matcher",

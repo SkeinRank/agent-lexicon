@@ -15,6 +15,7 @@ terms:
     description: Maximum allowed customer credit exposure.
     scopes: [billing]
     tags: [customer, risk]
+    tools: [billing.update_credit_limit]
     aliases:
       - surface: customer cap
         scopes: [billing]
@@ -32,6 +33,7 @@ terms:
     description: Maximum request throughput allowed for an API client.
     scopes: [api]
     tags: [platform, throttling]
+    tools: [api.update_rate_limit]
     aliases:
       - surface: requests per minute
         scopes: [api]
