@@ -23,6 +23,7 @@ agent-lexicon guard examples/customer_limits/lexicon.yaml "increase the limit" -
 agent-lexicon validate-queries examples/customer_limits/queries.jsonl
 agent-lexicon check examples/customer_limits/lexicon.yaml examples/customer_limits/queries.jsonl
 agent-lexicon ingest README.md src examples/customer_limits/docs --root .
+agent-lexicon discover-candidates examples/customer_limits/docs --root examples/customer_limits
 ```
 
 ## Core schema
@@ -229,6 +230,7 @@ Command line usage:
 
 ```bash
 agent-lexicon ingest README.md src examples/customer_limits/docs --root .
+agent-lexicon discover-candidates examples/customer_limits/docs --root examples/customer_limits
 agent-lexicon ingest examples/customer_limits/docs --root examples/customer_limits --jsonl
 ```
 
@@ -246,6 +248,37 @@ for document in report.documents:
 The ingest report exposes `document_count`, `total_lines`, `total_size_bytes`,
 `documents`, and `skipped_paths`. Each document includes a stable SHA-256 hash,
 relative path, source kind, line count, byte size, and text content.
+
+## Candidate discovery
+
+Agent Lexicon can run a deterministic local scout pass over ingested documents.
+The scout discovers reviewable terminology candidates, assigns a score, reports
+a jargon score, and applies background penalties so common project words do not
+dominate the candidate list. This step is local-first and dependency-free.
+
+Command line usage:
+
+```bash
+agent-lexicon discover-candidates examples/customer_limits/docs --root examples/customer_limits
+agent-lexicon discover-candidates examples/customer_limits/docs --root examples/customer_limits --lexicon examples/customer_limits/lexicon.yaml --json
+```
+
+Python usage:
+
+```python
+from agent_lexicon import discover_scout_candidates, ingest_local_paths
+
+ingest_report = ingest_local_paths(["examples/customer_limits/docs"], root="examples/customer_limits")
+candidate_report = discover_scout_candidates(ingest_report.documents)
+
+for candidate in candidate_report.candidates:
+    print(candidate.surface, candidate.score, candidate.jargon_score, candidate.background_penalty)
+```
+
+Each candidate includes a surface, normalized surface, kind, score, jargon
+score, background penalty, occurrence count, document count, source occurrences,
+and a deterministic score breakdown. Existing lexicon surfaces can be filtered
+out with `existing_surfaces_from_lexicon(...)` or the CLI `--lexicon` option.
 
 ## Behavior metrics
 
@@ -327,6 +360,7 @@ Validate a dataset from the command line:
 agent-lexicon validate-queries examples/customer_limits/queries.jsonl
 agent-lexicon check examples/customer_limits/lexicon.yaml examples/customer_limits/queries.jsonl
 agent-lexicon ingest README.md src examples/customer_limits/docs --root .
+agent-lexicon discover-candidates examples/customer_limits/docs --root examples/customer_limits
 ```
 
 Load the same dataset from Python:

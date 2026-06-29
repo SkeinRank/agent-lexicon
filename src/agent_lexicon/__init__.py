@@ -50,6 +50,16 @@ from .evals import (
     run_behavior_eval,
     loads_eval_queries,
 )
+
+from .scout import (
+    CandidateSurfaceKind,
+    ScoutCandidate,
+    ScoutCandidateError,
+    ScoutCandidateOccurrence,
+    ScoutCandidateReport,
+    discover_scout_candidates,
+    existing_surfaces_from_lexicon,
+)
 from .ingest import (
     DEFAULT_EXCLUDE_DIRS,
     DEFAULT_INCLUDE_GLOBS,
@@ -67,6 +77,13 @@ from .ingest import (
 
 __all__ = [
     "__version__",
+    "existing_surfaces_from_lexicon",
+    "discover_scout_candidates",
+    "ScoutCandidateReport",
+    "ScoutCandidateOccurrence",
+    "ScoutCandidateError",
+    "ScoutCandidate",
+    "CandidateSurfaceKind",
     "about",
     "AgentLexiconLoadError",
     "AgentLexiconModelError",

@@ -18,6 +18,7 @@ from .core import (
 )
 from .evals import EvalDatasetError, load_eval_queries, run_behavior_eval
 from .ingest import LocalIngestError, ingest_local_paths
+from .scout import ScoutCandidateError, discover_scout_candidates, existing_surfaces_from_lexicon
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -96,6 +97,60 @@ def build_parser() -> argparse.ArgumentParser:
         "--jsonl",
         action="store_true",
         help="Print one JSON object per ingested document, including text.",
+    )
+
+    discover_candidates_parser = subparsers.add_parser(
+        "discover-candidates",
+        help="Discover terminology candidates from local docs and source files.",
+    )
+    discover_candidates_parser.add_argument(
+        "paths",
+        nargs="+",
+        help="Files or directories to scan. Directories use local project defaults.",
+    )
+    discover_candidates_parser.add_argument(
+        "--root",
+        default=None,
+        help="Root path used for relative paths in output.",
+    )
+    discover_candidates_parser.add_argument(
+        "--include",
+        action="append",
+        default=None,
+        help="Glob to include when scanning directories. Can be provided multiple times.",
+    )
+    discover_candidates_parser.add_argument(
+        "--lexicon",
+        default=None,
+        help="Optional lexicon document whose existing surfaces should be ignored.",
+    )
+    discover_candidates_parser.add_argument(
+        "--min-score",
+        type=float,
+        default=0.25,
+        help="Minimum candidate score from 0.0 to 1.0.",
+    )
+    discover_candidates_parser.add_argument(
+        "--max-candidates",
+        type=int,
+        default=20,
+        help="Maximum number of candidates to print.",
+    )
+    discover_candidates_parser.add_argument(
+        "--max-file-bytes",
+        type=int,
+        default=1_000_000,
+        help="Maximum file size to read during local ingest.",
+    )
+    discover_candidates_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the full candidate report as JSON.",
+    )
+    discover_candidates_parser.add_argument(
+        "--jsonl",
+        action="store_true",
+        help="Print one JSON candidate per line.",
     )
 
     match_parser = subparsers.add_parser(
@@ -192,6 +247,19 @@ def main(argv: list[str] | None = None) -> int:
             root=Path(args.root) if args.root is not None else None,
             include_globs=args.include,
             max_file_bytes=args.max_file_bytes,
+            as_jsonl=args.jsonl,
+        )
+
+    if args.command == "discover-candidates":
+        return _discover_candidates_command(
+            paths=[Path(path) for path in args.paths],
+            root=Path(args.root) if args.root is not None else None,
+            include_globs=args.include,
+            lexicon_path=Path(args.lexicon) if args.lexicon else None,
+            min_score=args.min_score,
+            max_candidates=args.max_candidates,
+            max_file_bytes=args.max_file_bytes,
+            as_json=args.json,
             as_jsonl=args.jsonl,
         )
 
@@ -349,6 +417,81 @@ def _ingest_command(
         print("Skipped paths:")
         for skipped_path in report.skipped_paths:
             print(f"- {skipped_path}")
+    return 0
+
+
+def _discover_candidates_command(
+    *,
+    paths: list[Path],
+    root: Path | None,
+    include_globs: list[str] | None,
+    lexicon_path: Path | None,
+    min_score: float,
+    max_candidates: int,
+    max_file_bytes: int,
+    as_json: bool,
+    as_jsonl: bool,
+) -> int:
+    if as_json and as_jsonl:
+        print("Invalid candidate discovery input: choose either --json or --jsonl")
+        return 1
+
+    try:
+        ingest_report = ingest_local_paths(
+            paths,
+            root=root,
+            include_globs=include_globs,
+            max_file_bytes=max_file_bytes,
+        )
+    except LocalIngestError as exc:
+        print(f"Invalid local ingest input: {exc}")
+        return 1
+
+    existing_surfaces: tuple[str, ...] = ()
+    if lexicon_path is not None:
+        try:
+            lexicon = load_lexicon(lexicon_path)
+        except AgentLexiconLoadError as exc:
+            print(f"Invalid lexicon: {exc}")
+            return 1
+        existing_surfaces = existing_surfaces_from_lexicon(lexicon)
+
+    try:
+        report = discover_scout_candidates(
+            ingest_report.documents,
+            existing_surfaces=existing_surfaces,
+            min_score=min_score,
+            max_candidates=max_candidates,
+        )
+    except ScoutCandidateError as exc:
+        print(f"Invalid candidate discovery input: {exc}")
+        return 1
+
+    if as_json:
+        print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+        return 0
+    if as_jsonl:
+        for candidate in report.candidates:
+            print(candidate.to_json_line())
+        return 0
+
+    print(
+        "Candidate discovery: "
+        f"{report.candidate_count} candidates from "
+        f"{report.document_count} documents"
+    )
+    for candidate in report.candidates:
+        print(
+            f"- {candidate.surface} "
+            f"({candidate.kind.value}, score={candidate.score:.3f}, "
+            f"jargon={candidate.jargon_score:.3f}, "
+            f"background_penalty={candidate.background_penalty:.3f}, "
+            f"occurrences={candidate.occurrence_count}, "
+            f"documents={candidate.document_count})"
+        )
+        if candidate.occurrences:
+            occurrence = candidate.occurrences[0]
+            print(f"  {occurrence.document_path}:{occurrence.line_number} {occurrence.line_text}")
     return 0
 
 

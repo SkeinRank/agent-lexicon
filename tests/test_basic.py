@@ -156,6 +156,28 @@ class AgentLexiconSmokeTests(unittest.TestCase):
         self.assertIn("Valid eval dataset", completed.stdout)
         self.assertIn("5 queries", completed.stdout)
 
+    def test_cli_discover_candidates_example(self) -> None:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "agent_lexicon",
+                "discover-candidates",
+                "examples/customer_limits/docs",
+                "--root",
+                "examples/customer_limits",
+                "--max-candidates",
+                "5",
+            ],
+            check=True,
+            text=True,
+            capture_output=True,
+            env=_subprocess_env(),
+        )
+        self.assertIn("Candidate discovery:", completed.stdout)
+        self.assertIn("billing.update_credit_limit", completed.stdout)
+
+
 
 if __name__ == "__main__":
     unittest.main()
