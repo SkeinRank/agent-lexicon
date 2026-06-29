@@ -25,6 +25,9 @@ agent-lexicon check examples/customer_limits/lexicon.yaml examples/customer_limi
 agent-lexicon ingest README.md src examples/customer_limits/docs --root .
 agent-lexicon discover-candidates examples/customer_limits/docs --root examples/customer_limits
 agent-lexicon build-evidence examples/customer_limits/docs --root examples/customer_limits
+agent-lexicon workspace init --root examples/customer_limits
+agent-lexicon workspace sync examples/customer_limits/docs --root examples/customer_limits --max-candidates 5
+agent-lexicon workspace status --root examples/customer_limits
 ```
 
 ## Core schema
@@ -314,6 +317,40 @@ Each pack includes the candidate surface, score, positive snippets, negative
 snippets, line ranges, reasons, and source metadata. This is the local evidence
 foundation for proposal review and future snapshot publishing.
 
+## SQLite workspace state
+
+Agent Lexicon can keep local ingest, scout candidates, and evidence packs in a
+SQLite workspace under `.agent-lexicon/agent_lexicon.db`. The workspace is a
+local cache for review and snapshot workflows. It is safe to delete and rebuild
+from project files; team source of truth remains lexicon files, review exports,
+and published snapshots.
+
+Command line usage:
+
+```bash
+agent-lexicon workspace init --root examples/customer_limits
+agent-lexicon workspace sync examples/customer_limits/docs --root examples/customer_limits --max-candidates 5
+agent-lexicon workspace status --root examples/customer_limits
+agent-lexicon workspace status --root examples/customer_limits --json
+```
+
+Python usage:
+
+```python
+from agent_lexicon import init_workspace, ingest_local_paths
+
+state = init_workspace("examples/customer_limits")
+ingest_report = ingest_local_paths(["examples/customer_limits/docs"], root="examples/customer_limits")
+state.store_ingest_report(ingest_report)
+
+summary = state.summary()
+print(summary.document_count, summary.db_path)
+```
+
+The workspace stores documents, candidate payloads, and evidence pack payloads
+with deterministic primary keys. Later review, event, and snapshot workflows can
+use the same local database without requiring a service backend.
+
 ## Behavior metrics
 
 Agent Lexicon can run deterministic behavior checks against a local `queries.jsonl` dataset.
@@ -396,6 +433,7 @@ agent-lexicon check examples/customer_limits/lexicon.yaml examples/customer_limi
 agent-lexicon ingest README.md src examples/customer_limits/docs --root .
 agent-lexicon discover-candidates examples/customer_limits/docs --root examples/customer_limits
 agent-lexicon build-evidence examples/customer_limits/docs --root examples/customer_limits
+agent-lexicon workspace sync examples/customer_limits/docs --root examples/customer_limits --max-candidates 5
 ```
 
 Load the same dataset from Python:

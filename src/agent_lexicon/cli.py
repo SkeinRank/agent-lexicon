@@ -25,6 +25,7 @@ from .scout import (
     discover_scout_candidates,
     existing_surfaces_from_lexicon,
 )
+from .workspace import WorkspaceError, init_workspace, open_workspace
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -231,6 +232,109 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print one JSON evidence pack per line.",
     )
 
+    workspace_parser = subparsers.add_parser(
+        "workspace",
+        help="Manage local SQLite workspace state.",
+    )
+    workspace_subparsers = workspace_parser.add_subparsers(dest="workspace_command")
+
+    workspace_init_parser = workspace_subparsers.add_parser(
+        "init",
+        help="Create the local SQLite workspace database.",
+    )
+    workspace_init_parser.add_argument(
+        "--root",
+        default=".",
+        help="Project root where .agent-lexicon/ is stored.",
+    )
+    workspace_init_parser.add_argument(
+        "--reset",
+        action="store_true",
+        help="Recreate the workspace database if it already exists.",
+    )
+
+    workspace_status_parser = workspace_subparsers.add_parser(
+        "status",
+        help="Print local workspace table counts.",
+    )
+    workspace_status_parser.add_argument(
+        "--root",
+        default=".",
+        help="Project root where .agent-lexicon/ is stored.",
+    )
+    workspace_status_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print workspace status as JSON.",
+    )
+
+    workspace_sync_parser = workspace_subparsers.add_parser(
+        "sync",
+        help="Store local ingest, candidates, and evidence packs in SQLite.",
+    )
+    workspace_sync_parser.add_argument(
+        "paths",
+        nargs="+",
+        help="Files or directories to scan. Directories use local project defaults.",
+    )
+    workspace_sync_parser.add_argument(
+        "--root",
+        default=".",
+        help="Project root where .agent-lexicon/ is stored and relative paths are based.",
+    )
+    workspace_sync_parser.add_argument(
+        "--include",
+        action="append",
+        default=None,
+        help="Glob to include when scanning directories. Can be provided multiple times.",
+    )
+    workspace_sync_parser.add_argument(
+        "--lexicon",
+        default=None,
+        help="Optional lexicon document whose existing surfaces should be ignored.",
+    )
+    workspace_sync_parser.add_argument(
+        "--min-score",
+        type=float,
+        default=0.25,
+        help="Minimum candidate score from 0.0 to 1.0.",
+    )
+    workspace_sync_parser.add_argument(
+        "--max-candidates",
+        type=int,
+        default=20,
+        help="Maximum number of candidate evidence packs to store.",
+    )
+    workspace_sync_parser.add_argument(
+        "--context-lines",
+        type=int,
+        default=1,
+        help="Number of context lines before and after each evidence line.",
+    )
+    workspace_sync_parser.add_argument(
+        "--max-positive-snippets",
+        type=int,
+        default=3,
+        help="Maximum positive snippets per evidence pack.",
+    )
+    workspace_sync_parser.add_argument(
+        "--max-negative-snippets",
+        type=int,
+        default=3,
+        help="Maximum negative snippets per evidence pack.",
+    )
+    workspace_sync_parser.add_argument(
+        "--max-file-bytes",
+        type=int,
+        default=1_000_000,
+        help="Maximum file size to read during local ingest.",
+    )
+    workspace_sync_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print workspace status as JSON after sync.",
+    )
+
     match_parser = subparsers.add_parser(
         "match",
         help="Find known canonical terms and aliases in text.",
@@ -356,6 +460,9 @@ def main(argv: list[str] | None = None) -> int:
             as_json=args.json,
             as_jsonl=args.jsonl,
         )
+
+    if args.command == "workspace":
+        return _workspace_command(args)
 
     if args.command == "match":
         return _match_command(
@@ -674,6 +781,126 @@ def _build_evidence_command(
         if pack.negative_snippets:
             snippet = pack.negative_snippets[0]
             print(f"  - {snippet.document_path}:{snippet.start_line}-{snippet.end_line} {snippet.text.splitlines()[0]}")
+    return 0
+
+
+
+def _workspace_command(args: argparse.Namespace) -> int:
+    if args.workspace_command == "init":
+        try:
+            state = init_workspace(Path(args.root), reset=args.reset)
+        except WorkspaceError as exc:
+            print(f"Invalid workspace input: {exc}")
+            return 1
+        print(f"Workspace initialized: {state.db_path}")
+        return 0
+
+    if args.workspace_command == "status":
+        try:
+            state = open_workspace(Path(args.root), create=False)
+            summary = state.summary()
+        except WorkspaceError as exc:
+            print(f"Invalid workspace input: {exc}")
+            return 1
+        if args.json:
+            print(json.dumps(summary.to_dict(), indent=2, sort_keys=True))
+            return 0
+        print(
+            "Workspace status: "
+            f"{summary.document_count} documents, "
+            f"{summary.candidate_count} candidates, "
+            f"{summary.evidence_pack_count} evidence packs"
+        )
+        print(f"Database: {summary.db_path}")
+        return 0
+
+    if args.workspace_command == "sync":
+        return _workspace_sync_command(
+            paths=[Path(path) for path in args.paths],
+            root=Path(args.root),
+            include_globs=args.include,
+            lexicon_path=Path(args.lexicon) if args.lexicon else None,
+            min_score=args.min_score,
+            max_candidates=args.max_candidates,
+            context_lines=args.context_lines,
+            max_positive_snippets=args.max_positive_snippets,
+            max_negative_snippets=args.max_negative_snippets,
+            max_file_bytes=args.max_file_bytes,
+            as_json=args.json,
+        )
+
+    print("Workspace command required: init, status, or sync")
+    return 1
+
+
+def _workspace_sync_command(
+    *,
+    paths: list[Path],
+    root: Path,
+    include_globs: list[str] | None,
+    lexicon_path: Path | None,
+    min_score: float,
+    max_candidates: int,
+    context_lines: int,
+    max_positive_snippets: int,
+    max_negative_snippets: int,
+    max_file_bytes: int,
+    as_json: bool,
+) -> int:
+    try:
+        ingest_report = ingest_local_paths(
+            paths,
+            root=root,
+            include_globs=include_globs,
+            max_file_bytes=max_file_bytes,
+        )
+    except LocalIngestError as exc:
+        print(f"Invalid local ingest input: {exc}")
+        return 1
+
+    existing_surfaces: tuple[str, ...] = ()
+    if lexicon_path is not None:
+        try:
+            lexicon = load_lexicon(lexicon_path)
+        except AgentLexiconLoadError as exc:
+            print(f"Invalid lexicon: {exc}")
+            return 1
+        existing_surfaces = existing_surfaces_from_lexicon(lexicon)
+
+    try:
+        candidate_report = discover_scout_candidates(
+            ingest_report.documents,
+            existing_surfaces=existing_surfaces,
+            min_score=min_score,
+            max_candidates=max_candidates,
+        )
+        evidence_report = build_evidence_packs(
+            ingest_report.documents,
+            candidate_report.candidates,
+            context_lines=context_lines,
+            max_positive_snippets=max_positive_snippets,
+            max_negative_snippets=max_negative_snippets,
+        )
+        state = init_workspace(root)
+        state.store_ingest_report(ingest_report)
+        state.store_candidate_report(candidate_report)
+        state.store_evidence_report(evidence_report)
+        summary = state.summary()
+    except (ScoutCandidateError, EvidencePackError, WorkspaceError) as exc:
+        print(f"Invalid workspace input: {exc}")
+        return 1
+
+    if as_json:
+        print(json.dumps(summary.to_dict(), indent=2, sort_keys=True))
+        return 0
+
+    print(
+        "Workspace sync: "
+        f"{ingest_report.document_count} documents, "
+        f"{candidate_report.candidate_count} candidates, "
+        f"{evidence_report.pack_count} evidence packs saved"
+    )
+    print(f"Database: {summary.db_path}")
     return 0
 
 

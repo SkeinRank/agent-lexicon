@@ -55,6 +55,7 @@ dist/
 node_modules/
 
 # Local SQLite databases
+.agent-lexicon/
 *.db
 *.sqlite
 *.sqlite3

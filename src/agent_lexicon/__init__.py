@@ -79,10 +79,36 @@ from .ingest import (
     ingest_local_paths,
     read_local_document,
 )
+from .workspace import (
+    DEFAULT_DATABASE_NAME,
+    DEFAULT_WORKSPACE_DIR,
+    SCHEMA_VERSION,
+    WorkspaceError,
+    WorkspaceState,
+    WorkspaceSummary,
+    init_workspace,
+    open_workspace,
+    store_candidate_report,
+    store_evidence_report,
+    store_ingest_report,
+    workspace_path,
+)
 
 
 __all__ = [
     "__version__",
+    "DEFAULT_DATABASE_NAME",
+    "DEFAULT_WORKSPACE_DIR",
+    "SCHEMA_VERSION",
+    "WorkspaceError",
+    "WorkspaceState",
+    "WorkspaceSummary",
+    "init_workspace",
+    "open_workspace",
+    "store_candidate_report",
+    "store_evidence_report",
+    "store_ingest_report",
+    "workspace_path",
     "existing_surfaces_from_lexicon",
     "build_evidence_packs",
     "EvidencePack",
