@@ -31,6 +31,8 @@ agent-lexicon workspace status --root examples/customer_limits
 agent-lexicon review --root examples/customer_limits
 agent-lexicon workspace export-review-events --root examples/customer_limits
 agent-lexicon discover-migrations examples/customer_limits/lexicon.yaml
+agent-lexicon dictionary init --root .
+agent-lexicon dictionary validate --root .
 ```
 
 ## Core schema
@@ -524,6 +526,54 @@ print(snapshot.snapshot_id, snapshot.generated_term_count)
 Only `accepted` review decisions are promoted. Rejected, ambiguous, and
 needs-split candidates remain in the workspace review history and can still be
 exported through the review events JSONL workflow.
+
+## Dictionary-as-code layout
+
+Agent Lexicon separates local workspace state from git-tracked dictionary files.
+The `.agent-lexicon/` directory stores SQLite cache, local review decisions, and
+workspace metadata. The `lexicon/` directory is the reviewable source of truth
+that can be committed, reviewed in pull requests, validated in CI, and used by
+runtime agents.
+
+Create the standard layout:
+
+```bash
+agent-lexicon dictionary init --root .
+```
+
+The command creates:
+
+```text
+lexicon/
+  README.md
+  lexicon.yaml
+  queries.jsonl
+  proposals/
+  snapshots/
+  review-events/
+```
+
+Validate the layout before opening a pull request:
+
+```bash
+agent-lexicon dictionary validate --root .
+agent-lexicon check lexicon/lexicon.yaml lexicon/queries.jsonl
+```
+
+Python usage:
+
+```python
+from agent_lexicon import init_dictionary_layout, validate_dictionary_layout
+
+summary = init_dictionary_layout(".")
+assert summary.valid
+
+validated = validate_dictionary_layout(".")
+print(validated.layout.lexicon_path)
+```
+
+The layout command preserves existing files by default. Use `--force` only when
+you intentionally want to overwrite the generated starter files.
 
 ## Development
 

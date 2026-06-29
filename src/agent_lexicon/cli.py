@@ -7,6 +7,13 @@ import json
 from pathlib import Path
 
 from . import __version__, about
+from .dictionary import (
+    DictionaryLayoutError,
+    init_dictionary_layout,
+    inspect_dictionary_layout,
+    validate_dictionary_layout,
+    write_dictionary_manifest,
+)
 from .core import (
     AgentLexiconLoadError,
     ResolutionStatus,
@@ -271,6 +278,82 @@ def build_parser() -> argparse.ArgumentParser:
         "--jsonl",
         action="store_true",
         help="Print one migration candidate per line.",
+    )
+
+    dictionary_parser = subparsers.add_parser(
+        "dictionary",
+        help="Manage the git-tracked dictionary-as-code layout.",
+    )
+    dictionary_subparsers = dictionary_parser.add_subparsers(dest="dictionary_command")
+
+    dictionary_init_parser = dictionary_subparsers.add_parser(
+        "init",
+        help="Create a git-tracked dictionary-as-code layout.",
+    )
+    dictionary_init_parser.add_argument(
+        "--root",
+        default=".",
+        help="Project root where the dictionary layout is stored.",
+    )
+    dictionary_init_parser.add_argument(
+        "--layout-dir",
+        default="lexicon",
+        help="Dictionary layout directory relative to the project root.",
+    )
+    dictionary_init_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite generated starter files if they already exist.",
+    )
+    dictionary_init_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print layout status as JSON.",
+    )
+
+    dictionary_status_parser = dictionary_subparsers.add_parser(
+        "status",
+        help="Inspect a dictionary-as-code layout.",
+    )
+    dictionary_status_parser.add_argument(
+        "--root",
+        default=".",
+        help="Project root where the dictionary layout is stored.",
+    )
+    dictionary_status_parser.add_argument(
+        "--layout-dir",
+        default="lexicon",
+        help="Dictionary layout directory relative to the project root.",
+    )
+    dictionary_status_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print layout status as JSON.",
+    )
+
+    dictionary_validate_parser = dictionary_subparsers.add_parser(
+        "validate",
+        help="Validate a dictionary-as-code layout.",
+    )
+    dictionary_validate_parser.add_argument(
+        "--root",
+        default=".",
+        help="Project root where the dictionary layout is stored.",
+    )
+    dictionary_validate_parser.add_argument(
+        "--layout-dir",
+        default="lexicon",
+        help="Dictionary layout directory relative to the project root.",
+    )
+    dictionary_validate_parser.add_argument(
+        "--manifest",
+        default=None,
+        help="Optional JSON manifest output path for the validated layout.",
+    )
+    dictionary_validate_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print layout status as JSON.",
     )
 
     workspace_parser = subparsers.add_parser(
@@ -589,6 +672,9 @@ def main(argv: list[str] | None = None) -> int:
             as_json=args.json,
             as_jsonl=args.jsonl,
         )
+
+    if args.command == "dictionary":
+        return _dictionary_command(args)
 
     if args.command == "workspace":
         return _workspace_command(args)
@@ -970,6 +1056,77 @@ def _discover_migrations_command(
         if candidate.surfaces_to_preserve:
             print(f"  preserve aliases: {', '.join(candidate.surfaces_to_preserve)}")
     return 0
+
+
+def _dictionary_command(args: argparse.Namespace) -> int:
+    if args.dictionary_command == "init":
+        try:
+            summary = init_dictionary_layout(
+                Path(args.root),
+                layout_dir=args.layout_dir,
+                force=args.force,
+            )
+        except DictionaryLayoutError as exc:
+            print(f"Invalid dictionary layout input: {exc}")
+            return 1
+        if args.json:
+            print(json.dumps(summary.to_dict(), indent=2, sort_keys=True))
+            return 0
+        print(f"Dictionary layout initialized: {summary.layout.layout_path}")
+        _print_dictionary_summary(summary)
+        return 0
+
+    if args.dictionary_command == "status":
+        try:
+            summary = inspect_dictionary_layout(Path(args.root), layout_dir=args.layout_dir)
+        except DictionaryLayoutError as exc:
+            print(f"Invalid dictionary layout input: {exc}")
+            return 1
+        if args.json:
+            print(json.dumps(summary.to_dict(), indent=2, sort_keys=True))
+            return 0
+        _print_dictionary_summary(summary)
+        return 0 if summary.exists else 1
+
+    if args.dictionary_command == "validate":
+        try:
+            summary = validate_dictionary_layout(Path(args.root), layout_dir=args.layout_dir)
+            if args.manifest:
+                write_dictionary_manifest(summary, Path(args.manifest))
+        except DictionaryLayoutError as exc:
+            print(f"Invalid dictionary layout: {exc}")
+            return 1
+        if args.json:
+            print(json.dumps(summary.to_dict(), indent=2, sort_keys=True))
+            return 0
+        print(f"Valid dictionary layout: {summary.layout.layout_path}")
+        _print_dictionary_summary(summary)
+        if args.manifest:
+            print(f"Manifest written: {args.manifest}")
+        return 0
+
+    print("Dictionary command required: init, status, or validate")
+    return 1
+
+
+def _print_dictionary_summary(summary) -> None:
+    metadata = dict(summary.metadata)
+    print(
+        "Dictionary status: "
+        f"valid={'yes' if summary.valid else 'no'}, "
+        f"scopes={metadata.get('scope_count', 0)}, "
+        f"terms={metadata.get('term_count', 0)}, "
+        f"queries={metadata.get('query_count', 0)}, "
+        f"proposal_files={summary.proposal_file_count}, "
+        f"snapshot_files={summary.snapshot_file_count}, "
+        f"review_event_files={summary.review_event_file_count}"
+    )
+    print(f"Lexicon: {summary.layout.lexicon_path}")
+    print(f"Queries: {summary.layout.queries_path}")
+    if summary.lexicon_error:
+        print(f"Lexicon error: {summary.lexicon_error}")
+    if summary.queries_error:
+        print(f"Queries error: {summary.queries_error}")
 
 
 def _workspace_command(args: argparse.Namespace) -> int:

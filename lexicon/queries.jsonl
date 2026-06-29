@@ -1,0 +1,1 @@
+{"expected_action": "use_terms", "expected_primary_term_id": "project.example_term", "expected_status": "resolved", "expected_term_ids": ["project.example_term"], "id": "project.example_term", "scopes": ["project"], "text": "Use the example concept.", "tool_calls": []}
