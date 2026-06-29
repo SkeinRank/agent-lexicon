@@ -38,6 +38,8 @@ agent-lexicon dictionary validate --root .
 agent-lexicon dictionary diff lexicon/lexicon.yaml lexicon-next.yaml
 agent-lexicon dictionary merge lexicon-base.yaml lexicon-ours.yaml lexicon-theirs.yaml --output lexicon-merged.json
 agent-lexicon dictionary pr-check --root .
+agent-lexicon mcp tools
+agent-lexicon mcp serve --root . --lexicon lexicon/lexicon.yaml
 ```
 
 ## Core schema
@@ -830,3 +832,29 @@ The loader validates duplicate ids, JSONL structure, expected resolver statuses,
 expected resolver actions, tool guard statuses, tool guard actions, and primary
 term references before returning typed query objects.
 
+
+
+## MCP server
+
+Agent Lexicon can run a local Model Context Protocol stdio server so desktop
+agents and coding agents can use the same terminology checks as the CLI. The
+server is dependency-free, local-first, and reads the git-tracked lexicon plus
+optional `.agent-lexicon/` workspace state.
+
+```bash
+agent-lexicon mcp tools
+agent-lexicon mcp serve --root . --lexicon lexicon/lexicon.yaml
+```
+
+The local MCP server exposes these tools:
+
+- `resolve_term` — resolve text and return `resolved`, `ambiguous`, or `unknown`.
+- `check_language` — check whether text is safe for an agent to interpret directly.
+- `guard_tool_call` — block unsafe tool calls when terminology is ambiguous or mismatched.
+- `find_evidence` — return lexicon or workspace evidence for a term or surface.
+- `submit_proposal` — save a local review decision under workspace policy.
+- `get_snapshot` — return published local snapshot metadata.
+
+For local clients, point the MCP command at your repository root and lexicon file.
+Sensitive write actions use the same RBAC-lite policy layer as the workspace and
+review commands.

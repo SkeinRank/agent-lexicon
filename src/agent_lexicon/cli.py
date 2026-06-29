@@ -31,6 +31,7 @@ from .core import (
 )
 from .evals import EvalDatasetError, load_eval_queries, run_behavior_eval
 from .ingest import LocalIngestError, ingest_local_paths
+from .mcp import McpServerError, mcp_tool_definitions, run_mcp_stdio_server
 from .policy import (
     LocalPolicyError,
     LocalPolicyMode,
@@ -385,6 +386,34 @@ def build_parser() -> argparse.ArgumentParser:
         help="Explicit role override for this command.",
     )
     policy_check_parser.add_argument("--json", action="store_true", help="Print the policy decision as JSON.")
+
+    mcp_parser = subparsers.add_parser(
+        "mcp",
+        help="Run the local Model Context Protocol server.",
+    )
+    mcp_subparsers = mcp_parser.add_subparsers(dest="mcp_command")
+
+    mcp_serve_parser = mcp_subparsers.add_parser(
+        "serve",
+        help="Run a dependency-free MCP stdio server for local agents.",
+    )
+    mcp_serve_parser.add_argument(
+        "--root",
+        default=".",
+        help="Project root used for lexicon/ and .agent-lexicon/ state.",
+    )
+    mcp_serve_parser.add_argument(
+        "--lexicon",
+        default=None,
+        help="Optional lexicon file path. Defaults to lexicon/lexicon.yaml under --root.",
+    )
+    _add_local_policy_options(mcp_serve_parser)
+
+    mcp_tools_parser = mcp_subparsers.add_parser(
+        "tools",
+        help="List Agent Lexicon MCP tools as JSON.",
+    )
+    mcp_tools_parser.add_argument("--json", action="store_true", help="Print the tool list as JSON.")
 
     discover_migrations_parser = subparsers.add_parser(
         "discover-migrations",
@@ -920,6 +949,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "policy":
         return _policy_command(args)
 
+    if args.command == "mcp":
+        return _mcp_command(args)
+
     if args.command == "discover-migrations":
         return _discover_migrations_command(
             path=Path(args.path),
@@ -974,6 +1006,35 @@ def main(argv: list[str] | None = None) -> int:
 
     print(about())
     return 0
+
+
+def _mcp_command(args: argparse.Namespace) -> int:
+    if args.mcp_command == "tools":
+        tools = mcp_tool_definitions()
+        if args.json:
+            print(json.dumps({"tools": tools}, indent=2, sort_keys=True))
+        else:
+            print("Agent Lexicon MCP tools:")
+            for tool in tools:
+                print(f"- {tool['name']}: {tool['description']}")
+        return 0
+
+    if args.mcp_command == "serve":
+        try:
+            return run_mcp_stdio_server(
+                root=Path(args.root),
+                lexicon_path=Path(args.lexicon) if args.lexicon else None,
+                policy_mode=args.policy_mode,
+                actor=args.actor,
+                role=args.role,
+            )
+        except McpServerError as exc:
+            print(f"MCP server error: {exc}")
+            return 1
+
+    print("MCP command required: serve or tools")
+    return 1
+
 
 
 def _validate_command(*, path: Path, document_format: str | None) -> int:

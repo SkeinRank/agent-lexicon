@@ -177,9 +177,31 @@ from .workspace import (
 )
 from .web import ReviewInboxError, build_review_inbox_html, run_review_inbox
 
+from .mcp import (
+    DEFAULT_MCP_TOOLS,
+    MCP_PROTOCOL_VERSION,
+    McpServerConfig,
+    McpServerError,
+    call_mcp_tool,
+    handle_mcp_message,
+    mcp_tool_definitions,
+    mcp_tool_result,
+    run_mcp_stdio_server,
+)
+
 
 __all__ = [
 
+
+    "DEFAULT_MCP_TOOLS",
+    "MCP_PROTOCOL_VERSION",
+    "McpServerConfig",
+    "McpServerError",
+    "call_mcp_tool",
+    "handle_mcp_message",
+    "mcp_tool_definitions",
+    "mcp_tool_result",
+    "run_mcp_stdio_server",
     "DEFAULT_POLICY_FILENAME",
     "LocalPolicy",
     "LocalPolicyError",
