@@ -21,6 +21,10 @@ agent-lexicon match examples/customer_limits/lexicon.yaml "The customer cap and 
 agent-lexicon resolve examples/customer_limits/lexicon.yaml "increase the limit"
 agent-lexicon guard examples/customer_limits/lexicon.yaml "increase the limit" --tool api.update_rate_limit
 agent-lexicon validate-queries examples/customer_limits/queries.jsonl
+agent-lexicon check examples/customer_limits/lexicon.yaml examples/customer_limits/queries.jsonl
+agent-lexicon ingest README.md src examples/customer_limits/docs --root .
+agent-lexicon discover-candidates examples/customer_limits/docs --root examples/customer_limits
+agent-lexicon build-evidence examples/customer_limits/docs --root examples/customer_limits
 ```
 
 ## Core schema
@@ -214,6 +218,102 @@ the tool call is blocked or needs clarification. This makes it usable in local
 agent wrappers and future CI checks.
 
 
+
+## Local ingest
+
+Agent Lexicon can read local project files into deterministic text documents for
+future scout, evidence, and review workflows. Directory scans use local-project
+defaults: README files, `docs/`, `src/`, Markdown, JSON/YAML, TOML, and common
+text/code files. Large files, binary files, virtual environments, build outputs,
+and cache directories are skipped.
+
+Command line usage:
+
+```bash
+agent-lexicon ingest README.md src examples/customer_limits/docs --root .
+agent-lexicon discover-candidates examples/customer_limits/docs --root examples/customer_limits
+agent-lexicon build-evidence examples/customer_limits/docs --root examples/customer_limits
+agent-lexicon ingest examples/customer_limits/docs --root examples/customer_limits --jsonl
+```
+
+Python usage:
+
+```python
+from agent_lexicon import ingest_local_paths
+
+report = ingest_local_paths(["README.md", "src", "examples/customer_limits/docs"], root=".")
+
+for document in report.documents:
+    print(document.relative_path, document.kind.value, document.line_count)
+```
+
+The ingest report exposes `document_count`, `total_lines`, `total_size_bytes`,
+`documents`, and `skipped_paths`. Each document includes a stable SHA-256 hash,
+relative path, source kind, line count, byte size, and text content.
+
+## Candidate discovery
+
+Agent Lexicon can run a deterministic local scout pass over ingested documents.
+The scout discovers reviewable terminology candidates, assigns a score, reports
+a jargon score, and applies background penalties so common project words do not
+dominate the candidate list. This step is local-first and dependency-free.
+
+Command line usage:
+
+```bash
+agent-lexicon discover-candidates examples/customer_limits/docs --root examples/customer_limits
+agent-lexicon discover-candidates examples/customer_limits/docs --root examples/customer_limits --lexicon examples/customer_limits/lexicon.yaml --json
+```
+
+Python usage:
+
+```python
+from agent_lexicon import discover_scout_candidates, ingest_local_paths
+
+ingest_report = ingest_local_paths(["examples/customer_limits/docs"], root="examples/customer_limits")
+candidate_report = discover_scout_candidates(ingest_report.documents)
+
+for candidate in candidate_report.candidates:
+    print(candidate.surface, candidate.score, candidate.jargon_score, candidate.background_penalty)
+```
+
+Each candidate includes a surface, normalized surface, kind, score, jargon
+score, background penalty, occurrence count, document count, source occurrences,
+and a deterministic score breakdown. Existing lexicon surfaces can be filtered
+out with `existing_surfaces_from_lexicon(...)` or the CLI `--lexicon` option.
+
+## Evidence packs
+
+Evidence packs turn discovered candidates into reviewable snippets with file
+paths and line numbers. Positive snippets show exact candidate occurrences.
+Negative snippets show partial token overlap without the exact surface, which
+helps reviewers spot broad, overloaded, or weak terminology candidates.
+
+Command line usage:
+
+```bash
+agent-lexicon build-evidence examples/customer_limits/docs --root examples/customer_limits
+agent-lexicon build-evidence examples/customer_limits/docs --root examples/customer_limits --json
+agent-lexicon build-evidence examples/customer_limits/docs --root examples/customer_limits --jsonl
+```
+
+Python usage:
+
+```python
+from agent_lexicon import build_evidence_packs, discover_scout_candidates, ingest_local_paths
+
+ingest_report = ingest_local_paths(["examples/customer_limits/docs"], root="examples/customer_limits")
+candidate_report = discover_scout_candidates(ingest_report.documents)
+evidence_report = build_evidence_packs(ingest_report.documents, candidate_report.candidates)
+
+for pack in evidence_report.packs:
+    print(pack.surface, pack.positive_count, pack.negative_count)
+```
+
+Each pack includes the candidate surface, score, positive snippets, negative
+snippets, line ranges, reasons, and source metadata. This is the local evidence
+foundation for proposal review and future snapshot publishing.
+
 ## Behavior metrics
 
 Agent Lexicon can run deterministic behavior checks against a local `queries.jsonl` dataset.
@@ -292,6 +392,10 @@ Validate a dataset from the command line:
 
 ```bash
 agent-lexicon validate-queries examples/customer_limits/queries.jsonl
+agent-lexicon check examples/customer_limits/lexicon.yaml examples/customer_limits/queries.jsonl
+agent-lexicon ingest README.md src examples/customer_limits/docs --root .
+agent-lexicon discover-candidates examples/customer_limits/docs --root examples/customer_limits
+agent-lexicon build-evidence examples/customer_limits/docs --root examples/customer_limits
 ```
 
 Load the same dataset from Python:

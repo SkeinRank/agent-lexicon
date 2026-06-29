@@ -17,6 +17,14 @@ from .core import (
     resolve_text,
 )
 from .evals import EvalDatasetError, load_eval_queries, run_behavior_eval
+from .ingest import LocalIngestError, ingest_local_paths
+from .scout import (
+    EvidencePackError,
+    ScoutCandidateError,
+    build_evidence_packs,
+    discover_scout_candidates,
+    existing_surfaces_from_lexicon,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -63,6 +71,164 @@ def build_parser() -> argparse.ArgumentParser:
         "--json",
         action="store_true",
         help="Print the full eval report as JSON.",
+    )
+
+    ingest_parser = subparsers.add_parser(
+        "ingest",
+        help="Read local docs, README files, source files, and explicit local files.",
+    )
+    ingest_parser.add_argument(
+        "paths",
+        nargs="+",
+        help="Files or directories to ingest. Directories use local project defaults.",
+    )
+    ingest_parser.add_argument(
+        "--root",
+        default=None,
+        help="Root path used for relative paths in output.",
+    )
+    ingest_parser.add_argument(
+        "--include",
+        action="append",
+        default=None,
+        help="Glob to include when scanning directories. Can be provided multiple times.",
+    )
+    ingest_parser.add_argument(
+        "--max-file-bytes",
+        type=int,
+        default=1_000_000,
+        help="Maximum size of one ingested file in bytes.",
+    )
+    ingest_parser.add_argument(
+        "--jsonl",
+        action="store_true",
+        help="Print one JSON object per ingested document, including text.",
+    )
+
+    discover_candidates_parser = subparsers.add_parser(
+        "discover-candidates",
+        help="Discover terminology candidates from local docs and source files.",
+    )
+    discover_candidates_parser.add_argument(
+        "paths",
+        nargs="+",
+        help="Files or directories to scan. Directories use local project defaults.",
+    )
+    discover_candidates_parser.add_argument(
+        "--root",
+        default=None,
+        help="Root path used for relative paths in output.",
+    )
+    discover_candidates_parser.add_argument(
+        "--include",
+        action="append",
+        default=None,
+        help="Glob to include when scanning directories. Can be provided multiple times.",
+    )
+    discover_candidates_parser.add_argument(
+        "--lexicon",
+        default=None,
+        help="Optional lexicon document whose existing surfaces should be ignored.",
+    )
+    discover_candidates_parser.add_argument(
+        "--min-score",
+        type=float,
+        default=0.25,
+        help="Minimum candidate score from 0.0 to 1.0.",
+    )
+    discover_candidates_parser.add_argument(
+        "--max-candidates",
+        type=int,
+        default=20,
+        help="Maximum number of candidates to print.",
+    )
+    discover_candidates_parser.add_argument(
+        "--max-file-bytes",
+        type=int,
+        default=1_000_000,
+        help="Maximum file size to read during local ingest.",
+    )
+    discover_candidates_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the full candidate report as JSON.",
+    )
+    discover_candidates_parser.add_argument(
+        "--jsonl",
+        action="store_true",
+        help="Print one JSON candidate per line.",
+    )
+
+    build_evidence_parser = subparsers.add_parser(
+        "build-evidence",
+        help="Build line-numbered evidence packs for discovered candidates.",
+    )
+    build_evidence_parser.add_argument(
+        "paths",
+        nargs="+",
+        help="Files or directories to scan. Directories use local project defaults.",
+    )
+    build_evidence_parser.add_argument(
+        "--root",
+        default=None,
+        help="Root path used for relative paths in output.",
+    )
+    build_evidence_parser.add_argument(
+        "--include",
+        action="append",
+        default=None,
+        help="Glob to include when scanning directories. Can be provided multiple times.",
+    )
+    build_evidence_parser.add_argument(
+        "--lexicon",
+        default=None,
+        help="Optional lexicon document whose existing surfaces should be ignored.",
+    )
+    build_evidence_parser.add_argument(
+        "--min-score",
+        type=float,
+        default=0.25,
+        help="Minimum candidate score from 0.0 to 1.0.",
+    )
+    build_evidence_parser.add_argument(
+        "--max-candidates",
+        type=int,
+        default=20,
+        help="Maximum number of candidate evidence packs to build.",
+    )
+    build_evidence_parser.add_argument(
+        "--context-lines",
+        type=int,
+        default=1,
+        help="Number of context lines before and after each evidence line.",
+    )
+    build_evidence_parser.add_argument(
+        "--max-positive-snippets",
+        type=int,
+        default=3,
+        help="Maximum positive snippets per evidence pack.",
+    )
+    build_evidence_parser.add_argument(
+        "--max-negative-snippets",
+        type=int,
+        default=3,
+        help="Maximum negative snippets per evidence pack.",
+    )
+    build_evidence_parser.add_argument(
+        "--max-file-bytes",
+        type=int,
+        default=1_000_000,
+        help="Maximum file size to read during local ingest.",
+    )
+    build_evidence_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the full evidence report as JSON.",
+    )
+    build_evidence_parser.add_argument(
+        "--jsonl",
+        action="store_true",
+        help="Print one JSON evidence pack per line.",
     )
 
     match_parser = subparsers.add_parser(
@@ -151,6 +317,44 @@ def main(argv: list[str] | None = None) -> int:
             queries_path=Path(args.queries_path),
             include_deprecated=not args.exclude_deprecated,
             as_json=args.json,
+        )
+
+    if args.command == "ingest":
+        return _ingest_command(
+            paths=[Path(path) for path in args.paths],
+            root=Path(args.root) if args.root is not None else None,
+            include_globs=args.include,
+            max_file_bytes=args.max_file_bytes,
+            as_jsonl=args.jsonl,
+        )
+
+    if args.command == "discover-candidates":
+        return _discover_candidates_command(
+            paths=[Path(path) for path in args.paths],
+            root=Path(args.root) if args.root is not None else None,
+            include_globs=args.include,
+            lexicon_path=Path(args.lexicon) if args.lexicon else None,
+            min_score=args.min_score,
+            max_candidates=args.max_candidates,
+            max_file_bytes=args.max_file_bytes,
+            as_json=args.json,
+            as_jsonl=args.jsonl,
+        )
+
+    if args.command == "build-evidence":
+        return _build_evidence_command(
+            paths=[Path(path) for path in args.paths],
+            root=Path(args.root) if args.root is not None else None,
+            include_globs=args.include,
+            lexicon_path=Path(args.lexicon) if args.lexicon else None,
+            min_score=args.min_score,
+            max_candidates=args.max_candidates,
+            context_lines=args.context_lines,
+            max_positive_snippets=args.max_positive_snippets,
+            max_negative_snippets=args.max_negative_snippets,
+            max_file_bytes=args.max_file_bytes,
+            as_json=args.json,
+            as_jsonl=args.jsonl,
         )
 
     if args.command == "match":
@@ -266,6 +470,211 @@ def _print_metric(label: str, value: float | None) -> None:
         print(f"{label}: n/a")
         return
     print(f"{label}: {value * 100:.1f}%")
+
+
+def _ingest_command(
+    *,
+    paths: list[Path],
+    root: Path | None,
+    include_globs: list[str] | None,
+    max_file_bytes: int,
+    as_jsonl: bool,
+) -> int:
+    try:
+        report = ingest_local_paths(
+            paths,
+            root=root,
+            include_globs=include_globs,
+            max_file_bytes=max_file_bytes,
+        )
+    except LocalIngestError as exc:
+        print(f"Invalid local ingest input: {exc}")
+        return 1
+
+    if as_jsonl:
+        for document in report.documents:
+            print(document.to_json_line(include_text=True))
+        return 0
+
+    print(
+        "Local ingest: "
+        f"{report.document_count} documents, "
+        f"{report.total_lines} lines, "
+        f"{report.total_size_bytes} bytes"
+    )
+    for document in report.documents:
+        print(
+            f"- {document.relative_path} "
+            f"({document.kind.value}, {document.line_count} lines, {document.size_bytes} bytes)"
+        )
+    if report.skipped_paths:
+        print("Skipped paths:")
+        for skipped_path in report.skipped_paths:
+            print(f"- {skipped_path}")
+    return 0
+
+
+def _discover_candidates_command(
+    *,
+    paths: list[Path],
+    root: Path | None,
+    include_globs: list[str] | None,
+    lexicon_path: Path | None,
+    min_score: float,
+    max_candidates: int,
+    max_file_bytes: int,
+    as_json: bool,
+    as_jsonl: bool,
+) -> int:
+    if as_json and as_jsonl:
+        print("Invalid candidate discovery input: choose either --json or --jsonl")
+        return 1
+
+    try:
+        ingest_report = ingest_local_paths(
+            paths,
+            root=root,
+            include_globs=include_globs,
+            max_file_bytes=max_file_bytes,
+        )
+    except LocalIngestError as exc:
+        print(f"Invalid local ingest input: {exc}")
+        return 1
+
+    existing_surfaces: tuple[str, ...] = ()
+    if lexicon_path is not None:
+        try:
+            lexicon = load_lexicon(lexicon_path)
+        except AgentLexiconLoadError as exc:
+            print(f"Invalid lexicon: {exc}")
+            return 1
+        existing_surfaces = existing_surfaces_from_lexicon(lexicon)
+
+    try:
+        report = discover_scout_candidates(
+            ingest_report.documents,
+            existing_surfaces=existing_surfaces,
+            min_score=min_score,
+            max_candidates=max_candidates,
+        )
+    except ScoutCandidateError as exc:
+        print(f"Invalid candidate discovery input: {exc}")
+        return 1
+
+    if as_json:
+        print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+        return 0
+    if as_jsonl:
+        for candidate in report.candidates:
+            print(candidate.to_json_line())
+        return 0
+
+    print(
+        "Candidate discovery: "
+        f"{report.candidate_count} candidates from "
+        f"{report.document_count} documents"
+    )
+    for candidate in report.candidates:
+        print(
+            f"- {candidate.surface} "
+            f"({candidate.kind.value}, score={candidate.score:.3f}, "
+            f"jargon={candidate.jargon_score:.3f}, "
+            f"background_penalty={candidate.background_penalty:.3f}, "
+            f"occurrences={candidate.occurrence_count}, "
+            f"documents={candidate.document_count})"
+        )
+        if candidate.occurrences:
+            occurrence = candidate.occurrences[0]
+            print(f"  {occurrence.document_path}:{occurrence.line_number} {occurrence.line_text}")
+    return 0
+
+
+
+def _build_evidence_command(
+    *,
+    paths: list[Path],
+    root: Path | None,
+    include_globs: list[str] | None,
+    lexicon_path: Path | None,
+    min_score: float,
+    max_candidates: int,
+    context_lines: int,
+    max_positive_snippets: int,
+    max_negative_snippets: int,
+    max_file_bytes: int,
+    as_json: bool,
+    as_jsonl: bool,
+) -> int:
+    if as_json and as_jsonl:
+        print("Invalid evidence input: choose either --json or --jsonl")
+        return 1
+
+    try:
+        ingest_report = ingest_local_paths(
+            paths,
+            root=root,
+            include_globs=include_globs,
+            max_file_bytes=max_file_bytes,
+        )
+    except LocalIngestError as exc:
+        print(f"Invalid local ingest input: {exc}")
+        return 1
+
+    existing_surfaces: tuple[str, ...] = ()
+    if lexicon_path is not None:
+        try:
+            lexicon = load_lexicon(lexicon_path)
+        except AgentLexiconLoadError as exc:
+            print(f"Invalid lexicon: {exc}")
+            return 1
+        existing_surfaces = existing_surfaces_from_lexicon(lexicon)
+
+    try:
+        candidate_report = discover_scout_candidates(
+            ingest_report.documents,
+            existing_surfaces=existing_surfaces,
+            min_score=min_score,
+            max_candidates=max_candidates,
+        )
+        evidence_report = build_evidence_packs(
+            ingest_report.documents,
+            candidate_report.candidates,
+            context_lines=context_lines,
+            max_positive_snippets=max_positive_snippets,
+            max_negative_snippets=max_negative_snippets,
+        )
+    except (ScoutCandidateError, EvidencePackError) as exc:
+        print(f"Invalid evidence input: {exc}")
+        return 1
+
+    if as_json:
+        print(json.dumps(evidence_report.to_dict(), indent=2, sort_keys=True))
+        return 0
+    if as_jsonl:
+        for pack in evidence_report.packs:
+            print(pack.to_json_line())
+        return 0
+
+    print(
+        "Evidence packs: "
+        f"{evidence_report.pack_count} packs from "
+        f"{evidence_report.document_count} documents "
+        f"({evidence_report.positive_count} positive, "
+        f"{evidence_report.negative_count} negative snippets)"
+    )
+    for pack in evidence_report.packs:
+        print(
+            f"- {pack.surface} "
+            f"({pack.candidate_kind.value}, score={pack.score:.3f}, "
+            f"positive={pack.positive_count}, negative={pack.negative_count})"
+        )
+        if pack.positive_snippets:
+            snippet = pack.positive_snippets[0]
+            print(f"  + {snippet.document_path}:{snippet.start_line}-{snippet.end_line} {snippet.text.splitlines()[0]}")
+        if pack.negative_snippets:
+            snippet = pack.negative_snippets[0]
+            print(f"  - {snippet.document_path}:{snippet.start_line}-{snippet.end_line} {snippet.text.splitlines()[0]}")
+    return 0
 
 
 def _match_command(
