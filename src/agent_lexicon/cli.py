@@ -32,6 +32,11 @@ from .core import (
 from .evals import EvalDatasetError, load_eval_queries, run_behavior_eval
 from .ingest import LocalIngestError, ingest_local_paths
 from .mcp import McpServerError, mcp_tool_definitions, run_mcp_stdio_server
+from .review_agent import (
+    ReviewAgentError,
+    build_review_agent_prompt,
+    run_review_agent,
+)
 from .policy import (
     LocalPolicyError,
     LocalPolicyMode,
@@ -414,6 +419,66 @@ def build_parser() -> argparse.ArgumentParser:
         help="List Agent Lexicon MCP tools as JSON.",
     )
     mcp_tools_parser.add_argument("--json", action="store_true", help="Print the tool list as JSON.")
+
+
+    review_agent_parser = subparsers.add_parser(
+        "review-agent",
+        help="Run local proposal pre-review for workspace candidates.",
+    )
+    review_agent_subparsers = review_agent_parser.add_subparsers(dest="review_agent_command")
+
+    review_agent_prompt_parser = review_agent_subparsers.add_parser(
+        "prompt",
+        help="Build a safe data-only LLM review prompt for one candidate.",
+    )
+    review_agent_prompt_parser.add_argument(
+        "--root",
+        default=".",
+        help="Project root where .agent-lexicon/ is stored.",
+    )
+    review_agent_prompt_parser.add_argument(
+        "--surface",
+        default=None,
+        help="Normalized candidate surface. Defaults to the highest-priority unreviewed candidate.",
+    )
+    review_agent_prompt_parser.add_argument(
+        "--max-chars",
+        type=int,
+        default=16_000,
+        help="Maximum prompt length in characters.",
+    )
+    _add_local_policy_options(review_agent_prompt_parser)
+    review_agent_prompt_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print prompt payload as JSON.",
+    )
+
+    review_agent_assess_parser = review_agent_subparsers.add_parser(
+        "assess",
+        help="Produce a structured review recommendation for one candidate.",
+    )
+    review_agent_assess_parser.add_argument(
+        "--root",
+        default=".",
+        help="Project root where .agent-lexicon/ is stored.",
+    )
+    review_agent_assess_parser.add_argument(
+        "--surface",
+        default=None,
+        help="Normalized candidate surface. Defaults to the highest-priority unreviewed candidate.",
+    )
+    review_agent_assess_parser.add_argument(
+        "--llm-response",
+        default=None,
+        help="Optional path to a structured JSON LLM review response.",
+    )
+    _add_local_policy_options(review_agent_assess_parser)
+    review_agent_assess_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the review recommendation as JSON.",
+    )
 
     discover_migrations_parser = subparsers.add_parser(
         "discover-migrations",
@@ -952,6 +1017,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "mcp":
         return _mcp_command(args)
 
+    if args.command == "review-agent":
+        return _review_agent_command(args)
+
     if args.command == "discover-migrations":
         return _discover_migrations_command(
             path=Path(args.path),
@@ -1006,6 +1074,68 @@ def main(argv: list[str] | None = None) -> int:
 
     print(about())
     return 0
+
+
+
+def _review_agent_command(args: argparse.Namespace) -> int:
+    if args.review_agent_command not in {"prompt", "assess"}:
+        print("Review agent command required: prompt or assess")
+        return 1
+
+    policy_exit = _check_policy_or_print(
+        root=Path(args.root),
+        action=PolicyAction.RUN_LLM_REVIEW,
+        actor=args.actor,
+        role=args.role,
+        policy_mode=args.policy_mode,
+    )
+    if policy_exit != 0:
+        return policy_exit
+
+    try:
+        state = open_workspace(Path(args.root), create=True)
+        item = _select_review_agent_item(state, normalized_surface=args.surface)
+        if args.review_agent_command == "prompt":
+            prompt = build_review_agent_prompt(item, max_chars=args.max_chars)
+            if args.json:
+                print(json.dumps(prompt.to_dict(), indent=2, sort_keys=True))
+            else:
+                if not prompt.llm_review_allowed:
+                    print("Review prompt warning: high-risk evidence should not be sent to an LLM reviewer.")
+                print(prompt.prompt)
+            return 0 if prompt.llm_review_allowed else 2
+
+        llm_response = None
+        if args.llm_response is not None:
+            llm_response = Path(args.llm_response).read_text(encoding="utf-8")
+        decision = run_review_agent(item, llm_response=llm_response)
+        if args.json:
+            print(decision.to_json())
+        else:
+            print(f"Review agent: {decision.recommendation.value} ({decision.confidence:.2f})")
+            print(f"Surface: {decision.surface}")
+            print(f"Canonical name: {decision.canonical_name or '-'}")
+            print(f"Workspace decision: {decision.review_decision_status}")
+            print(f"LLM review allowed: {'yes' if decision.llm_review_allowed else 'no'}")
+            if decision.risk_flags:
+                print(f"Risk flags: {', '.join(decision.risk_flags)}")
+            print(f"Note: {decision.reviewer_note}")
+        return 0 if decision.llm_review_allowed else 2
+    except (WorkspaceError, ReviewAgentError, OSError) as exc:
+        print(f"Review agent error: {exc}")
+        return 1
+
+
+def _select_review_agent_item(state: object, *, normalized_surface: str | None) -> object:
+    if normalized_surface:
+        item = state.get_review_item(normalized_surface)
+        if item is None:
+            raise ReviewAgentError(f"workspace candidate not found: {normalized_surface}")
+        return item
+    items = state.list_review_items(limit=1)
+    if not items:
+        raise ReviewAgentError("workspace has no candidates; run workspace sync first")
+    return items[0]
 
 
 def _mcp_command(args: argparse.Namespace) -> int:

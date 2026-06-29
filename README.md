@@ -38,6 +38,8 @@ agent-lexicon dictionary validate --root .
 agent-lexicon dictionary diff lexicon/lexicon.yaml lexicon-next.yaml
 agent-lexicon dictionary merge lexicon-base.yaml lexicon-ours.yaml lexicon-theirs.yaml --output lexicon-merged.json
 agent-lexicon dictionary pr-check --root .
+agent-lexicon review-agent assess --root examples/customer_limits
+agent-lexicon review-agent prompt --root examples/customer_limits
 agent-lexicon mcp tools
 agent-lexicon mcp serve --root . --lexicon lexicon/lexicon.yaml
 ```
@@ -833,6 +835,42 @@ expected resolver actions, tool guard statuses, tool guard actions, and primary
 term references before returning typed query objects.
 
 
+
+
+## Review Agent
+
+Agent Lexicon can produce a local pre-review recommendation for one workspace
+candidate. The review agent prepares a safe data-only prompt for optional LLM
+review, validates structured LLM responses, and falls back to a deterministic
+local assessment when no model response is provided.
+
+```bash
+agent-lexicon workspace sync examples/customer_limits/docs --root examples/customer_limits --max-candidates 5
+agent-lexicon review-agent prompt --root examples/customer_limits --surface billing.update_credit_limit
+agent-lexicon review-agent assess --root examples/customer_limits --surface billing.update_credit_limit
+agent-lexicon review-agent assess --root examples/customer_limits --surface billing.update_credit_limit --json
+```
+
+The prompt command marks project evidence as untrusted data and uses the prompt
+safety layer before content is sent to an external LLM. The assess command
+returns one of `accept`, `reject`, `needs_split`, or `needs_more_evidence` and
+includes the matching workspace review status for downstream tools.
+
+Python usage:
+
+```python
+from agent_lexicon import open_workspace, run_review_agent
+
+state = open_workspace("examples/customer_limits")
+item = state.get_review_item("billing.update_credit_limit")
+assert item is not None
+decision = run_review_agent(item)
+print(decision.recommendation.value)
+```
+
+Structured model responses can be passed through `run_review_agent(...,
+llm_response=...)` or the CLI `--llm-response` option. High-risk prompt-safety
+findings block LLM review and return a safer `needs_more_evidence` decision.
 
 ## MCP server
 

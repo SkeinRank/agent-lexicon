@@ -105,6 +105,18 @@ from .policy import (
     policy_path,
 )
 
+from .review_agent import (
+    ReviewAgentDecision,
+    ReviewAgentError,
+    ReviewAgentPrompt,
+    ReviewAgentRecommendation,
+    ReviewEvidenceSummary,
+    build_review_agent_prompt,
+    parse_review_agent_response,
+    review_workspace_item,
+    run_review_agent,
+)
+
 from .safety import (
     PromptInjectionRisk,
     PromptSafetyAction,
@@ -193,6 +205,15 @@ from .mcp import (
 __all__ = [
 
 
+    "ReviewAgentDecision",
+    "ReviewAgentError",
+    "ReviewAgentPrompt",
+    "ReviewAgentRecommendation",
+    "ReviewEvidenceSummary",
+    "build_review_agent_prompt",
+    "parse_review_agent_response",
+    "review_workspace_item",
+    "run_review_agent",
     "DEFAULT_MCP_TOOLS",
     "MCP_PROTOCOL_VERSION",
     "McpServerConfig",
