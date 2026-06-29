@@ -40,6 +40,7 @@ agent-lexicon dictionary merge lexicon-base.yaml lexicon-ours.yaml lexicon-their
 agent-lexicon dictionary pr-check --root .
 agent-lexicon review-agent assess --root examples/customer_limits
 agent-lexicon review-agent prompt --root examples/customer_limits
+agent-lexicon review-agent dataset --root examples/customer_limits
 agent-lexicon mcp tools
 agent-lexicon mcp serve --root . --lexicon lexicon/lexicon.yaml
 ```
@@ -871,6 +872,40 @@ print(decision.recommendation.value)
 Structured model responses can be passed through `run_review_agent(...,
 llm_response=...)` or the CLI `--llm-response` option. High-risk prompt-safety
 findings block LLM review and return a safer `needs_more_evidence` decision.
+
+
+## Review dataset quality loop
+
+Local review decisions can be exported as quality-labeled JSONL examples for
+future evals, regression tests, and optional model improvement workflows. The
+dataset export keeps human decisions separate from Review Agent suggestions so
+the examples remain auditable.
+
+```bash
+agent-lexicon review-agent dataset --root examples/customer_limits
+agent-lexicon review-agent dataset --root examples/customer_limits --json
+agent-lexicon review-agent dataset --root examples/customer_limits --quality usable --output review-dataset.jsonl
+agent-lexicon review-agent dataset --root examples/customer_limits --include-review-agent --json
+```
+
+Each exported row includes the candidate snapshot, evidence snapshot, human
+decision, reviewer note, quality label, quality flags, and optional Review Agent
+recommendation. Quality labels are `usable`, `incomplete`, `conflicting`,
+`unsafe`, and `low_signal`.
+
+Python usage:
+
+```python
+from agent_lexicon import build_review_dataset, open_workspace
+
+state = open_workspace("examples/customer_limits")
+report = build_review_dataset(state, include_review_agent=True)
+print(report.usable_count)
+```
+
+This layer is intentionally local and dependency-free. It prepares portable
+examples that can later be evaluated, filtered, or imported into a larger
+governance system without sending private evidence to external services.
 
 ## MCP server
 

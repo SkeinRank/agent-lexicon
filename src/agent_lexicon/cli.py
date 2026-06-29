@@ -34,7 +34,11 @@ from .ingest import LocalIngestError, ingest_local_paths
 from .mcp import McpServerError, mcp_tool_definitions, run_mcp_stdio_server
 from .review_agent import (
     ReviewAgentError,
+    ReviewDatasetError,
+    ReviewDatasetQuality,
     build_review_agent_prompt,
+    build_review_dataset,
+    export_review_dataset_jsonl,
     run_review_agent,
 )
 from .policy import (
@@ -478,6 +482,44 @@ def build_parser() -> argparse.ArgumentParser:
         "--json",
         action="store_true",
         help="Print the review recommendation as JSON.",
+    )
+
+    review_agent_dataset_parser = review_agent_subparsers.add_parser(
+        "dataset",
+        help="Export review-quality dataset examples from local review events.",
+    )
+    review_agent_dataset_parser.add_argument(
+        "--root",
+        default=".",
+        help="Project root where .agent-lexicon/ is stored.",
+    )
+    review_agent_dataset_parser.add_argument(
+        "--output",
+        default=None,
+        help="Optional JSONL output path. If omitted, JSONL is printed to stdout unless --json is used.",
+    )
+    review_agent_dataset_parser.add_argument(
+        "--quality",
+        choices=tuple(quality.value for quality in ReviewDatasetQuality),
+        default=None,
+        help="Export only examples with a specific quality label.",
+    )
+    review_agent_dataset_parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Maximum number of review events to read.",
+    )
+    review_agent_dataset_parser.add_argument(
+        "--include-review-agent",
+        action="store_true",
+        help="Include deterministic Review Agent suggestions next to human decisions.",
+    )
+    _add_local_policy_options(review_agent_dataset_parser)
+    review_agent_dataset_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print dataset report metadata and examples as JSON.",
     )
 
     discover_migrations_parser = subparsers.add_parser(
@@ -1078,9 +1120,12 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _review_agent_command(args: argparse.Namespace) -> int:
-    if args.review_agent_command not in {"prompt", "assess"}:
-        print("Review agent command required: prompt or assess")
+    if args.review_agent_command not in {"prompt", "assess", "dataset"}:
+        print("Review agent command required: prompt, assess, or dataset")
         return 1
+
+    if args.review_agent_command == "dataset":
+        return _review_agent_dataset_command(args)
 
     policy_exit = _check_policy_or_print(
         root=Path(args.root),
@@ -1123,6 +1168,62 @@ def _review_agent_command(args: argparse.Namespace) -> int:
         return 0 if decision.llm_review_allowed else 2
     except (WorkspaceError, ReviewAgentError, OSError) as exc:
         print(f"Review agent error: {exc}")
+        return 1
+
+
+def _review_agent_dataset_command(args: argparse.Namespace) -> int:
+    policy_exit = _check_policy_or_print(
+        root=Path(args.root),
+        action=PolicyAction.EXPORT_REVIEW_EVENTS,
+        actor=args.actor,
+        role=args.role,
+        policy_mode=args.policy_mode,
+    )
+    if policy_exit != 0:
+        return policy_exit
+    if args.include_review_agent:
+        llm_policy_exit = _check_policy_or_print(
+            root=Path(args.root),
+            action=PolicyAction.RUN_LLM_REVIEW,
+            actor=args.actor,
+            role=args.role,
+            policy_mode=args.policy_mode,
+        )
+        if llm_policy_exit != 0:
+            return llm_policy_exit
+
+    try:
+        state = open_workspace(Path(args.root), create=True)
+        if args.json:
+            report = build_review_dataset(
+                state,
+                include_review_agent=args.include_review_agent,
+                quality=args.quality,
+                limit=args.limit,
+            )
+            print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+            return 0
+
+        content = export_review_dataset_jsonl(
+            state,
+            output_path=Path(args.output) if args.output else None,
+            include_review_agent=args.include_review_agent,
+            quality=args.quality,
+            limit=args.limit,
+        )
+        if args.output:
+            report = build_review_dataset(
+                state,
+                include_review_agent=args.include_review_agent,
+                quality=args.quality,
+                limit=args.limit,
+            )
+            print(f"Review dataset exported: {report.example_count} examples -> {args.output}")
+        else:
+            print(content, end="")
+        return 0
+    except (WorkspaceError, ReviewDatasetError, ReviewAgentError, OSError) as exc:
+        print(f"Review dataset error: {exc}")
         return 1
 
 
