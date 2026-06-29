@@ -25,6 +25,12 @@ agent-lexicon check examples/customer_limits/lexicon.yaml examples/customer_limi
 agent-lexicon ingest README.md src examples/customer_limits/docs --root .
 agent-lexicon discover-candidates examples/customer_limits/docs --root examples/customer_limits
 agent-lexicon build-evidence examples/customer_limits/docs --root examples/customer_limits
+agent-lexicon workspace init --root examples/customer_limits
+agent-lexicon workspace sync examples/customer_limits/docs --root examples/customer_limits --max-candidates 5
+agent-lexicon workspace status --root examples/customer_limits
+agent-lexicon review --root examples/customer_limits
+agent-lexicon workspace export-review-events --root examples/customer_limits
+agent-lexicon discover-migrations examples/customer_limits/lexicon.yaml
 ```
 
 ## Core schema
@@ -314,6 +320,148 @@ Each pack includes the candidate surface, score, positive snippets, negative
 snippets, line ranges, reasons, and source metadata. This is the local evidence
 foundation for proposal review and future snapshot publishing.
 
+## SQLite workspace state
+
+Agent Lexicon can keep local ingest, scout candidates, and evidence packs in a
+SQLite workspace under `.agent-lexicon/agent_lexicon.db`. The workspace is a
+local cache for review and snapshot workflows. It is safe to delete and rebuild
+from project files; team source of truth remains lexicon files, review exports,
+and published snapshots.
+
+Command line usage:
+
+```bash
+agent-lexicon workspace init --root examples/customer_limits
+agent-lexicon workspace sync examples/customer_limits/docs --root examples/customer_limits --max-candidates 5
+agent-lexicon workspace status --root examples/customer_limits
+agent-lexicon workspace status --root examples/customer_limits --json
+agent-lexicon workspace export-review-events --root examples/customer_limits
+agent-lexicon workspace export-review-events --root examples/customer_limits --output review-events.jsonl
+```
+
+Python usage:
+
+```python
+from agent_lexicon import init_workspace, ingest_local_paths
+
+state = init_workspace("examples/customer_limits")
+ingest_report = ingest_local_paths(["examples/customer_limits/docs"], root="examples/customer_limits")
+state.store_ingest_report(ingest_report)
+
+summary = state.summary()
+print(summary.document_count, summary.db_path)
+```
+
+The workspace stores documents, candidate payloads, evidence pack payloads,
+local review decisions, and append-only review events. The database is designed
+for local review workflows without requiring a service backend.
+
+## Local web proposal inbox
+
+The local proposal inbox turns workspace candidates and evidence packs into a
+small browser-based review queue. It runs only on localhost by default and does
+not require a frontend build, a database server, or a hosted service.
+
+Start by syncing a workspace, then open the inbox:
+
+```bash
+agent-lexicon workspace sync examples/customer_limits/docs --root examples/customer_limits --max-candidates 5
+agent-lexicon review --root examples/customer_limits
+```
+
+The default URL is:
+
+```text
+http://127.0.0.1:8765
+```
+
+The inbox shows each candidate surface, score, jargon signal, background
+penalty, positive evidence, and negative evidence. Reviewer decisions are saved
+back to the local SQLite workspace as `accepted`, `rejected`, `ambiguous`, or
+`needs_split`. The interface is intentionally minimal: one candidate list, one
+evidence card, and one decision area.
+
+For terminal-only environments, keep the server from opening a browser:
+
+```bash
+agent-lexicon review --root examples/customer_limits --no-browser
+```
+
+## Review events
+
+Every local review decision is also stored as an append-only event. This keeps
+the current decision state easy to query while preserving the review trail for
+later proposal exports, snapshot publishing, and review dataset analysis. Events
+include the decision, reviewer note, timestamp, candidate snapshot, and evidence
+snapshot.
+
+Command line usage:
+
+```bash
+agent-lexicon workspace export-review-events --root examples/customer_limits
+agent-lexicon workspace export-review-events --root examples/customer_limits --decision accepted
+agent-lexicon workspace export-review-events --root examples/customer_limits --output review-events.jsonl
+```
+
+Python usage:
+
+```python
+from agent_lexicon import export_review_events_jsonl, init_workspace
+
+state = init_workspace("examples/customer_limits")
+jsonl = export_review_events_jsonl(state)
+```
+
+The local web inbox also exposes the same export at `/review-events.jsonl` while
+the server is running.
+
+## Canonical migrations
+
+Deprecated terms can declare a replacement canonical term through metadata. This
+lets teams keep the old term visible for migration while directing agents and
+reviewers toward the active canonical term. Agent Lexicon can also suggest a
+conservative migration candidate from surface similarity when no explicit
+replacement is declared.
+
+Lexicon example:
+
+```yaml
+terms:
+  - id: billing.credit_limit
+    canonical: credit limit
+  - id: billing.customer_cap
+    canonical: customer cap
+    deprecated: true
+    metadata:
+      replacement_term_id: billing.credit_limit
+```
+
+Command line usage:
+
+```bash
+agent-lexicon discover-migrations examples/customer_limits/lexicon.yaml
+agent-lexicon discover-migrations examples/customer_limits/lexicon.yaml --json
+agent-lexicon discover-migrations examples/customer_limits/lexicon.yaml --jsonl
+```
+
+Python usage:
+
+```python
+from agent_lexicon import discover_canonical_migration_candidates, load_lexicon
+
+lexicon = load_lexicon("examples/customer_limits/lexicon.yaml")
+report = discover_canonical_migration_candidates(lexicon)
+
+for candidate in report.candidates:
+    print(candidate.deprecated_term_id, "->", candidate.replacement_term_id)
+```
+
+Each migration candidate includes the deprecated term, replacement term,
+confidence, risk, rationale, surfaces to preserve as aliases, and a
+`canonical_migration` proposal representation. Deprecated surfaces are ignored
+by collision validation so a replacement term can safely carry old wording as an
+alias after review.
+
 ## Behavior metrics
 
 Agent Lexicon can run deterministic behavior checks against a local `queries.jsonl` dataset.
@@ -341,6 +489,41 @@ For automation and dashboards, the same report can be emitted as JSON:
 ```bash
 agent-lexicon check examples/customer_limits/lexicon.yaml examples/customer_limits/queries.jsonl --json
 ```
+
+## Published local snapshots
+
+Accepted local review decisions can be promoted into a lexicon-compatible JSON
+snapshot. The snapshot can be validated and loaded by the same runtime APIs used
+for normal lexicon documents. This keeps the local review workflow simple: scout
+finds candidates, reviewers accept the terms they trust, and `publish-snapshot`
+writes a deterministic artifact for agents and CI.
+
+Command line usage after accepting candidates in the local review inbox:
+
+```bash
+agent-lexicon workspace publish-snapshot --root examples/customer_limits
+agent-lexicon workspace publish-snapshot --root examples/customer_limits --output examples/customer_limits/snapshot.json
+agent-lexicon workspace publish-snapshot --root examples/customer_limits --lexicon examples/customer_limits/lexicon.yaml --json
+agent-lexicon validate examples/customer_limits/snapshot.json
+```
+
+Python usage:
+
+```python
+from agent_lexicon import open_workspace, publish_local_snapshot
+
+state = open_workspace("examples/customer_limits")
+snapshot = publish_local_snapshot(
+    state,
+    output_path="examples/customer_limits/snapshot.json",
+)
+
+print(snapshot.snapshot_id, snapshot.generated_term_count)
+```
+
+Only `accepted` review decisions are promoted. Rejected, ambiguous, and
+needs-split candidates remain in the workspace review history and can still be
+exported through the review events JSONL workflow.
 
 ## Development
 
@@ -396,6 +579,7 @@ agent-lexicon check examples/customer_limits/lexicon.yaml examples/customer_limi
 agent-lexicon ingest README.md src examples/customer_limits/docs --root .
 agent-lexicon discover-candidates examples/customer_limits/docs --root examples/customer_limits
 agent-lexicon build-evidence examples/customer_limits/docs --root examples/customer_limits
+agent-lexicon workspace sync examples/customer_limits/docs --root examples/customer_limits --max-candidates 5
 ```
 
 Load the same dataset from Python:

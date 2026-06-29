@@ -53,6 +53,9 @@ from .evals import (
 
 from .scout import (
     CandidateSurfaceKind,
+    CanonicalMigrationCandidate,
+    CanonicalMigrationError,
+    CanonicalMigrationReport,
     EvidencePack,
     EvidencePackError,
     EvidencePackReport,
@@ -63,6 +66,7 @@ from .scout import (
     ScoutCandidateOccurrence,
     ScoutCandidateReport,
     build_evidence_packs,
+    discover_canonical_migration_candidates,
     discover_scout_candidates,
     existing_surfaces_from_lexicon,
 )
@@ -79,10 +83,70 @@ from .ingest import (
     ingest_local_paths,
     read_local_document,
 )
+from .workspace import (
+    DEFAULT_DATABASE_NAME,
+    DEFAULT_WORKSPACE_DIR,
+    SCHEMA_VERSION,
+    PublishedSnapshot,
+    ReviewDecisionStatus,
+    ReviewEventType,
+    SnapshotPublishError,
+    WorkspaceError,
+    WorkspaceReviewDecision,
+    WorkspaceReviewEvent,
+    WorkspaceReviewItem,
+    WorkspaceSnapshotRecord,
+    WorkspaceState,
+    WorkspaceSummary,
+    export_review_events_jsonl,
+    init_workspace,
+    list_review_events,
+    list_snapshots,
+    open_workspace,
+    publish_local_snapshot,
+    save_review_decision,
+    store_candidate_report,
+    store_evidence_report,
+    store_ingest_report,
+    workspace_path,
+)
+from .web import ReviewInboxError, build_review_inbox_html, run_review_inbox
 
 
 __all__ = [
     "__version__",
+    "DEFAULT_DATABASE_NAME",
+    "DEFAULT_WORKSPACE_DIR",
+    "SCHEMA_VERSION",
+    "PublishedSnapshot",
+    "ReviewDecisionStatus",
+    "ReviewEventType",
+    "SnapshotPublishError",
+    "ReviewInboxError",
+    "WorkspaceError",
+    "WorkspaceReviewDecision",
+    "WorkspaceReviewEvent",
+    "WorkspaceReviewItem",
+    "WorkspaceSnapshotRecord",
+    "WorkspaceState",
+    "WorkspaceSummary",
+    "export_review_events_jsonl",
+    "init_workspace",
+    "list_review_events",
+    "list_snapshots",
+    "open_workspace",
+    "publish_local_snapshot",
+    "save_review_decision",
+    "build_review_inbox_html",
+    "run_review_inbox",
+    "store_candidate_report",
+    "store_evidence_report",
+    "store_ingest_report",
+    "workspace_path",
+    "CanonicalMigrationCandidate",
+    "CanonicalMigrationError",
+    "CanonicalMigrationReport",
+    "discover_canonical_migration_candidates",
     "existing_surfaces_from_lexicon",
     "build_evidence_packs",
     "EvidencePack",
@@ -154,7 +218,7 @@ __all__ = [
     "resolve_text",
 ]
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 
 def about() -> str:

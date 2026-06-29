@@ -19,11 +19,22 @@ from .core import (
 from .evals import EvalDatasetError, load_eval_queries, run_behavior_eval
 from .ingest import LocalIngestError, ingest_local_paths
 from .scout import (
+    CanonicalMigrationError,
     EvidencePackError,
     ScoutCandidateError,
     build_evidence_packs,
+    discover_canonical_migration_candidates,
     discover_scout_candidates,
     existing_surfaces_from_lexicon,
+)
+from .web import ReviewInboxError, run_review_inbox
+from .workspace import (
+    ReviewDecisionStatus,
+    SnapshotPublishError,
+    WorkspaceError,
+    init_workspace,
+    open_workspace,
+    publish_local_snapshot,
 )
 
 
@@ -231,6 +242,219 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print one JSON evidence pack per line.",
     )
 
+    discover_migrations_parser = subparsers.add_parser(
+        "discover-migrations",
+        help="Discover canonical migration candidates from deprecated terms.",
+    )
+    discover_migrations_parser.add_argument(
+        "path",
+        help="Path to a lexicon .json, .yaml, or .yml file.",
+    )
+    discover_migrations_parser.add_argument(
+        "--min-confidence",
+        type=float,
+        default=0.35,
+        help="Minimum migration confidence from 0.0 to 1.0.",
+    )
+    discover_migrations_parser.add_argument(
+        "--max-candidates",
+        type=int,
+        default=20,
+        help="Maximum number of migration candidates to print.",
+    )
+    discover_migrations_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the full migration report as JSON.",
+    )
+    discover_migrations_parser.add_argument(
+        "--jsonl",
+        action="store_true",
+        help="Print one migration candidate per line.",
+    )
+
+    workspace_parser = subparsers.add_parser(
+        "workspace",
+        help="Manage local SQLite workspace state.",
+    )
+    workspace_subparsers = workspace_parser.add_subparsers(dest="workspace_command")
+
+    workspace_init_parser = workspace_subparsers.add_parser(
+        "init",
+        help="Create the local SQLite workspace database.",
+    )
+    workspace_init_parser.add_argument(
+        "--root",
+        default=".",
+        help="Project root where .agent-lexicon/ is stored.",
+    )
+    workspace_init_parser.add_argument(
+        "--reset",
+        action="store_true",
+        help="Recreate the workspace database if it already exists.",
+    )
+
+    workspace_status_parser = workspace_subparsers.add_parser(
+        "status",
+        help="Print local workspace table counts.",
+    )
+    workspace_status_parser.add_argument(
+        "--root",
+        default=".",
+        help="Project root where .agent-lexicon/ is stored.",
+    )
+    workspace_status_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print workspace status as JSON.",
+    )
+
+    workspace_sync_parser = workspace_subparsers.add_parser(
+        "sync",
+        help="Store local ingest, candidates, and evidence packs in SQLite.",
+    )
+    workspace_sync_parser.add_argument(
+        "paths",
+        nargs="+",
+        help="Files or directories to scan. Directories use local project defaults.",
+    )
+    workspace_sync_parser.add_argument(
+        "--root",
+        default=".",
+        help="Project root where .agent-lexicon/ is stored and relative paths are based.",
+    )
+    workspace_sync_parser.add_argument(
+        "--include",
+        action="append",
+        default=None,
+        help="Glob to include when scanning directories. Can be provided multiple times.",
+    )
+    workspace_sync_parser.add_argument(
+        "--lexicon",
+        default=None,
+        help="Optional lexicon document whose existing surfaces should be ignored.",
+    )
+    workspace_sync_parser.add_argument(
+        "--min-score",
+        type=float,
+        default=0.25,
+        help="Minimum candidate score from 0.0 to 1.0.",
+    )
+    workspace_sync_parser.add_argument(
+        "--max-candidates",
+        type=int,
+        default=20,
+        help="Maximum number of candidate evidence packs to store.",
+    )
+    workspace_sync_parser.add_argument(
+        "--context-lines",
+        type=int,
+        default=1,
+        help="Number of context lines before and after each evidence line.",
+    )
+    workspace_sync_parser.add_argument(
+        "--max-positive-snippets",
+        type=int,
+        default=3,
+        help="Maximum positive snippets per evidence pack.",
+    )
+    workspace_sync_parser.add_argument(
+        "--max-negative-snippets",
+        type=int,
+        default=3,
+        help="Maximum negative snippets per evidence pack.",
+    )
+    workspace_sync_parser.add_argument(
+        "--max-file-bytes",
+        type=int,
+        default=1_000_000,
+        help="Maximum file size to read during local ingest.",
+    )
+    workspace_sync_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print workspace status as JSON after sync.",
+    )
+
+    workspace_export_events_parser = workspace_subparsers.add_parser(
+        "export-review-events",
+        help="Export local review events as JSONL.",
+    )
+    workspace_export_events_parser.add_argument(
+        "--root",
+        default=".",
+        help="Project root where .agent-lexicon/ is stored.",
+    )
+    workspace_export_events_parser.add_argument(
+        "--output",
+        default=None,
+        help="Optional output path. If omitted, JSONL is printed to stdout.",
+    )
+    workspace_export_events_parser.add_argument(
+        "--decision",
+        choices=tuple(status.value for status in ReviewDecisionStatus),
+        default=None,
+        help="Export only events with a specific review decision.",
+    )
+
+    workspace_publish_snapshot_parser = workspace_subparsers.add_parser(
+        "publish-snapshot",
+        help="Publish accepted local review decisions to a lexicon snapshot.",
+    )
+    workspace_publish_snapshot_parser.add_argument(
+        "--root",
+        default=".",
+        help="Project root where .agent-lexicon/ is stored.",
+    )
+    workspace_publish_snapshot_parser.add_argument(
+        "--lexicon",
+        default=None,
+        help="Optional base lexicon to include before accepted local terms.",
+    )
+    workspace_publish_snapshot_parser.add_argument(
+        "--output",
+        default=None,
+        help="Output snapshot path. Defaults to .agent-lexicon/snapshots/<snapshot-id>.json.",
+    )
+    workspace_publish_snapshot_parser.add_argument(
+        "--snapshot-id",
+        default=None,
+        help="Optional stable snapshot id. If omitted, one is generated.",
+    )
+    workspace_publish_snapshot_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print snapshot publish summary as JSON.",
+    )
+
+
+    review_parser = subparsers.add_parser(
+        "review",
+        help="Open the local web proposal inbox for workspace candidates.",
+        description="Open the local web proposal inbox for workspace candidates.",
+    )
+    review_parser.add_argument(
+        "--root",
+        default=".",
+        help="Project root where .agent-lexicon/ is stored.",
+    )
+    review_parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Host interface for the local inbox.",
+    )
+    review_parser.add_argument(
+        "--port",
+        type=int,
+        default=8765,
+        help="Port for the local inbox.",
+    )
+    review_parser.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="Do not open the inbox URL in a browser automatically.",
+    )
+
     match_parser = subparsers.add_parser(
         "match",
         help="Find known canonical terms and aliases in text.",
@@ -355,6 +579,26 @@ def main(argv: list[str] | None = None) -> int:
             max_file_bytes=args.max_file_bytes,
             as_json=args.json,
             as_jsonl=args.jsonl,
+        )
+
+    if args.command == "discover-migrations":
+        return _discover_migrations_command(
+            path=Path(args.path),
+            min_confidence=args.min_confidence,
+            max_candidates=args.max_candidates,
+            as_json=args.json,
+            as_jsonl=args.jsonl,
+        )
+
+    if args.command == "workspace":
+        return _workspace_command(args)
+
+    if args.command == "review":
+        return _review_command(
+            root=Path(args.root),
+            host=args.host,
+            port=args.port,
+            open_browser=not args.no_browser,
         )
 
     if args.command == "match":
@@ -674,6 +918,278 @@ def _build_evidence_command(
         if pack.negative_snippets:
             snippet = pack.negative_snippets[0]
             print(f"  - {snippet.document_path}:{snippet.start_line}-{snippet.end_line} {snippet.text.splitlines()[0]}")
+    return 0
+
+
+
+def _discover_migrations_command(
+    *,
+    path: Path,
+    min_confidence: float,
+    max_candidates: int,
+    as_json: bool,
+    as_jsonl: bool,
+) -> int:
+    if as_json and as_jsonl:
+        print("Invalid migration input: choose either --json or --jsonl")
+        return 1
+    try:
+        lexicon = load_lexicon(path)
+        report = discover_canonical_migration_candidates(
+            lexicon,
+            min_confidence=min_confidence,
+            max_candidates=max_candidates,
+        )
+    except AgentLexiconLoadError as exc:
+        print(f"Invalid lexicon: {exc}")
+        return 1
+    except CanonicalMigrationError as exc:
+        print(f"Invalid migration input: {exc}")
+        return 1
+
+    if as_json:
+        print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+        return 0
+    if as_jsonl:
+        for candidate in report.candidates:
+            print(candidate.to_json_line())
+        return 0
+
+    print(
+        "Migration candidates: "
+        f"{report.candidate_count} candidates from "
+        f"{report.deprecated_term_count} deprecated terms "
+        f"and {report.active_term_count} active terms"
+    )
+    for candidate in report.candidates:
+        print(
+            f"- {candidate.deprecated_term_id} -> {candidate.replacement_term_id} "
+            f"confidence={candidate.confidence:.3f} risk={candidate.risk.value}"
+        )
+        print(f"  {candidate.rationale}")
+        if candidate.surfaces_to_preserve:
+            print(f"  preserve aliases: {', '.join(candidate.surfaces_to_preserve)}")
+    return 0
+
+
+def _workspace_command(args: argparse.Namespace) -> int:
+    if args.workspace_command == "init":
+        try:
+            state = init_workspace(Path(args.root), reset=args.reset)
+        except WorkspaceError as exc:
+            print(f"Invalid workspace input: {exc}")
+            return 1
+        print(f"Workspace initialized: {state.db_path}")
+        return 0
+
+    if args.workspace_command == "status":
+        try:
+            state = open_workspace(Path(args.root), create=False)
+            summary = state.summary()
+        except WorkspaceError as exc:
+            print(f"Invalid workspace input: {exc}")
+            return 1
+        if args.json:
+            print(json.dumps(summary.to_dict(), indent=2, sort_keys=True))
+            return 0
+        print(
+            "Workspace status: "
+            f"{summary.document_count} documents, "
+            f"{summary.candidate_count} candidates, "
+            f"{summary.evidence_pack_count} evidence packs, "
+            f"{summary.review_decision_count} review decisions, "
+            f"{summary.review_event_count} review events, "
+            f"{summary.snapshot_count} snapshots"
+        )
+        print(f"Database: {summary.db_path}")
+        return 0
+
+    if args.workspace_command == "sync":
+        return _workspace_sync_command(
+            paths=[Path(path) for path in args.paths],
+            root=Path(args.root),
+            include_globs=args.include,
+            lexicon_path=Path(args.lexicon) if args.lexicon else None,
+            min_score=args.min_score,
+            max_candidates=args.max_candidates,
+            context_lines=args.context_lines,
+            max_positive_snippets=args.max_positive_snippets,
+            max_negative_snippets=args.max_negative_snippets,
+            max_file_bytes=args.max_file_bytes,
+            as_json=args.json,
+        )
+
+    if args.workspace_command == "export-review-events":
+        return _workspace_export_review_events_command(
+            root=Path(args.root),
+            output_path=Path(args.output) if args.output else None,
+            decision=args.decision,
+        )
+
+    if args.workspace_command == "publish-snapshot":
+        return _workspace_publish_snapshot_command(
+            root=Path(args.root),
+            lexicon_path=Path(args.lexicon) if args.lexicon else None,
+            output_path=Path(args.output) if args.output else None,
+            snapshot_id=args.snapshot_id,
+            as_json=args.json,
+        )
+
+    print("Workspace command required: init, status, sync, export-review-events, or publish-snapshot")
+    return 1
+
+
+def _workspace_sync_command(
+    *,
+    paths: list[Path],
+    root: Path,
+    include_globs: list[str] | None,
+    lexicon_path: Path | None,
+    min_score: float,
+    max_candidates: int,
+    context_lines: int,
+    max_positive_snippets: int,
+    max_negative_snippets: int,
+    max_file_bytes: int,
+    as_json: bool,
+) -> int:
+    try:
+        ingest_report = ingest_local_paths(
+            paths,
+            root=root,
+            include_globs=include_globs,
+            max_file_bytes=max_file_bytes,
+        )
+    except LocalIngestError as exc:
+        print(f"Invalid local ingest input: {exc}")
+        return 1
+
+    existing_surfaces: tuple[str, ...] = ()
+    if lexicon_path is not None:
+        try:
+            lexicon = load_lexicon(lexicon_path)
+        except AgentLexiconLoadError as exc:
+            print(f"Invalid lexicon: {exc}")
+            return 1
+        existing_surfaces = existing_surfaces_from_lexicon(lexicon)
+
+    try:
+        candidate_report = discover_scout_candidates(
+            ingest_report.documents,
+            existing_surfaces=existing_surfaces,
+            min_score=min_score,
+            max_candidates=max_candidates,
+        )
+        evidence_report = build_evidence_packs(
+            ingest_report.documents,
+            candidate_report.candidates,
+            context_lines=context_lines,
+            max_positive_snippets=max_positive_snippets,
+            max_negative_snippets=max_negative_snippets,
+        )
+        state = init_workspace(root)
+        state.store_ingest_report(ingest_report)
+        state.store_candidate_report(candidate_report)
+        state.store_evidence_report(evidence_report)
+        summary = state.summary()
+    except (ScoutCandidateError, EvidencePackError, WorkspaceError) as exc:
+        print(f"Invalid workspace input: {exc}")
+        return 1
+
+    if as_json:
+        print(json.dumps(summary.to_dict(), indent=2, sort_keys=True))
+        return 0
+
+    print(
+        "Workspace sync: "
+        f"{ingest_report.document_count} documents, "
+        f"{candidate_report.candidate_count} candidates, "
+        f"{evidence_report.pack_count} evidence packs saved"
+    )
+    print(f"Database: {summary.db_path}")
+    return 0
+
+
+
+def _workspace_export_review_events_command(
+    *,
+    root: Path,
+    output_path: Path | None,
+    decision: str | None,
+) -> int:
+    try:
+        state = open_workspace(root, create=False)
+        content = state.export_review_events_jsonl(output_path, decision=decision)
+    except WorkspaceError as exc:
+        print(f"Invalid workspace input: {exc}")
+        return 1
+
+    if output_path is None:
+        print(content, end="")
+        return 0
+
+    event_count = content.count("\n") if content else 0
+    print(f"Review events exported: {event_count} events -> {output_path}")
+    return 0
+
+
+
+def _workspace_publish_snapshot_command(
+    *,
+    root: Path,
+    lexicon_path: Path | None,
+    output_path: Path | None,
+    snapshot_id: str | None,
+    as_json: bool,
+) -> int:
+    try:
+        state = open_workspace(root, create=False)
+    except WorkspaceError as exc:
+        print(f"Invalid workspace input: {exc}")
+        return 1
+
+    base_lexicon = None
+    if lexicon_path is not None:
+        try:
+            base_lexicon = load_lexicon(lexicon_path)
+        except AgentLexiconLoadError as exc:
+            print(f"Invalid lexicon: {exc}")
+            return 1
+
+    try:
+        snapshot = publish_local_snapshot(
+            state,
+            output_path=output_path,
+            base_lexicon=base_lexicon,
+            snapshot_id=snapshot_id,
+        )
+    except (SnapshotPublishError, WorkspaceError) as exc:
+        print(f"Invalid snapshot publish input: {exc}")
+        return 1
+
+    if as_json:
+        print(json.dumps(snapshot.to_dict(), indent=2, sort_keys=True))
+        return 0
+
+    print(f"Snapshot published: {snapshot.output_path}")
+    print(f"Snapshot id: {snapshot.snapshot_id}")
+    print(
+        "Terms: "
+        f"{snapshot.term_count} total, "
+        f"{snapshot.generated_term_count} generated from "
+        f"{snapshot.accepted_count} accepted decisions, "
+        f"{snapshot.skipped_count} skipped"
+    )
+    return 0
+
+
+
+def _review_command(*, root: Path, host: str, port: int, open_browser: bool) -> int:
+    try:
+        run_review_inbox(root, host=host, port=port, open_browser=open_browser)
+    except (ReviewInboxError, WorkspaceError, OSError) as exc:
+        print(f"Invalid review inbox input: {exc}")
+        return 1
     return 0
 
 
