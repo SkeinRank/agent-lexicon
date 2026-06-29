@@ -14,6 +14,13 @@ from .agent import (
     run_review_agent,
 )
 
+
+from .consensus import (
+    ReviewAgentConsensusReport,
+    ReviewAgentConsensusStatus,
+    run_review_agent_consensus,
+)
+
 from .dataset import (
     ReviewDatasetError,
     ReviewDatasetExample,
@@ -27,6 +34,9 @@ from .dataset import (
 )
 
 __all__ = [
+    "ReviewAgentConsensusReport",
+    "ReviewAgentConsensusStatus",
+    "run_review_agent_consensus",
     "review_dataset_example_from_event",
     "export_review_dataset_jsonl",
     "evaluate_review_event_quality",

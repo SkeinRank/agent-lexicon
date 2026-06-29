@@ -61,6 +61,7 @@ agent-lexicon dictionary diff lexicon/lexicon.yaml lexicon-next.yaml
 agent-lexicon dictionary merge lexicon-base.yaml lexicon-ours.yaml lexicon-theirs.yaml --output lexicon-merged.json
 agent-lexicon dictionary pr-check --root .
 agent-lexicon review-agent assess --root examples/customer_limits
+agent-lexicon review-agent consensus --root examples/customer_limits
 agent-lexicon review-agent prompt --root examples/customer_limits
 agent-lexicon review-agent dataset --root examples/customer_limits
 agent-lexicon mcp tools
@@ -90,13 +91,14 @@ checks, adds OOV-proxy and clustering metadata, and stores the result in the
 local workspace.
 
 ```bash
-agent-lexicon analyze --review-agent
+agent-lexicon analyze --review-agent --consensus
 ```
 
 Shows important candidates first and can include deterministic Review Agent
-recommendations for quick triage. Use `--priority important` to focus the inbox
-on surfaces that look risky, internal, clustered, or likely to affect agent
-behavior.
+recommendations for quick triage. Use `--consensus` to show the consensus and
+abstention wrapper used for safer auto-triage decisions. Use `--priority
+important` to focus the inbox on surfaces that look risky, internal, clustered,
+or likely to affect agent behavior.
 
 ```bash
 agent-lexicon publish
@@ -931,29 +933,42 @@ local assessment when no model response is provided.
 agent-lexicon workspace sync examples/customer_limits/docs --root examples/customer_limits --max-candidates 5
 agent-lexicon review-agent prompt --root examples/customer_limits --surface billing.update_credit_limit
 agent-lexicon review-agent assess --root examples/customer_limits --surface billing.update_credit_limit
+agent-lexicon review-agent consensus --root examples/customer_limits --surface billing.update_credit_limit
+agent-lexicon review-agent consensus --root examples/customer_limits --surface billing.update_credit_limit --json
 agent-lexicon review-agent assess --root examples/customer_limits --surface billing.update_credit_limit --json
 ```
 
 The prompt command marks project evidence as untrusted data and uses the prompt
 safety layer before content is sent to an external LLM. The assess command
 returns one of `accept`, `reject`, `needs_split`, or `needs_more_evidence` and
-includes the matching workspace review status for downstream tools.
+includes the matching workspace review status for downstream tools. The
+consensus command aggregates multiple structured review samples when supplied and
+abstains when agreement or confidence is too low.
 
 Python usage:
 
 ```python
-from agent_lexicon import open_workspace, run_review_agent
+from agent_lexicon import open_workspace, run_review_agent, run_review_agent_consensus
 
 state = open_workspace("examples/customer_limits")
 item = state.get_review_item("billing.update_credit_limit")
 assert item is not None
 decision = run_review_agent(item)
-print(decision.recommendation.value)
+consensus = run_review_agent_consensus(item)
+print(decision.recommendation.value, consensus.status.value)
 ```
 
 Structured model responses can be passed through `run_review_agent(...,
 llm_response=...)` or the CLI `--llm-response` option. High-risk prompt-safety
 findings block LLM review and return a safer `needs_more_evidence` decision.
+
+Consensus mode accepts one or more `--llm-response` files. If samples disagree or
+the top decision is below the confidence threshold, Agent Lexicon returns an
+abstention instead of a silent low-confidence proposal.
+
+```bash
+agent-lexicon review-agent consensus --root examples/customer_limits --surface billing.update_credit_limit --llm-response sample-a.json --llm-response sample-b.json
+```
 
 
 ## Review dataset quality loop

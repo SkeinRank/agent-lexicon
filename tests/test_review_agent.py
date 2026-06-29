@@ -119,3 +119,104 @@ def test_cli_review_agent_assess_and_prompt(tmp_path: Path, capsys) -> None:
     payload = json.loads(captured.out)
     assert payload["surface"] == "billing.update_credit_limit"
     assert payload["recommendation"] in {"accept", "needs_split", "needs_more_evidence", "reject"}
+
+
+def test_review_agent_consensus_accepts_when_samples_agree(tmp_path: Path) -> None:
+    _, item = _workspace_with_candidate(tmp_path)
+
+    from agent_lexicon import ReviewAgentConsensusStatus, run_review_agent_consensus
+
+    responses = [
+        json.dumps({
+            "recommendation": "accept",
+            "confidence": 0.82,
+            "canonical_name": "billing update credit limit",
+            "reviewer_note": "Evidence consistently names the tool surface.",
+            "risk_flags": [],
+        }),
+        json.dumps({
+            "recommendation": "accept",
+            "confidence": 0.76,
+            "canonical_name": "billing update credit limit",
+            "reviewer_note": "Evidence consistently names the tool surface.",
+            "risk_flags": [],
+        }),
+        json.dumps({
+            "recommendation": "needs_more_evidence",
+            "confidence": 0.62,
+            "canonical_name": "billing update credit limit",
+            "reviewer_note": "More evidence would help.",
+            "risk_flags": [],
+        }),
+    ]
+
+    report = run_review_agent_consensus(item, llm_responses=responses, min_agreement=0.66, min_confidence=0.7)
+
+    assert report.status == ReviewAgentConsensusStatus.CONSENSUS
+    assert report.abstained is False
+    assert report.decision.recommendation == ReviewAgentRecommendation.ACCEPT
+    assert report.agreement_count == 2
+    assert report.sample_count == 3
+    assert report.agreement_ratio >= 0.66
+    assert report.decision.review_decision_status == "accepted"
+
+
+def test_review_agent_consensus_abstains_when_samples_disagree(tmp_path: Path) -> None:
+    _, item = _workspace_with_candidate(tmp_path)
+
+    from agent_lexicon import ReviewAgentConsensusStatus, run_review_agent_consensus
+
+    responses = [
+        json.dumps({
+            "recommendation": "accept",
+            "confidence": 0.9,
+            "canonical_name": "billing update credit limit",
+            "reviewer_note": "Accept it.",
+            "risk_flags": [],
+        }),
+        json.dumps({
+            "recommendation": "reject",
+            "confidence": 0.88,
+            "canonical_name": "",
+            "reviewer_note": "Reject it.",
+            "risk_flags": ["generic_surface"],
+        }),
+    ]
+
+    report = run_review_agent_consensus(item, llm_responses=responses, min_agreement=0.75, min_confidence=0.65)
+
+    assert report.status == ReviewAgentConsensusStatus.ABSTAIN
+    assert report.abstained is True
+    assert report.decision.recommendation == ReviewAgentRecommendation.NEEDS_MORE_EVIDENCE
+    assert "abstained" in report.decision.risk_flags
+
+
+def test_cli_review_agent_consensus(tmp_path: Path, capsys) -> None:
+    _workspace_with_candidate(tmp_path)
+    response_path = tmp_path / "llm-response.json"
+    response_path.write_text(
+        json.dumps({
+            "recommendation": "accept",
+            "confidence": 0.82,
+            "canonical_name": "billing update credit limit",
+            "reviewer_note": "Evidence is consistent.",
+            "risk_flags": [],
+        }),
+        encoding="utf-8",
+    )
+
+    assert main([
+        "review-agent",
+        "consensus",
+        "--root",
+        str(tmp_path),
+        "--surface",
+        "billing.update_credit_limit",
+        "--llm-response",
+        str(response_path),
+        "--json",
+    ]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "consensus"
+    assert payload["decision"]["recommendation"] == "accept"
+    assert payload["sample_count"] == 1

@@ -106,6 +106,8 @@ from .policy import (
 )
 
 from .review_agent import (
+    ReviewAgentConsensusReport,
+    ReviewAgentConsensusStatus,
     ReviewAgentDecision,
     ReviewAgentError,
     ReviewAgentPrompt,
@@ -124,6 +126,7 @@ from .review_agent import (
     review_dataset_example_from_event,
     review_workspace_item,
     run_review_agent,
+    run_review_agent_consensus,
 )
 
 from .safety import (
@@ -256,6 +259,9 @@ __all__ = [
     "ReviewDatasetQuality",
     "ReviewDatasetExample",
     "ReviewDatasetError",
+    "run_review_agent_consensus",
+    "ReviewAgentConsensusStatus",
+    "ReviewAgentConsensusReport",
     "ReviewAgentDecision",
     "ReviewAgentError",
     "ReviewAgentPrompt",

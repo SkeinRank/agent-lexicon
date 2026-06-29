@@ -61,6 +61,10 @@ def test_simple_scan_and_analyze_store_prioritized_candidates(tmp_path: Path) ->
     assert analyze.items[0].review_status == "unreviewed"
     assert analyze.items[0].recommendation is not None
 
+    consensus_analyze = run_simple_analyze(tmp_path, limit=5, include_review_agent=True, include_review_agent_consensus=True)
+    assert consensus_analyze.items[0].consensus_status in {"consensus", "abstain", "blocked"}
+    assert consensus_analyze.items[0].agreement_ratio is not None
+
 
 def test_simple_publish_uses_accepted_review_decisions(tmp_path: Path) -> None:
     _write_project(tmp_path)
@@ -111,10 +115,11 @@ def test_cli_simple_init_scan_analyze_publish(tmp_path: Path, capsys) -> None:
     assert "Agent Lexicon scan:" in scan_output
     assert "evidence packs saved" in scan_output
 
-    assert main(["analyze", "--root", str(tmp_path), "--review-agent"]) == 0
+    assert main(["analyze", "--root", str(tmp_path), "--review-agent", "--consensus"]) == 0
     analyze_output = capsys.readouterr().out
     assert "Agent Lexicon analyze:" in analyze_output
     assert "Next: agent-lexicon review" in analyze_output
+    assert "consensus=" in analyze_output
 
     state = open_workspace(tmp_path, create=False)
     first_item = state.list_review_items(limit=1)[0]

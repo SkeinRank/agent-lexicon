@@ -40,6 +40,7 @@ from .review_agent import (
     build_review_dataset,
     export_review_dataset_jsonl,
     run_review_agent,
+    run_review_agent_consensus,
 )
 from .policy import (
     LocalPolicyError,
@@ -170,6 +171,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--review-agent",
         action="store_true",
         help="Include deterministic Review Agent recommendations in the analysis.",
+    )
+    analyze_parser.add_argument(
+        "--consensus",
+        action="store_true",
+        help="Use the Review Agent consensus and abstention wrapper when --review-agent is enabled.",
     )
     _add_local_policy_options(analyze_parser)
     analyze_parser.add_argument("--json", action="store_true", help="Print the analysis report as JSON.")
@@ -592,6 +598,45 @@ def build_parser() -> argparse.ArgumentParser:
         "--json",
         action="store_true",
         help="Print the review recommendation as JSON.",
+    )
+
+    review_agent_consensus_parser = review_agent_subparsers.add_parser(
+        "consensus",
+        help="Aggregate Review Agent samples and abstain when they disagree.",
+    )
+    review_agent_consensus_parser.add_argument(
+        "--root",
+        default=".",
+        help="Project root where .agent-lexicon/ is stored.",
+    )
+    review_agent_consensus_parser.add_argument(
+        "--surface",
+        default=None,
+        help="Normalized candidate surface. Defaults to the highest-priority unreviewed candidate.",
+    )
+    review_agent_consensus_parser.add_argument(
+        "--llm-response",
+        action="append",
+        default=None,
+        help="Path to a structured JSON LLM review response. Can be provided multiple times.",
+    )
+    review_agent_consensus_parser.add_argument(
+        "--min-agreement",
+        type=float,
+        default=0.67,
+        help="Minimum vote agreement ratio required for consensus.",
+    )
+    review_agent_consensus_parser.add_argument(
+        "--min-confidence",
+        type=float,
+        default=0.65,
+        help="Minimum average confidence required for consensus.",
+    )
+    _add_local_policy_options(review_agent_consensus_parser)
+    review_agent_consensus_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the consensus report as JSON.",
     )
 
     review_agent_dataset_parser = review_agent_subparsers.add_parser(
@@ -1341,6 +1386,7 @@ def _simple_analyze_command(args: argparse.Namespace) -> int:
             Path(args.root),
             limit=args.limit,
             include_review_agent=args.review_agent,
+            include_review_agent_consensus=args.consensus,
             priority=args.priority,
         )
     except SimpleWorkflowError as exc:
@@ -1372,6 +1418,12 @@ def _simple_analyze_command(args: argparse.Namespace) -> int:
             print(f"  reasons={', '.join(item.priority_reasons[:4])}")
         if item.recommendation:
             print(f"  review-agent={item.recommendation}: {item.reviewer_note}")
+        if item.consensus_status:
+            print(
+                f"  consensus={item.consensus_status} "
+                f"agreement={item.agreement_ratio:.2f} "
+                f"confidence={item.consensus_confidence:.2f}"
+            )
     print("Next: agent-lexicon review")
     return 0
 
@@ -1412,8 +1464,8 @@ def _simple_publish_command(args: argparse.Namespace) -> int:
     return 0
 
 def _review_agent_command(args: argparse.Namespace) -> int:
-    if args.review_agent_command not in {"prompt", "assess", "dataset"}:
-        print("Review agent command required: prompt, assess, or dataset")
+    if args.review_agent_command not in {"prompt", "assess", "consensus", "dataset"}:
+        print("Review agent command required: prompt, assess, consensus, or dataset")
         return 1
 
     if args.review_agent_command == "dataset":
@@ -1441,6 +1493,29 @@ def _review_agent_command(args: argparse.Namespace) -> int:
                     print("Review prompt warning: high-risk evidence should not be sent to an LLM reviewer.")
                 print(prompt.prompt)
             return 0 if prompt.llm_review_allowed else 2
+
+        if args.review_agent_command == "consensus":
+            llm_responses = None
+            if args.llm_response:
+                llm_responses = [Path(path).read_text(encoding="utf-8") for path in args.llm_response]
+            report = run_review_agent_consensus(
+                item,
+                llm_responses=llm_responses,
+                min_agreement=args.min_agreement,
+                min_confidence=args.min_confidence,
+            )
+            if args.json:
+                print(report.to_json())
+            else:
+                print(f"Review agent consensus: {report.status.value} ({report.confidence:.2f})")
+                print(f"Surface: {report.surface}")
+                print(f"Recommendation: {report.decision.recommendation.value}")
+                print(f"Workspace decision: {report.decision.review_decision_status}")
+                print(f"Agreement: {report.agreement_count}/{report.sample_count} ({report.agreement_ratio:.2f})")
+                print(f"Reason: {report.reason}")
+                if report.decision.risk_flags:
+                    print(f"Risk flags: {', '.join(report.decision.risk_flags)}")
+            return 0 if not report.abstained else 2
 
         llm_response = None
         if args.llm_response is not None:

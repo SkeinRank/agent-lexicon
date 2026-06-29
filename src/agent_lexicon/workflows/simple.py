@@ -26,7 +26,13 @@ from agent_lexicon.dictionary import (
 )
 from agent_lexicon.ingest import LocalIngestError, LocalIngestReport, ingest_local_paths
 from agent_lexicon.policy import LocalPolicy, LocalPolicyError, init_local_policy, load_local_policy, policy_path
-from agent_lexicon.review_agent import ReviewAgentDecision, ReviewAgentError, run_review_agent
+from agent_lexicon.review_agent import (
+    ReviewAgentConsensusReport,
+    ReviewAgentDecision,
+    ReviewAgentError,
+    run_review_agent,
+    run_review_agent_consensus,
+)
 from agent_lexicon.safety import PromptSafetyError, PromptSafetyReport, scan_documents_for_prompt_injection
 from agent_lexicon.scout import (
     EvidencePackError,
@@ -137,6 +143,10 @@ class SimpleAnalysisItem:
     surface_risk_score: float = 0.0
     recommendation: str | None = None
     reviewer_note: str | None = None
+    consensus_status: str | None = None
+    consensus_confidence: float | None = None
+    agreement_ratio: float | None = None
+    abstained: bool = False
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -162,6 +172,10 @@ class SimpleAnalysisItem:
             "document_count": self.document_count,
             "recommendation": self.recommendation,
             "reviewer_note": self.reviewer_note,
+            "consensus_status": self.consensus_status,
+            "consensus_confidence": self.consensus_confidence,
+            "agreement_ratio": self.agreement_ratio,
+            "abstained": self.abstained,
             "metadata": dict(self.metadata),
         }
 
@@ -334,6 +348,7 @@ def run_simple_analyze(
     *,
     limit: int = 10,
     include_review_agent: bool = False,
+    include_review_agent_consensus: bool = False,
     priority: str = "all",
 ) -> SimpleAnalyzeReport:
     """Summarize the highest-priority local review items."""
@@ -351,11 +366,17 @@ def run_simple_analyze(
     items: list[SimpleAnalysisItem] = []
     for review_item in review_items:
         decision: ReviewAgentDecision | None = None
+        consensus: ReviewAgentConsensusReport | None = None
         if include_review_agent:
             try:
-                decision = run_review_agent(review_item)
+                if include_review_agent_consensus:
+                    consensus = run_review_agent_consensus(review_item)
+                    decision = consensus.decision
+                else:
+                    decision = run_review_agent(review_item)
             except ReviewAgentError:
                 decision = None
+                consensus = None
         quality = _quality_metadata(review_item)
         priority_score = _priority_score(review_item, quality=quality)
         priority = str(quality.get("priority") or ("important" if priority_score >= 0.55 else "later"))
@@ -384,6 +405,10 @@ def run_simple_analyze(
                 document_count=review_item.document_count,
                 recommendation=decision.recommendation.value if decision else None,
                 reviewer_note=decision.reviewer_note if decision else None,
+                consensus_status=consensus.status.value if consensus else None,
+                consensus_confidence=consensus.confidence if consensus else None,
+                agreement_ratio=consensus.agreement_ratio if consensus else None,
+                abstained=consensus.abstained if consensus else False,
                 metadata={"occurrence_count": review_item.occurrence_count, "quality": quality, "cluster": cluster},
             )
         )
@@ -394,7 +419,7 @@ def run_simple_analyze(
         items=tuple(items[:limit]),
         workspace=state.summary(),
         review_agent_enabled=include_review_agent,
-        metadata={"root": str(root_path), "priority_filter": priority},
+        metadata={"root": str(root_path), "priority_filter": priority, "review_agent_consensus": include_review_agent_consensus},
     )
 
 
