@@ -79,3 +79,7 @@ examples/pilots/reports/
 
 # Generated platform ops demo tour reports
 examples/platform_ops_demo/reports/
+
+# Local Agent Lexicon exports
+review-events.jsonl
+*.review-events.jsonl

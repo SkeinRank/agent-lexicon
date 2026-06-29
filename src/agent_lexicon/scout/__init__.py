@@ -11,6 +11,13 @@ from .candidates import (
     discover_scout_candidates,
     existing_surfaces_from_lexicon,
 )
+
+from .migrations import (
+    CanonicalMigrationCandidate,
+    CanonicalMigrationError,
+    CanonicalMigrationReport,
+    discover_canonical_migration_candidates,
+)
 from .evidence import (
     EvidencePack,
     EvidencePackError,
@@ -21,6 +28,10 @@ from .evidence import (
 )
 
 __all__ = [
+    "discover_canonical_migration_candidates",
+    "CanonicalMigrationReport",
+    "CanonicalMigrationError",
+    "CanonicalMigrationCandidate",
     "CandidateSurfaceKind",
     "EvidencePack",
     "EvidencePackError",

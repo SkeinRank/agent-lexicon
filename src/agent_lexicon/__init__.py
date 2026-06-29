@@ -53,6 +53,9 @@ from .evals import (
 
 from .scout import (
     CandidateSurfaceKind,
+    CanonicalMigrationCandidate,
+    CanonicalMigrationError,
+    CanonicalMigrationReport,
     EvidencePack,
     EvidencePackError,
     EvidencePackReport,
@@ -63,6 +66,7 @@ from .scout import (
     ScoutCandidateOccurrence,
     ScoutCandidateReport,
     build_evidence_packs,
+    discover_canonical_migration_candidates,
     discover_scout_candidates,
     existing_surfaces_from_lexicon,
 )
@@ -139,6 +143,10 @@ __all__ = [
     "store_evidence_report",
     "store_ingest_report",
     "workspace_path",
+    "CanonicalMigrationCandidate",
+    "CanonicalMigrationError",
+    "CanonicalMigrationReport",
+    "discover_canonical_migration_candidates",
     "existing_surfaces_from_lexicon",
     "build_evidence_packs",
     "EvidencePack",

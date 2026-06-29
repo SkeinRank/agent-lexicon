@@ -19,9 +19,11 @@ from .core import (
 from .evals import EvalDatasetError, load_eval_queries, run_behavior_eval
 from .ingest import LocalIngestError, ingest_local_paths
 from .scout import (
+    CanonicalMigrationError,
     EvidencePackError,
     ScoutCandidateError,
     build_evidence_packs,
+    discover_canonical_migration_candidates,
     discover_scout_candidates,
     existing_surfaces_from_lexicon,
 )
@@ -238,6 +240,37 @@ def build_parser() -> argparse.ArgumentParser:
         "--jsonl",
         action="store_true",
         help="Print one JSON evidence pack per line.",
+    )
+
+    discover_migrations_parser = subparsers.add_parser(
+        "discover-migrations",
+        help="Discover canonical migration candidates from deprecated terms.",
+    )
+    discover_migrations_parser.add_argument(
+        "path",
+        help="Path to a lexicon .json, .yaml, or .yml file.",
+    )
+    discover_migrations_parser.add_argument(
+        "--min-confidence",
+        type=float,
+        default=0.35,
+        help="Minimum migration confidence from 0.0 to 1.0.",
+    )
+    discover_migrations_parser.add_argument(
+        "--max-candidates",
+        type=int,
+        default=20,
+        help="Maximum number of migration candidates to print.",
+    )
+    discover_migrations_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the full migration report as JSON.",
+    )
+    discover_migrations_parser.add_argument(
+        "--jsonl",
+        action="store_true",
+        help="Print one migration candidate per line.",
     )
 
     workspace_parser = subparsers.add_parser(
@@ -544,6 +577,15 @@ def main(argv: list[str] | None = None) -> int:
             max_positive_snippets=args.max_positive_snippets,
             max_negative_snippets=args.max_negative_snippets,
             max_file_bytes=args.max_file_bytes,
+            as_json=args.json,
+            as_jsonl=args.jsonl,
+        )
+
+    if args.command == "discover-migrations":
+        return _discover_migrations_command(
+            path=Path(args.path),
+            min_confidence=args.min_confidence,
+            max_candidates=args.max_candidates,
             as_json=args.json,
             as_jsonl=args.jsonl,
         )
@@ -878,6 +920,56 @@ def _build_evidence_command(
             print(f"  - {snippet.document_path}:{snippet.start_line}-{snippet.end_line} {snippet.text.splitlines()[0]}")
     return 0
 
+
+
+def _discover_migrations_command(
+    *,
+    path: Path,
+    min_confidence: float,
+    max_candidates: int,
+    as_json: bool,
+    as_jsonl: bool,
+) -> int:
+    if as_json and as_jsonl:
+        print("Invalid migration input: choose either --json or --jsonl")
+        return 1
+    try:
+        lexicon = load_lexicon(path)
+        report = discover_canonical_migration_candidates(
+            lexicon,
+            min_confidence=min_confidence,
+            max_candidates=max_candidates,
+        )
+    except AgentLexiconLoadError as exc:
+        print(f"Invalid lexicon: {exc}")
+        return 1
+    except CanonicalMigrationError as exc:
+        print(f"Invalid migration input: {exc}")
+        return 1
+
+    if as_json:
+        print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+        return 0
+    if as_jsonl:
+        for candidate in report.candidates:
+            print(candidate.to_json_line())
+        return 0
+
+    print(
+        "Migration candidates: "
+        f"{report.candidate_count} candidates from "
+        f"{report.deprecated_term_count} deprecated terms "
+        f"and {report.active_term_count} active terms"
+    )
+    for candidate in report.candidates:
+        print(
+            f"- {candidate.deprecated_term_id} -> {candidate.replacement_term_id} "
+            f"confidence={candidate.confidence:.3f} risk={candidate.risk.value}"
+        )
+        print(f"  {candidate.rationale}")
+        if candidate.surfaces_to_preserve:
+            print(f"  preserve aliases: {', '.join(candidate.surfaces_to_preserve)}")
+    return 0
 
 
 def _workspace_command(args: argparse.Namespace) -> int:

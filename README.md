@@ -30,6 +30,7 @@ agent-lexicon workspace sync examples/customer_limits/docs --root examples/custo
 agent-lexicon workspace status --root examples/customer_limits
 agent-lexicon review --root examples/customer_limits
 agent-lexicon workspace export-review-events --root examples/customer_limits
+agent-lexicon discover-migrations examples/customer_limits/lexicon.yaml
 ```
 
 ## Core schema
@@ -413,6 +414,53 @@ jsonl = export_review_events_jsonl(state)
 
 The local web inbox also exposes the same export at `/review-events.jsonl` while
 the server is running.
+
+## Canonical migrations
+
+Deprecated terms can declare a replacement canonical term through metadata. This
+lets teams keep the old term visible for migration while directing agents and
+reviewers toward the active canonical term. Agent Lexicon can also suggest a
+conservative migration candidate from surface similarity when no explicit
+replacement is declared.
+
+Lexicon example:
+
+```yaml
+terms:
+  - id: billing.credit_limit
+    canonical: credit limit
+  - id: billing.customer_cap
+    canonical: customer cap
+    deprecated: true
+    metadata:
+      replacement_term_id: billing.credit_limit
+```
+
+Command line usage:
+
+```bash
+agent-lexicon discover-migrations examples/customer_limits/lexicon.yaml
+agent-lexicon discover-migrations examples/customer_limits/lexicon.yaml --json
+agent-lexicon discover-migrations examples/customer_limits/lexicon.yaml --jsonl
+```
+
+Python usage:
+
+```python
+from agent_lexicon import discover_canonical_migration_candidates, load_lexicon
+
+lexicon = load_lexicon("examples/customer_limits/lexicon.yaml")
+report = discover_canonical_migration_candidates(lexicon)
+
+for candidate in report.candidates:
+    print(candidate.deprecated_term_id, "->", candidate.replacement_term_id)
+```
+
+Each migration candidate includes the deprecated term, replacement term,
+confidence, risk, rationale, surfaces to preserve as aliases, and a
+`canonical_migration` proposal representation. Deprecated surfaces are ignored
+by collision validation so a replacement term can safely carry old wording as an
+alias after review.
 
 ## Behavior metrics
 

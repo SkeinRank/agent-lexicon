@@ -105,6 +105,7 @@ def lexicon_from_dict(payload: Mapping[str, Any], *, source_path: str | Path | N
 
     _validate_scope_references(lexicon, known_scope_ids=scope_ids)
     _validate_term_references(lexicon, known_term_ids=term_ids)
+    _validate_deprecated_replacements(lexicon)
     _validate_alias_collisions(lexicon)
 
     return lexicon
@@ -381,18 +382,44 @@ def _validate_term_references(lexicon: Lexicon, *, known_term_ids: set[str]) -> 
                 )
 
 
+def _validate_deprecated_replacements(lexicon: Lexicon) -> None:
+    terms_by_id = {term.id: term for term in lexicon.terms}
+    for term in lexicon.terms:
+        replacement_id = _deprecated_replacement_id(term)
+        if replacement_id is None:
+            continue
+        if not term.deprecated:
+            raise AgentLexiconLoadError(
+                f"term {term.id!r} declares replacement metadata but is not deprecated"
+            )
+        if replacement_id == term.id:
+            raise AgentLexiconLoadError(f"deprecated term {term.id!r} cannot replace itself")
+        replacement = terms_by_id.get(replacement_id)
+        if replacement is None:
+            raise AgentLexiconLoadError(
+                f"deprecated term {term.id!r} references unknown replacement term {replacement_id!r}"
+            )
+        if replacement.deprecated:
+            raise AgentLexiconLoadError(
+                f"deprecated term {term.id!r} replacement {replacement_id!r} is also deprecated"
+            )
+
+
 def _validate_alias_collisions(lexicon: Lexicon) -> None:
     seen: dict[tuple[str, tuple[str, ...], bool], str] = {}
     for term in lexicon.terms:
-        for surface in term.surfaces(include_deprecated=True):
-            key = (surface.casefold(), tuple(term.scopes), False)
-            existing_term_id = seen.get(key)
-            if existing_term_id is not None and existing_term_id != term.id:
-                raise AgentLexiconLoadError(
-                    f"surface {surface!r} maps to both {existing_term_id!r} and {term.id!r} in scopes {tuple(term.scopes)!r}"
-                )
-            seen[key] = term.id
+        if term.deprecated:
+            continue
+        key = (term.canonical.casefold(), tuple(term.scopes), False)
+        existing_term_id = seen.get(key)
+        if existing_term_id is not None and existing_term_id != term.id:
+            raise AgentLexiconLoadError(
+                f"surface {term.canonical!r} maps to both {existing_term_id!r} and {term.id!r} in scopes {tuple(term.scopes)!r}"
+            )
+        seen[key] = term.id
         for alias in term.aliases:
+            if alias.deprecated:
+                continue
             key = (alias.normalized_surface(), tuple(alias.scopes), alias.case_sensitive)
             existing_term_id = seen.get(key)
             if existing_term_id is not None and existing_term_id != term.id:
@@ -400,6 +427,14 @@ def _validate_alias_collisions(lexicon: Lexicon) -> None:
                     f"alias {alias.surface!r} maps to both {existing_term_id!r} and {term.id!r} in scopes {tuple(alias.scopes)!r}"
                 )
             seen[key] = term.id
+
+
+def _deprecated_replacement_id(term: Term) -> str | None:
+    for key in ("replacement_term_id", "replaced_by", "canonical_replacement_term_id"):
+        value = term.metadata.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
 
 
 def _check_scope_ids(scope_ids: Iterable[str], *, known_scope_ids: set[str], owner: str) -> None:
