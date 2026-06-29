@@ -62,6 +62,14 @@ from .scout import (
     existing_surfaces_from_lexicon,
 )
 from .web import ReviewInboxError, run_review_inbox
+from .workflows import (
+    DEFAULT_SCAN_PATHS,
+    SimpleWorkflowError,
+    run_simple_analyze,
+    run_simple_init,
+    run_simple_publish,
+    run_simple_scan,
+)
 from .workspace import (
     ReviewDecisionStatus,
     SnapshotPublishError,
@@ -84,6 +92,102 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     subparsers = parser.add_subparsers(dest="command")
+    init_parser = subparsers.add_parser(
+        "init",
+        help="Initialize a local Agent Lexicon project.",
+    )
+    init_parser.add_argument("--root", default=".", help="Project root for lexicon/ and .agent-lexicon/.")
+    init_parser.add_argument(
+        "--layout-dir",
+        default="lexicon",
+        help="Dictionary layout directory relative to the project root.",
+    )
+    init_parser.add_argument(
+        "--policy-mode",
+        choices=tuple(mode.value for mode in LocalPolicyMode),
+        default=LocalPolicyMode.SOLO.value,
+        help="Local policy mode to initialize.",
+    )
+    init_parser.add_argument("--actor", default="local", help="Actor to store in the local policy.")
+    init_parser.add_argument(
+        "--role",
+        choices=tuple(role.value for role in LocalPolicyRole),
+        default=LocalPolicyRole.OWNER.value,
+        help="Role assigned to --actor in the local policy.",
+    )
+    init_parser.add_argument("--force", action="store_true", help="Overwrite generated starter files and policy.")
+    init_parser.add_argument("--reset-workspace", action="store_true", help="Recreate the local workspace database.")
+    init_parser.add_argument("--json", action="store_true", help="Print the init report as JSON.")
+
+    scan_parser = subparsers.add_parser(
+        "scan",
+        help="Scan local project files and save candidates plus evidence to the workspace.",
+    )
+    scan_parser.add_argument(
+        "paths",
+        nargs="*",
+        help="Files or directories to scan. Defaults to README.md, docs, and src when present.",
+    )
+    scan_parser.add_argument("--root", default=".", help="Project root for lexicon/ and .agent-lexicon/.")
+    scan_parser.add_argument(
+        "--layout-dir",
+        default="lexicon",
+        help="Dictionary layout directory relative to the project root.",
+    )
+    scan_parser.add_argument(
+        "--lexicon",
+        default=None,
+        help="Optional lexicon document whose existing surfaces should be ignored.",
+    )
+    scan_parser.add_argument(
+        "--include",
+        action="append",
+        default=None,
+        help="Glob to include when scanning directories. Can be provided multiple times.",
+    )
+    scan_parser.add_argument("--min-score", type=float, default=0.25, help="Minimum candidate score from 0.0 to 1.0.")
+    scan_parser.add_argument("--max-candidates", type=int, default=20, help="Maximum number of candidates to save.")
+    scan_parser.add_argument("--context-lines", type=int, default=1, help="Context lines around each evidence match.")
+    scan_parser.add_argument("--max-positive-snippets", type=int, default=3, help="Maximum positive snippets per candidate.")
+    scan_parser.add_argument("--max-negative-snippets", type=int, default=3, help="Maximum negative snippets per candidate.")
+    scan_parser.add_argument("--max-file-bytes", type=int, default=1_000_000, help="Maximum file size to read.")
+    _add_local_policy_options(scan_parser)
+    scan_parser.add_argument("--json", action="store_true", help="Print the scan report as JSON.")
+
+    analyze_parser = subparsers.add_parser(
+        "analyze",
+        help="Summarize important local terminology candidates from the workspace.",
+    )
+    analyze_parser.add_argument("--root", default=".", help="Project root where .agent-lexicon/ is stored.")
+    analyze_parser.add_argument("--limit", type=int, default=10, help="Maximum number of candidates to summarize.")
+    analyze_parser.add_argument(
+        "--review-agent",
+        action="store_true",
+        help="Include deterministic Review Agent recommendations in the analysis.",
+    )
+    _add_local_policy_options(analyze_parser)
+    analyze_parser.add_argument("--json", action="store_true", help="Print the analysis report as JSON.")
+
+    publish_parser = subparsers.add_parser(
+        "publish",
+        help="Publish accepted local review decisions as a local lexicon snapshot.",
+    )
+    publish_parser.add_argument("--root", default=".", help="Project root where .agent-lexicon/ is stored.")
+    publish_parser.add_argument(
+        "--layout-dir",
+        default="lexicon",
+        help="Dictionary layout directory relative to the project root.",
+    )
+    publish_parser.add_argument(
+        "--lexicon",
+        default=None,
+        help="Optional base lexicon. Defaults to lexicon/lexicon.yaml when present.",
+    )
+    publish_parser.add_argument("--output", default=None, help="Optional output path for the snapshot JSON file.")
+    publish_parser.add_argument("--snapshot-id", default=None, help="Optional stable snapshot id.")
+    _add_local_policy_options(publish_parser)
+    publish_parser.add_argument("--json", action="store_true", help="Print the publish report as JSON.")
+
     validate_parser = subparsers.add_parser(
         "validate",
         help="Validate a JSON or YAML lexicon document.",
@@ -997,6 +1101,18 @@ def main(argv: list[str] | None = None) -> int:
         print(__version__)
         return 0
 
+    if args.command == "init":
+        return _simple_init_command(args)
+
+    if args.command == "scan":
+        return _simple_scan_command(args)
+
+    if args.command == "analyze":
+        return _simple_analyze_command(args)
+
+    if args.command == "publish":
+        return _simple_publish_command(args)
+
     if args.command == "validate":
         return _validate_command(path=Path(args.path), document_format=args.format)
 
@@ -1118,6 +1234,170 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+
+
+def _simple_init_command(args: argparse.Namespace) -> int:
+    try:
+        report = run_simple_init(
+            Path(args.root),
+            layout_dir=args.layout_dir,
+            policy_mode=args.policy_mode,
+            actor=args.actor,
+            role=args.role,
+            force=args.force,
+            reset_workspace=args.reset_workspace,
+        )
+    except SimpleWorkflowError as exc:
+        print(f"Invalid init input: {exc}")
+        return 1
+    if args.json:
+        print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+        return 0
+    print("Agent Lexicon initialized")
+    print(f"Dictionary: {report.dictionary.layout.layout_path}")
+    print(f"Workspace: {report.workspace.db_path}")
+    print(f"Policy: {report.policy_path} ({report.policy_mode})")
+    print("Next: agent-lexicon scan README.md docs src")
+    return 0
+
+
+def _simple_scan_command(args: argparse.Namespace) -> int:
+    policy_exit = _check_policy_or_print(
+        root=Path(args.root),
+        action=PolicyAction.SYNC_WORKSPACE,
+        actor=args.actor,
+        role=args.role,
+        policy_mode=args.policy_mode,
+    )
+    if policy_exit != 0:
+        return policy_exit
+    try:
+        report = run_simple_scan(
+            args.paths,
+            root=Path(args.root),
+            layout_dir=args.layout_dir,
+            lexicon_path=Path(args.lexicon) if args.lexicon else None,
+            include_globs=args.include,
+            min_score=args.min_score,
+            max_candidates=args.max_candidates,
+            context_lines=args.context_lines,
+            max_positive_snippets=args.max_positive_snippets,
+            max_negative_snippets=args.max_negative_snippets,
+            max_file_bytes=args.max_file_bytes,
+        )
+    except SimpleWorkflowError as exc:
+        print(f"Invalid scan input: {exc}")
+        return 1
+    if args.json:
+        print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+        return 0
+    print(
+        "Agent Lexicon scan: "
+        f"{report.document_count} documents, "
+        f"{report.candidate_count} candidates, "
+        f"{report.evidence_pack_count} evidence packs saved"
+    )
+    print(
+        "Prompt safety: "
+        f"risk={report.safety.highest_risk.value}, "
+        f"action={report.safety.action.value}, "
+        f"findings={report.safety.finding_count}"
+    )
+    for candidate in report.candidates.candidates[:5]:
+        print(f"- {candidate.surface} score={candidate.score:.3f} jargon={candidate.jargon_score:.3f}")
+    print("Next: agent-lexicon analyze")
+    return 0
+
+
+def _simple_analyze_command(args: argparse.Namespace) -> int:
+    policy_exit = _check_policy_or_print(
+        root=Path(args.root),
+        action=PolicyAction.READ_WORKSPACE,
+        actor=args.actor,
+        role=args.role,
+        policy_mode=args.policy_mode,
+    )
+    if policy_exit != 0:
+        return policy_exit
+    if args.review_agent:
+        llm_policy_exit = _check_policy_or_print(
+            root=Path(args.root),
+            action=PolicyAction.RUN_LLM_REVIEW,
+            actor=args.actor,
+            role=args.role,
+            policy_mode=args.policy_mode,
+        )
+        if llm_policy_exit != 0:
+            return llm_policy_exit
+    try:
+        report = run_simple_analyze(
+            Path(args.root),
+            limit=args.limit,
+            include_review_agent=args.review_agent,
+        )
+    except SimpleWorkflowError as exc:
+        print(f"Invalid analyze input: {exc}")
+        return 1
+    if args.json:
+        print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+        return 0
+    print(
+        "Agent Lexicon analyze: "
+        f"{report.important_count} important, "
+        f"{report.later_count} later, "
+        f"{report.item_count} shown"
+    )
+    if not report.items:
+        print("No workspace candidates found. Run: agent-lexicon scan README.md docs src")
+        return 0
+    for item in report.items:
+        label = "IMPORTANT" if item.priority == "important" else "LATER"
+        print(
+            f"[{label}] {item.surface} "
+            f"priority={item.priority_score:.3f} "
+            f"score={item.score:.3f} "
+            f"status={item.review_status}"
+        )
+        if item.recommendation:
+            print(f"  review-agent={item.recommendation}: {item.reviewer_note}")
+    print("Next: agent-lexicon review")
+    return 0
+
+
+def _simple_publish_command(args: argparse.Namespace) -> int:
+    policy_exit = _check_policy_or_print(
+        root=Path(args.root),
+        action=PolicyAction.PUBLISH_SNAPSHOT,
+        actor=args.actor,
+        role=args.role,
+        policy_mode=args.policy_mode,
+    )
+    if policy_exit != 0:
+        return policy_exit
+    try:
+        report = run_simple_publish(
+            Path(args.root),
+            layout_dir=args.layout_dir,
+            lexicon_path=Path(args.lexicon) if args.lexicon else None,
+            output_path=Path(args.output) if args.output else None,
+            snapshot_id=args.snapshot_id,
+        )
+    except SimpleWorkflowError as exc:
+        print(f"Invalid publish input: {exc}")
+        return 1
+    if args.json:
+        print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+        return 0
+    print(f"Snapshot published: {report.output_path}")
+    print(f"Snapshot id: {report.snapshot_id}")
+    print(
+        "Terms: "
+        f"{report.term_count} total, "
+        f"{report.generated_term_count} generated from "
+        f"{report.accepted_count} accepted decisions, "
+        f"{report.skipped_count} skipped"
+    )
+    return 0
 
 def _review_agent_command(args: argparse.Namespace) -> int:
     if args.review_agent_command not in {"prompt", "assess", "dataset"}:

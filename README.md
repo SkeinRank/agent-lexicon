@@ -11,11 +11,33 @@ reviewable terminology layer before RAG, tool calls, and workflow automation.
 pip install agent-lexicon
 ```
 
+## Quick start
+
+Use the product-facing commands for the common local loop:
+
+```bash
+agent-lexicon init
+agent-lexicon scan README.md docs src
+agent-lexicon analyze
+agent-lexicon review
+agent-lexicon publish
+agent-lexicon mcp serve --root . --lexicon lexicon/lexicon.yaml
+```
+
+`scan` reads local project files, runs prompt-safety checks, discovers candidate
+terms, builds evidence packs, and saves the result to `.agent-lexicon/`.
+`analyze` summarizes the highest-priority candidates so reviewers can start with
+the important terminology first.
+
 ## Quick check
 
 ```bash
 agent-lexicon --version
 python -m agent_lexicon --version
+agent-lexicon init --root /tmp/agent-lexicon-demo
+agent-lexicon scan examples/customer_limits/docs --root examples/customer_limits --max-candidates 5
+agent-lexicon analyze --root examples/customer_limits
+agent-lexicon publish --root examples/customer_limits
 agent-lexicon validate examples/customer_limits/lexicon.yaml
 agent-lexicon match examples/customer_limits/lexicon.yaml "The customer cap and rate limit changed." --longest-only
 agent-lexicon resolve examples/customer_limits/lexicon.yaml "increase the limit"
@@ -44,6 +66,40 @@ agent-lexicon review-agent dataset --root examples/customer_limits
 agent-lexicon mcp tools
 agent-lexicon mcp serve --root . --lexicon lexicon/lexicon.yaml
 ```
+
+## Simple local workflow
+
+The short commands are wrappers around the lower-level SDK and CLI surfaces.
+They keep the first-run workflow small without hiding the underlying building
+blocks.
+
+```bash
+agent-lexicon init
+```
+
+Creates the git-tracked `lexicon/` layout, the local SQLite workspace under
+`.agent-lexicon/`, and a local policy file.
+
+```bash
+agent-lexicon scan README.md docs src
+```
+
+Reads local docs and source files, filters existing lexicon surfaces, scores
+terminology candidates, builds positive/negative evidence, runs prompt-safety
+checks, and stores the result in the local workspace.
+
+```bash
+agent-lexicon analyze --review-agent
+```
+
+Shows important candidates first and can include deterministic Review Agent
+recommendations for quick triage.
+
+```bash
+agent-lexicon publish
+```
+
+Publishes accepted review decisions into a lexicon-compatible local snapshot.
 
 ## Core schema
 
