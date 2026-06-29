@@ -26,7 +26,7 @@ from .scout import (
     existing_surfaces_from_lexicon,
 )
 from .web import ReviewInboxError, run_review_inbox
-from .workspace import WorkspaceError, init_workspace, open_workspace
+from .workspace import ReviewDecisionStatus, WorkspaceError, init_workspace, open_workspace
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -334,6 +334,27 @@ def build_parser() -> argparse.ArgumentParser:
         "--json",
         action="store_true",
         help="Print workspace status as JSON after sync.",
+    )
+
+    workspace_export_events_parser = workspace_subparsers.add_parser(
+        "export-review-events",
+        help="Export local review events as JSONL.",
+    )
+    workspace_export_events_parser.add_argument(
+        "--root",
+        default=".",
+        help="Project root where .agent-lexicon/ is stored.",
+    )
+    workspace_export_events_parser.add_argument(
+        "--output",
+        default=None,
+        help="Optional output path. If omitted, JSONL is printed to stdout.",
+    )
+    workspace_export_events_parser.add_argument(
+        "--decision",
+        choices=tuple(status.value for status in ReviewDecisionStatus),
+        default=None,
+        help="Export only events with a specific review decision.",
     )
 
 
@@ -846,7 +867,9 @@ def _workspace_command(args: argparse.Namespace) -> int:
             "Workspace status: "
             f"{summary.document_count} documents, "
             f"{summary.candidate_count} candidates, "
-            f"{summary.evidence_pack_count} evidence packs"
+            f"{summary.evidence_pack_count} evidence packs, "
+            f"{summary.review_decision_count} review decisions, "
+            f"{summary.review_event_count} review events"
         )
         print(f"Database: {summary.db_path}")
         return 0
@@ -866,7 +889,14 @@ def _workspace_command(args: argparse.Namespace) -> int:
             as_json=args.json,
         )
 
-    print("Workspace command required: init, status, or sync")
+    if args.workspace_command == "export-review-events":
+        return _workspace_export_review_events_command(
+            root=Path(args.root),
+            output_path=Path(args.output) if args.output else None,
+            decision=args.decision,
+        )
+
+    print("Workspace command required: init, status, sync, or export-review-events")
     return 1
 
 
@@ -938,6 +968,29 @@ def _workspace_sync_command(
         f"{evidence_report.pack_count} evidence packs saved"
     )
     print(f"Database: {summary.db_path}")
+    return 0
+
+
+
+def _workspace_export_review_events_command(
+    *,
+    root: Path,
+    output_path: Path | None,
+    decision: str | None,
+) -> int:
+    try:
+        state = open_workspace(root, create=False)
+        content = state.export_review_events_jsonl(output_path, decision=decision)
+    except WorkspaceError as exc:
+        print(f"Invalid workspace input: {exc}")
+        return 1
+
+    if output_path is None:
+        print(content, end="")
+        return 0
+
+    event_count = content.count("\n") if content else 0
+    print(f"Review events exported: {event_count} events -> {output_path}")
     return 0
 
 

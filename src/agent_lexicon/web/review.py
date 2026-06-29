@@ -357,6 +357,12 @@ def _handler_for_state(state: WorkspaceState) -> type[BaseHTTPRequestHandler]:
             if parsed.path == "/healthz":
                 self._send_text("ok\n", status=200)
                 return
+            if parsed.path == "/review-events.jsonl":
+                try:
+                    self._send_jsonl(state.export_review_events_jsonl())
+                except WorkspaceError as exc:
+                    self._send_text(f"Review event export error: {exc}\n", status=500)
+                return
             if parsed.path != "/":
                 self._send_text("Not found\n", status=404)
                 return
@@ -409,6 +415,15 @@ def _handler_for_state(state: WorkspaceState) -> type[BaseHTTPRequestHandler]:
             self.end_headers()
             self.wfile.write(encoded)
 
+        def _send_jsonl(self, content: str, *, status: int = 200) -> None:
+            encoded = content.encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+            self.send_header("Content-Disposition", 'attachment; filename="review-events.jsonl"')
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
     return ReviewInboxHandler
 
 
@@ -451,6 +466,7 @@ def _render_page(*, items: tuple[WorkspaceReviewItem, ...], selected: WorkspaceR
             f'<span class="pill">{len(items)} candidates</span>',
             f'<span class="pill">{unreviewed_count} unreviewed</span>',
             f'<span class="pill">{reviewed_count} reviewed</span>',
+            '<a class="pill" href="/review-events.jsonl">Export JSONL</a>',
             "</div>",
             "</header>",
             '<section class="grid">',

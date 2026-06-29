@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -32,7 +33,13 @@ class ReviewDecisionStatus(str, Enum):
     NEEDS_SPLIT = "needs_split"
 
 
-SCHEMA_VERSION = 2
+class ReviewEventType(str, Enum):
+    """Review event type stored in the workspace event stream."""
+
+    DECISION_SAVED = "review_decision_saved"
+
+
+SCHEMA_VERSION = 3
 DEFAULT_WORKSPACE_DIR = ".agent-lexicon"
 DEFAULT_DATABASE_NAME = "agent_lexicon.db"
 
@@ -48,6 +55,7 @@ class WorkspaceSummary:
     candidate_count: int
     evidence_pack_count: int
     review_decision_count: int = 0
+    review_event_count: int = 0
 
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-serializable workspace summary."""
@@ -59,6 +67,7 @@ class WorkspaceSummary:
             "candidate_count": self.candidate_count,
             "evidence_pack_count": self.evidence_pack_count,
             "review_decision_count": self.review_decision_count,
+            "review_event_count": self.review_event_count,
         }
 
 
@@ -91,6 +100,59 @@ class WorkspaceReviewDecision:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceReviewEvent:
+    """Append-only local review event for JSONL exports."""
+
+    event_id: str
+    event_type: ReviewEventType
+    normalized_surface: str
+    decision: ReviewDecisionStatus
+    note: str
+    reviewer: str
+    created_at: str
+    candidate_snapshot: Mapping[str, Any] = field(default_factory=dict)
+    evidence_snapshot: Mapping[str, Any] = field(default_factory=dict)
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "event_id", _clean_text(self.event_id, field_name="event_id"))
+        object.__setattr__(self, "event_type", ReviewEventType(self.event_type.value if isinstance(self.event_type, ReviewEventType) else str(self.event_type)))
+        object.__setattr__(self, "normalized_surface", _clean_text(self.normalized_surface, field_name="normalized_surface"))
+        object.__setattr__(self, "decision", ReviewDecisionStatus(self.decision.value if isinstance(self.decision, ReviewDecisionStatus) else str(self.decision)))
+        object.__setattr__(self, "note", self.note.strip() if isinstance(self.note, str) else "")
+        object.__setattr__(self, "reviewer", _clean_text(self.reviewer, field_name="reviewer"))
+        object.__setattr__(self, "created_at", _clean_text(self.created_at, field_name="created_at"))
+        if not isinstance(self.candidate_snapshot, Mapping):
+            raise WorkspaceError("candidate_snapshot must be a mapping")
+        if not isinstance(self.evidence_snapshot, Mapping):
+            raise WorkspaceError("evidence_snapshot must be a mapping")
+        if not isinstance(self.metadata, Mapping):
+            raise WorkspaceError("metadata must be a mapping")
+        object.__setattr__(self, "candidate_snapshot", dict(self.candidate_snapshot))
+        object.__setattr__(self, "evidence_snapshot", dict(self.evidence_snapshot))
+        object.__setattr__(self, "metadata", {str(key): value for key, value in self.metadata.items()})
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-serializable review event."""
+        return {
+            "event_id": self.event_id,
+            "event_type": self.event_type.value,
+            "normalized_surface": self.normalized_surface,
+            "decision": self.decision.value,
+            "note": self.note,
+            "reviewer": self.reviewer,
+            "created_at": self.created_at,
+            "candidate_snapshot": dict(self.candidate_snapshot),
+            "evidence_snapshot": dict(self.evidence_snapshot),
+            "metadata": dict(self.metadata),
+        }
+
+    def to_json_line(self) -> str:
+        """Return this review event as one JSONL row."""
+        return json.dumps(self.to_dict(), ensure_ascii=False, sort_keys=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,6 +252,7 @@ class WorkspaceState:
                 candidate_count=_table_count(connection, "candidates"),
                 evidence_pack_count=_table_count(connection, "evidence_packs"),
                 review_decision_count=_table_count(connection, "review_decisions"),
+                review_event_count=_table_count(connection, "review_events"),
             )
 
     def store_documents(self, documents: Iterable[IngestDocument]) -> int:
@@ -366,6 +429,38 @@ class WorkspaceState:
                 """,
                 (normalized, status.value, note_value, reviewer_value, created_at, now),
             )
+            event = _build_review_event(
+                connection,
+                normalized_surface=normalized,
+                decision=status,
+                note=note_value,
+                reviewer=reviewer_value,
+                created_at=now,
+            )
+            connection.execute(
+                """
+                INSERT INTO review_events (
+                    event_id,
+                    event_type,
+                    normalized_surface,
+                    decision,
+                    note,
+                    reviewer,
+                    created_at,
+                    event_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event.event_id,
+                    event.event_type.value,
+                    event.normalized_surface,
+                    event.decision.value,
+                    event.note,
+                    event.reviewer,
+                    event.created_at,
+                    _json_dumps(event.to_dict()),
+                ),
+            )
         return WorkspaceReviewDecision(
             normalized_surface=normalized,
             decision=status,
@@ -387,6 +482,50 @@ class WorkspaceState:
                 """
             ).fetchall()
         return tuple(_review_decision_from_row(row) for row in rows)
+
+    def list_review_events(
+        self,
+        *,
+        decision: ReviewDecisionStatus | str | None = None,
+        limit: int | None = None,
+    ) -> tuple[WorkspaceReviewEvent, ...]:
+        """Return append-only local review events in chronological order."""
+        if limit is not None and limit < 1:
+            raise WorkspaceError("limit must be greater than 0")
+        status_value: str | None = None
+        if decision is not None:
+            status_value = ReviewDecisionStatus(decision.value if isinstance(decision, ReviewDecisionStatus) else str(decision)).value
+        self.ensure_schema()
+        query = """
+            SELECT event_json
+            FROM review_events
+        """
+        params: list[object] = []
+        if status_value is not None:
+            query += " WHERE decision = ?"
+            params.append(status_value)
+        query += " ORDER BY created_at ASC, rowid ASC"
+        if limit is not None:
+            query += " LIMIT ?"
+            params.append(limit)
+        with _connect(self.db_path) as connection:
+            rows = connection.execute(query, params).fetchall()
+        return tuple(_review_event_from_payload(str(row[0])) for row in rows)
+
+    def export_review_events_jsonl(
+        self,
+        output_path: str | Path | None = None,
+        *,
+        decision: ReviewDecisionStatus | str | None = None,
+    ) -> str:
+        """Export local review events as JSONL and optionally write them to a file."""
+        events = self.list_review_events(decision=decision)
+        content = "".join(f"{event.to_json_line()}\n" for event in events)
+        if output_path is not None:
+            path = Path(output_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+        return content
 
     def list_review_items(self, *, limit: int = 100) -> tuple[WorkspaceReviewItem, ...]:
         """Return candidate/evidence rows for the local proposal inbox."""
@@ -538,6 +677,26 @@ def save_review_decision(
     return state.save_review_decision(normalized_surface, decision, note=note, reviewer=reviewer)
 
 
+def list_review_events(
+    state: WorkspaceState,
+    *,
+    decision: ReviewDecisionStatus | str | None = None,
+    limit: int | None = None,
+) -> tuple[WorkspaceReviewEvent, ...]:
+    """Return append-only local review events from a workspace."""
+    return state.list_review_events(decision=decision, limit=limit)
+
+
+def export_review_events_jsonl(
+    state: WorkspaceState,
+    output_path: str | Path | None = None,
+    *,
+    decision: ReviewDecisionStatus | str | None = None,
+) -> str:
+    """Export local review events from a workspace as JSONL."""
+    return state.export_review_events_jsonl(output_path, decision=decision)
+
+
 def _connect(db_path: Path) -> sqlite3.Connection:
     connection = sqlite3.connect(str(db_path))
     connection.execute("PRAGMA foreign_keys = ON")
@@ -612,6 +771,21 @@ def _create_schema(connection: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_review_decisions_decision ON review_decisions (decision);
         CREATE INDEX IF NOT EXISTS idx_review_decisions_updated_at ON review_decisions (updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS review_events (
+            event_id TEXT PRIMARY KEY,
+            event_type TEXT NOT NULL,
+            normalized_surface TEXT NOT NULL,
+            decision TEXT NOT NULL,
+            note TEXT NOT NULL,
+            reviewer TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            event_json TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_review_events_surface ON review_events (normalized_surface);
+        CREATE INDEX IF NOT EXISTS idx_review_events_decision ON review_events (decision);
+        CREATE INDEX IF NOT EXISTS idx_review_events_created_at ON review_events (created_at ASC);
         """
     )
 
@@ -624,7 +798,7 @@ def _read_schema_version(connection: sqlite3.Connection) -> int:
 
 
 def _table_count(connection: sqlite3.Connection, table_name: str) -> int:
-    if table_name not in {"documents", "candidates", "evidence_packs", "review_decisions"}:
+    if table_name not in {"documents", "candidates", "evidence_packs", "review_decisions", "review_events"}:
         raise WorkspaceError(f"unsupported workspace table: {table_name}")
     row = connection.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()
     return int(row[0]) if row is not None else 0
@@ -655,6 +829,58 @@ def _review_item_from_row(row: sqlite3.Row | tuple[Any, ...]) -> WorkspaceReview
         negative_count=int(row[10]),
         evidence_payload=_json_loads_mapping(str(row[11])),
         review_decision=decision,
+    )
+
+
+def _build_review_event(
+    connection: sqlite3.Connection,
+    *,
+    normalized_surface: str,
+    decision: ReviewDecisionStatus,
+    note: str,
+    reviewer: str,
+    created_at: str,
+) -> WorkspaceReviewEvent:
+    candidate_row = connection.execute(
+        "SELECT payload_json FROM candidates WHERE normalized_surface = ?",
+        (normalized_surface,),
+    ).fetchone()
+    evidence_row = connection.execute(
+        "SELECT payload_json FROM evidence_packs WHERE normalized_surface = ?",
+        (normalized_surface,),
+    ).fetchone()
+    candidate_snapshot = _json_loads_mapping(str(candidate_row[0])) if candidate_row is not None else {}
+    evidence_snapshot = _json_loads_mapping(str(evidence_row[0])) if evidence_row is not None else {}
+    return WorkspaceReviewEvent(
+        event_id=f"review_evt_{uuid.uuid4().hex}",
+        event_type=ReviewEventType.DECISION_SAVED,
+        normalized_surface=normalized_surface,
+        decision=decision,
+        note=note,
+        reviewer=reviewer,
+        created_at=created_at,
+        candidate_snapshot=candidate_snapshot,
+        evidence_snapshot=evidence_snapshot,
+        metadata={"workspace_schema_version": SCHEMA_VERSION},
+    )
+
+
+def _review_event_from_payload(payload: str) -> WorkspaceReviewEvent:
+    data = _json_loads_mapping(payload)
+    candidate_snapshot = data.get("candidate_snapshot", {})
+    evidence_snapshot = data.get("evidence_snapshot", {})
+    metadata = data.get("metadata", {})
+    return WorkspaceReviewEvent(
+        event_id=str(data.get("event_id", "")),
+        event_type=str(data.get("event_type", ReviewEventType.DECISION_SAVED.value)),
+        normalized_surface=str(data.get("normalized_surface", "")),
+        decision=str(data.get("decision", "")),
+        note=str(data.get("note", "")),
+        reviewer=str(data.get("reviewer", "local")),
+        created_at=str(data.get("created_at", "")),
+        candidate_snapshot=candidate_snapshot if isinstance(candidate_snapshot, Mapping) else {},
+        evidence_snapshot=evidence_snapshot if isinstance(evidence_snapshot, Mapping) else {},
+        metadata=metadata if isinstance(metadata, Mapping) else {},
     )
 
 

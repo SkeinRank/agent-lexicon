@@ -29,6 +29,7 @@ agent-lexicon workspace init --root examples/customer_limits
 agent-lexicon workspace sync examples/customer_limits/docs --root examples/customer_limits --max-candidates 5
 agent-lexicon workspace status --root examples/customer_limits
 agent-lexicon review --root examples/customer_limits
+agent-lexicon workspace export-review-events --root examples/customer_limits
 ```
 
 ## Core schema
@@ -333,6 +334,8 @@ agent-lexicon workspace init --root examples/customer_limits
 agent-lexicon workspace sync examples/customer_limits/docs --root examples/customer_limits --max-candidates 5
 agent-lexicon workspace status --root examples/customer_limits
 agent-lexicon workspace status --root examples/customer_limits --json
+agent-lexicon workspace export-review-events --root examples/customer_limits
+agent-lexicon workspace export-review-events --root examples/customer_limits --output review-events.jsonl
 ```
 
 Python usage:
@@ -348,9 +351,9 @@ summary = state.summary()
 print(summary.document_count, summary.db_path)
 ```
 
-The workspace stores documents, candidate payloads, evidence pack payloads, and
-local review decisions with deterministic primary keys. Later event and snapshot
-workflows can use the same local database without requiring a service backend.
+The workspace stores documents, candidate payloads, evidence pack payloads,
+local review decisions, and append-only review events. The database is designed
+for local review workflows without requiring a service backend.
 
 ## Local web proposal inbox
 
@@ -382,6 +385,34 @@ For terminal-only environments, keep the server from opening a browser:
 ```bash
 agent-lexicon review --root examples/customer_limits --no-browser
 ```
+
+## Review events
+
+Every local review decision is also stored as an append-only event. This keeps
+the current decision state easy to query while preserving the review trail for
+later proposal exports, snapshot publishing, and review dataset analysis. Events
+include the decision, reviewer note, timestamp, candidate snapshot, and evidence
+snapshot.
+
+Command line usage:
+
+```bash
+agent-lexicon workspace export-review-events --root examples/customer_limits
+agent-lexicon workspace export-review-events --root examples/customer_limits --decision accepted
+agent-lexicon workspace export-review-events --root examples/customer_limits --output review-events.jsonl
+```
+
+Python usage:
+
+```python
+from agent_lexicon import export_review_events_jsonl, init_workspace
+
+state = init_workspace("examples/customer_limits")
+jsonl = export_review_events_jsonl(state)
+```
+
+The local web inbox also exposes the same export at `/review-events.jsonl` while
+the server is running.
 
 ## Behavior metrics
 

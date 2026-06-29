@@ -54,6 +54,7 @@ def test_review_inbox_html_renders_candidates_and_evidence(tmp_path: Path) -> No
     assert "Positive evidence" in html
     assert "Negative evidence" in html
     assert "Review decision" in html
+    assert "Export JSONL" in html
     assert "Accept" in html
     assert "Needs split" in html
 
