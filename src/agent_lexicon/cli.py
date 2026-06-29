@@ -31,6 +31,16 @@ from .core import (
 )
 from .evals import EvalDatasetError, load_eval_queries, run_behavior_eval
 from .ingest import LocalIngestError, ingest_local_paths
+from .policy import (
+    LocalPolicyError,
+    LocalPolicyMode,
+    LocalPolicyRole,
+    PolicyAction,
+    check_local_policy,
+    init_local_policy,
+    load_local_policy,
+    policy_path,
+)
 from .safety import PromptSafetyError, scan_documents_for_prompt_injection
 from .scout import (
     CanonicalMigrationError,
@@ -302,6 +312,79 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print the full prompt-safety report as JSON.",
     )
+
+    policy_parser = subparsers.add_parser(
+        "policy",
+        help="Manage local RBAC-lite policy modes.",
+    )
+    policy_subparsers = policy_parser.add_subparsers(dest="policy_command")
+
+    policy_init_parser = policy_subparsers.add_parser(
+        "init",
+        help="Create a local policy file under .agent-lexicon/.",
+    )
+    policy_init_parser.add_argument("--root", default=".", help="Project root where .agent-lexicon/ is stored.")
+    policy_init_parser.add_argument(
+        "--mode",
+        choices=tuple(mode.value for mode in LocalPolicyMode),
+        default=LocalPolicyMode.SOLO.value,
+        help="Local policy mode to write.",
+    )
+    policy_init_parser.add_argument("--actor", default="local", help="Actor to store in the policy file.")
+    policy_init_parser.add_argument(
+        "--role",
+        choices=tuple(role.value for role in LocalPolicyRole),
+        default=LocalPolicyRole.OWNER.value,
+        help="Role assigned to --actor.",
+    )
+    policy_init_parser.add_argument("--force", action="store_true", help="Overwrite an existing local policy file.")
+    policy_init_parser.add_argument("--json", action="store_true", help="Print the policy document as JSON.")
+
+    policy_status_parser = policy_subparsers.add_parser(
+        "status",
+        help="Show the effective local policy.",
+    )
+    policy_status_parser.add_argument("--root", default=".", help="Project root where .agent-lexicon/ is stored.")
+    policy_status_parser.add_argument(
+        "--policy-mode",
+        choices=tuple(mode.value for mode in LocalPolicyMode),
+        default=None,
+        help="Temporarily override the local policy mode.",
+    )
+    policy_status_parser.add_argument("--actor", default="local", help="Actor used for role resolution.")
+    policy_status_parser.add_argument(
+        "--role",
+        choices=tuple(role.value for role in LocalPolicyRole),
+        default=None,
+        help="Explicit role override for this command.",
+    )
+    policy_status_parser.add_argument("--json", action="store_true", help="Print policy status as JSON.")
+
+    policy_check_parser = policy_subparsers.add_parser(
+        "check",
+        help="Check whether a local action is allowed.",
+    )
+    policy_check_parser.add_argument(
+        "--action",
+        required=True,
+        choices=tuple(action.value for action in PolicyAction),
+        help="Local action to check.",
+    )
+    policy_check_parser.add_argument("--root", default=".", help="Project root where .agent-lexicon/ is stored.")
+    policy_check_parser.add_argument(
+        "--policy-mode",
+        choices=tuple(mode.value for mode in LocalPolicyMode),
+        default=None,
+        help="Temporarily override the local policy mode.",
+    )
+    policy_check_parser.add_argument("--actor", default="local", help="Actor used for role resolution.")
+    policy_check_parser.add_argument(
+        "--role",
+        choices=tuple(role.value for role in LocalPolicyRole),
+        default=None,
+        help="Explicit role override for this command.",
+    )
+    policy_check_parser.add_argument("--json", action="store_true", help="Print the policy decision as JSON.")
 
     discover_migrations_parser = subparsers.add_parser(
         "discover-migrations",
@@ -598,6 +681,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=1_000_000,
         help="Maximum file size to read during local ingest.",
     )
+    _add_local_policy_options(workspace_sync_parser)
     workspace_sync_parser.add_argument(
         "--json",
         action="store_true",
@@ -618,6 +702,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional output path. If omitted, JSONL is printed to stdout.",
     )
+    _add_local_policy_options(workspace_export_events_parser)
     workspace_export_events_parser.add_argument(
         "--decision",
         choices=tuple(status.value for status in ReviewDecisionStatus),
@@ -649,6 +734,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional stable snapshot id. If omitted, one is generated.",
     )
+    _add_local_policy_options(workspace_publish_snapshot_parser)
     workspace_publish_snapshot_parser.add_argument(
         "--json",
         action="store_true",
@@ -677,6 +763,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=8765,
         help="Port for the local inbox.",
     )
+    _add_local_policy_options(review_parser)
     review_parser.add_argument(
         "--no-browser",
         action="store_true",
@@ -749,6 +836,23 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _add_local_policy_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--actor", default="local", help="Local policy actor for this command.")
+    parser.add_argument(
+        "--role",
+        choices=tuple(role.value for role in LocalPolicyRole),
+        default=None,
+        help="Explicit local policy role for this command.",
+    )
+    parser.add_argument(
+        "--policy-mode",
+        choices=tuple(mode.value for mode in LocalPolicyMode),
+        default=None,
+        help="Temporarily override the local policy mode.",
+    )
+
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -813,6 +917,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "safety":
         return _safety_command(args)
 
+    if args.command == "policy":
+        return _policy_command(args)
+
     if args.command == "discover-migrations":
         return _discover_migrations_command(
             path=Path(args.path),
@@ -834,6 +941,9 @@ def main(argv: list[str] | None = None) -> int:
             host=args.host,
             port=args.port,
             open_browser=not args.no_browser,
+            actor=args.actor,
+            role=args.role,
+            policy_mode=args.policy_mode,
         )
 
     if args.command == "match":
@@ -1008,6 +1118,7 @@ def _discover_candidates_command(
     if as_json and as_jsonl:
         print("Invalid candidate discovery input: choose either --json or --jsonl")
         return 1
+
 
     try:
         ingest_report = ingest_local_paths(
@@ -1224,6 +1335,90 @@ def _safety_scan_command(
     else:
         print("No prompt-injection indicators found.")
     return 1 if fail_on_high_risk and report.high_count > 0 else 0
+
+
+def _policy_command(args: argparse.Namespace) -> int:
+    if args.policy_command == "init":
+        try:
+            policy = init_local_policy(
+                Path(args.root),
+                mode=args.mode,
+                actor=args.actor,
+                role=args.role,
+                force=args.force,
+            )
+        except LocalPolicyError as exc:
+            print(f"Invalid local policy input: {exc}")
+            return 1
+        if args.json:
+            print(policy.to_json())
+            return 0
+        print(f"Local policy initialized: {policy_path(args.root)}")
+        print(f"Mode: {policy.mode.value}")
+        print(f"Actor: {args.actor} -> {args.role}")
+        return 0
+
+    if args.policy_command == "status":
+        try:
+            policy = load_local_policy(Path(args.root), mode=args.policy_mode)
+            decision = check_local_policy(
+                policy,
+                PolicyAction.READ_WORKSPACE,
+                actor=args.actor,
+                role=args.role,
+            )
+        except LocalPolicyError as exc:
+            print(f"Invalid local policy input: {exc}")
+            return 1
+        if args.json:
+            print(json.dumps({"policy": policy.to_dict(), "effective_role": decision.role.value, "path": str(policy_path(args.root))}, indent=2, sort_keys=True))
+            return 0
+        print(f"Local policy: {policy.mode.value}")
+        print(f"Path: {policy_path(args.root)}")
+        print(f"Default role: {policy.default_role.value if policy.default_role is not None else 'none'}")
+        print(f"Effective actor: {decision.actor} ({decision.role.value})")
+        return 0
+
+    if args.policy_command == "check":
+        try:
+            policy = load_local_policy(Path(args.root), mode=args.policy_mode)
+            decision = check_local_policy(policy, args.action, actor=args.actor, role=args.role)
+        except LocalPolicyError as exc:
+            print(f"Invalid local policy input: {exc}")
+            return 1
+        if args.json:
+            print(decision.to_json())
+            return 0 if decision.is_allowed else 2
+        print(f"Policy check: {'allowed' if decision.is_allowed else 'denied'}")
+        print(f"Mode: {decision.mode.value}")
+        print(f"Actor: {decision.actor}")
+        print(f"Role: {decision.role.value}")
+        print(f"Action: {decision.action.value}")
+        print(f"Reason: {decision.reason}")
+        return 0 if decision.is_allowed else 2
+
+    print("Policy command required: init, status, or check")
+    return 1
+
+
+def _check_policy_or_print(
+    *,
+    root: Path,
+    action: PolicyAction,
+    actor: str,
+    role: str | None,
+    policy_mode: str | None,
+) -> int:
+    try:
+        policy = load_local_policy(root, mode=policy_mode)
+        decision = check_local_policy(policy, action, actor=actor, role=role)
+    except LocalPolicyError as exc:
+        print(f"Invalid local policy input: {exc}")
+        return 1
+    if decision.is_allowed:
+        return 0
+    print(f"Policy denied: {decision.reason}")
+    return 2
 
 
 def _discover_migrations_command(
@@ -1551,6 +1746,9 @@ def _workspace_command(args: argparse.Namespace) -> int:
             max_negative_snippets=args.max_negative_snippets,
             max_file_bytes=args.max_file_bytes,
             as_json=args.json,
+            actor=args.actor,
+            role=args.role,
+            policy_mode=args.policy_mode,
         )
 
     if args.workspace_command == "export-review-events":
@@ -1558,6 +1756,9 @@ def _workspace_command(args: argparse.Namespace) -> int:
             root=Path(args.root),
             output_path=Path(args.output) if args.output else None,
             decision=args.decision,
+            actor=args.actor,
+            role=args.role,
+            policy_mode=args.policy_mode,
         )
 
     if args.workspace_command == "publish-snapshot":
@@ -1567,6 +1768,9 @@ def _workspace_command(args: argparse.Namespace) -> int:
             output_path=Path(args.output) if args.output else None,
             snapshot_id=args.snapshot_id,
             as_json=args.json,
+            actor=args.actor,
+            role=args.role,
+            policy_mode=args.policy_mode,
         )
 
     print("Workspace command required: init, status, sync, export-review-events, or publish-snapshot")
@@ -1586,7 +1790,20 @@ def _workspace_sync_command(
     max_negative_snippets: int,
     max_file_bytes: int,
     as_json: bool,
+    actor: str,
+    role: str | None,
+    policy_mode: str | None,
 ) -> int:
+    policy_exit_code = _check_policy_or_print(
+        root=root,
+        action=PolicyAction.SYNC_WORKSPACE,
+        actor=actor,
+        role=role,
+        policy_mode=policy_mode,
+    )
+    if policy_exit_code != 0:
+        return policy_exit_code
+
     try:
         ingest_report = ingest_local_paths(
             paths,
@@ -1650,7 +1867,20 @@ def _workspace_export_review_events_command(
     root: Path,
     output_path: Path | None,
     decision: str | None,
+    actor: str,
+    role: str | None,
+    policy_mode: str | None,
 ) -> int:
+    policy_exit_code = _check_policy_or_print(
+        root=root,
+        action=PolicyAction.EXPORT_REVIEW_EVENTS,
+        actor=actor,
+        role=role,
+        policy_mode=policy_mode,
+    )
+    if policy_exit_code != 0:
+        return policy_exit_code
+
     try:
         state = open_workspace(root, create=False)
         content = state.export_review_events_jsonl(output_path, decision=decision)
@@ -1675,7 +1905,20 @@ def _workspace_publish_snapshot_command(
     output_path: Path | None,
     snapshot_id: str | None,
     as_json: bool,
+    actor: str,
+    role: str | None,
+    policy_mode: str | None,
 ) -> int:
+    policy_exit_code = _check_policy_or_print(
+        root=root,
+        action=PolicyAction.PUBLISH_SNAPSHOT,
+        actor=actor,
+        role=role,
+        policy_mode=policy_mode,
+    )
+    if policy_exit_code != 0:
+        return policy_exit_code
+
     try:
         state = open_workspace(root, create=False)
     except WorkspaceError as exc:
@@ -1718,10 +1961,27 @@ def _workspace_publish_snapshot_command(
 
 
 
-def _review_command(*, root: Path, host: str, port: int, open_browser: bool) -> int:
+def _review_command(
+    *,
+    root: Path,
+    host: str,
+    port: int,
+    open_browser: bool,
+    actor: str,
+    role: str | None,
+    policy_mode: str | None,
+) -> int:
     try:
-        run_review_inbox(root, host=host, port=port, open_browser=open_browser)
-    except (ReviewInboxError, WorkspaceError, OSError) as exc:
+        run_review_inbox(
+            root,
+            host=host,
+            port=port,
+            open_browser=open_browser,
+            actor=actor,
+            role=role,
+            policy_mode=policy_mode,
+        )
+    except (ReviewInboxError, WorkspaceError, LocalPolicyError, OSError) as exc:
         print(f"Invalid review inbox input: {exc}")
         return 1
     return 0

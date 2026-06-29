@@ -79,3 +79,19 @@ def test_review_cli_help_does_not_start_server() -> None:
     )
     assert "Open the local web proposal inbox" in completed.stdout
     assert "--no-browser" in completed.stdout
+
+
+def test_review_inbox_html_respects_read_only_policy(tmp_path: Path) -> None:
+    state = _workspace_with_evidence(tmp_path)
+
+    html = build_review_inbox_html(
+        state,
+        selected_surface="billing.update_credit_limit",
+        actor="reader-1",
+        role="reader",
+        policy_mode="locked",
+    )
+
+    assert "policy: locked · reader" in html
+    assert "Read-only policy mode" in html
+    assert "disabled" in html

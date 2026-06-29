@@ -26,6 +26,7 @@ agent-lexicon ingest README.md src examples/customer_limits/docs --root .
 agent-lexicon discover-candidates examples/customer_limits/docs --root examples/customer_limits
 agent-lexicon build-evidence examples/customer_limits/docs --root examples/customer_limits
 agent-lexicon safety scan examples/customer_limits/docs --root examples/customer_limits
+agent-lexicon policy status --root examples/customer_limits
 agent-lexicon workspace init --root examples/customer_limits
 agent-lexicon workspace sync examples/customer_limits/docs --root examples/customer_limits --max-candidates 5
 agent-lexicon workspace status --root examples/customer_limits
@@ -363,6 +364,57 @@ print(safety_report.highest_risk.value, safety_report.action.value)
 The helper `format_evidence_pack_for_llm_review(...)` renders evidence as
 data-only context with explicit untrusted boundaries. This keeps future review
 agents from accidentally following instructions embedded inside project docs.
+
+
+## Local policy modes
+
+Agent Lexicon includes a small local policy layer for review workflows that need
+more structure than a single-user scratchpad but do not require an enterprise
+RBAC service. The policy is intentionally declarative: the CLI caller declares
+an `actor` and optional `role`, then Agent Lexicon checks the requested local
+action against the active mode.
+
+Supported modes:
+
+- `solo` — local-first mode where all roles can perform workspace actions.
+- `team` — review and export are allowed for reviewers, while sync and snapshot publishing require maintainers or owners.
+- `locked` — read-only for everyone except owners.
+
+Create and inspect a local policy file:
+
+```bash
+agent-lexicon policy init --root examples/customer_limits --mode team --actor maxim --role owner
+agent-lexicon policy status --root examples/customer_limits --actor maxim
+agent-lexicon policy check --root examples/customer_limits --action publish_snapshot --actor maxim
+```
+
+The same policy checks are used by sensitive local commands:
+
+```bash
+agent-lexicon workspace sync examples/customer_limits/docs --root examples/customer_limits --actor maxim
+agent-lexicon workspace publish-snapshot --root examples/customer_limits --actor maxim
+agent-lexicon review --root examples/customer_limits --actor reviewer-1 --role reviewer
+```
+
+Python usage:
+
+```python
+from agent_lexicon import PolicyAction, check_local_policy, load_local_policy
+
+policy = load_local_policy("examples/customer_limits")
+decision = check_local_policy(
+    policy,
+    PolicyAction.PUBLISH_SNAPSHOT,
+    actor="reviewer-1",
+    role="reviewer",
+)
+
+print(decision.allowed, decision.reason)
+```
+
+This is RBAC-lite, not authentication. It is designed for local workflows, CI,
+and future MCP/LLM review boundaries where the agent should know which actions
+are allowed before changing review state or publishing snapshots.
 
 ## SQLite workspace state
 

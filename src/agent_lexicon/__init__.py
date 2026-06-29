@@ -90,6 +90,21 @@ from .evals import (
     loads_eval_queries,
 )
 
+
+from .policy import (
+    DEFAULT_POLICY_FILENAME,
+    LocalPolicy,
+    LocalPolicyError,
+    LocalPolicyMode,
+    LocalPolicyRole,
+    PolicyAction,
+    PolicyDecision,
+    check_local_policy,
+    init_local_policy,
+    load_local_policy,
+    policy_path,
+)
+
 from .safety import (
     PromptInjectionRisk,
     PromptSafetyAction,
@@ -164,6 +179,18 @@ from .web import ReviewInboxError, build_review_inbox_html, run_review_inbox
 
 
 __all__ = [
+
+    "DEFAULT_POLICY_FILENAME",
+    "LocalPolicy",
+    "LocalPolicyError",
+    "LocalPolicyMode",
+    "LocalPolicyRole",
+    "PolicyAction",
+    "PolicyDecision",
+    "check_local_policy",
+    "init_local_policy",
+    "load_local_policy",
+    "policy_path",
     "PromptInjectionRisk",
     "PromptSafetyAction",
     "PromptSafetyError",

@@ -14,6 +14,13 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
+from agent_lexicon.policy import (
+    LocalPolicyError,
+    PolicyAction,
+    PolicyDecision,
+    check_local_policy,
+    load_local_policy,
+)
 from agent_lexicon.workspace import (
     ReviewDecisionStatus,
     WorkspaceError,
@@ -277,7 +284,15 @@ button {
   cursor: pointer;
 }
 button:hover { border-color: var(--strong); }
+button:disabled { color: var(--muted); cursor: not-allowed; background: var(--subtle); }
 button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+.notice {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--soft);
+  padding: 12px;
+  color: var(--muted);
+}
 .empty {
   padding: 54px 24px;
   text-align: center;
@@ -311,13 +326,18 @@ def build_review_inbox_html(
     *,
     selected_surface: str | None = None,
     limit: int = 100,
+    actor: str = "local",
+    role: str | None = None,
+    policy_mode: str | None = None,
 ) -> str:
     """Render the local proposal inbox as a complete HTML document."""
     if not isinstance(state, WorkspaceState):
         raise ReviewInboxError("state must be a WorkspaceState")
     items = state.list_review_items(limit=limit)
     selected = _select_item(state, items, selected_surface=selected_surface)
-    return _render_page(items=items, selected=selected, root=str(state.root))
+    policy = load_local_policy(state.root, mode=policy_mode)
+    policy_decision = check_local_policy(policy, PolicyAction.REVIEW_CANDIDATE, actor=actor, role=role)
+    return _render_page(items=items, selected=selected, root=str(state.root), policy_decision=policy_decision)
 
 
 def run_review_inbox(
@@ -326,6 +346,9 @@ def run_review_inbox(
     host: str = "127.0.0.1",
     port: int = 8765,
     open_browser: bool = True,
+    actor: str = "local",
+    role: str | None = None,
+    policy_mode: str | None = None,
 ) -> None:
     """Run the local proposal inbox until interrupted."""
     if not host:
@@ -333,7 +356,9 @@ def run_review_inbox(
     if port < 1 or port > 65535:
         raise ReviewInboxError("port must be between 1 and 65535")
     state = open_workspace(root, create=True)
-    handler = _handler_for_state(state)
+    policy = load_local_policy(state.root, mode=policy_mode)
+    policy_decision = check_local_policy(policy, PolicyAction.REVIEW_CANDIDATE, actor=actor, role=role)
+    handler = _handler_for_state(state, actor=actor, policy_decision=policy_decision)
     server = ThreadingHTTPServer((host, port), handler)
     url = f"http://{host}:{port}"
     print(f"Review inbox: {url}")
@@ -348,7 +373,15 @@ def run_review_inbox(
         server.server_close()
 
 
-def _handler_for_state(state: WorkspaceState) -> type[BaseHTTPRequestHandler]:
+def _handler_for_state(
+    state: WorkspaceState,
+    *,
+    actor: str = "local",
+    policy_decision: PolicyDecision | None = None,
+) -> type[BaseHTTPRequestHandler]:
+    if policy_decision is None:
+        policy = load_local_policy(state.root)
+        policy_decision = check_local_policy(policy, PolicyAction.REVIEW_CANDIDATE, actor=actor)
     class ReviewInboxHandler(BaseHTTPRequestHandler):
         server_version = "AgentLexiconReview/1.0"
 
@@ -369,8 +402,14 @@ def _handler_for_state(state: WorkspaceState) -> type[BaseHTTPRequestHandler]:
             params = parse_qs(parsed.query)
             selected_surface = params.get("surface", [None])[0]
             try:
-                content = build_review_inbox_html(state, selected_surface=selected_surface)
-            except (ReviewInboxError, WorkspaceError) as exc:
+                content = build_review_inbox_html(
+                    state,
+                    selected_surface=selected_surface,
+                    actor=policy_decision.actor,
+                    role=policy_decision.role.value,
+                    policy_mode=policy_decision.mode.value,
+                )
+            except (ReviewInboxError, WorkspaceError, LocalPolicyError) as exc:
                 self._send_text(f"Review inbox error: {exc}\n", status=500)
                 return
             self._send_html(content)
@@ -386,8 +425,11 @@ def _handler_for_state(state: WorkspaceState) -> type[BaseHTTPRequestHandler]:
             normalized_surface = form.get("surface", [""])[0]
             decision = form.get("decision", [""])[0]
             note = form.get("note", [""])[0]
+            if not policy_decision.is_allowed:
+                self._send_text(f"Policy denied review decision: {policy_decision.reason}\n", status=403)
+                return
             try:
-                state.save_review_decision(normalized_surface, decision, note=note)
+                state.save_review_decision(normalized_surface, decision, note=note, reviewer=policy_decision.actor)
             except (ValueError, WorkspaceError) as exc:
                 self._send_text(f"Invalid review decision: {exc}\n", status=400)
                 return
@@ -440,7 +482,13 @@ def _select_item(
     return items[0] if items else None
 
 
-def _render_page(*, items: tuple[WorkspaceReviewItem, ...], selected: WorkspaceReviewItem | None, root: str) -> str:
+def _render_page(
+    *,
+    items: tuple[WorkspaceReviewItem, ...],
+    selected: WorkspaceReviewItem | None,
+    root: str,
+    policy_decision: PolicyDecision,
+) -> str:
     reviewed_count = sum(1 for item in items if item.review_decision is not None)
     unreviewed_count = len(items) - reviewed_count
     selected_surface = selected.normalized_surface if selected is not None else ""
@@ -466,12 +514,13 @@ def _render_page(*, items: tuple[WorkspaceReviewItem, ...], selected: WorkspaceR
             f'<span class="pill">{len(items)} candidates</span>',
             f'<span class="pill">{unreviewed_count} unreviewed</span>',
             f'<span class="pill">{reviewed_count} reviewed</span>',
+            f'<span class="pill">policy: {_escape(policy_decision.mode.value)} · {_escape(policy_decision.role.value)}</span>',
             '<a class="pill" href="/review-events.jsonl">Export JSONL</a>',
             "</div>",
             "</header>",
             '<section class="grid">',
             _render_sidebar(items, selected_surface=selected_surface),
-            _render_detail(selected),
+            _render_detail(selected, policy_decision=policy_decision),
             "</section>",
             "</main>",
             "</body>",
@@ -503,7 +552,7 @@ def _render_sidebar(items: tuple[WorkspaceReviewItem, ...], *, selected_surface:
     return "\n".join(rows)
 
 
-def _render_detail(item: WorkspaceReviewItem | None) -> str:
+def _render_detail(item: WorkspaceReviewItem | None, *, policy_decision: PolicyDecision) -> str:
     if item is None:
         return (
             '<section class="panel detail">'
@@ -531,7 +580,7 @@ def _render_detail(item: WorkspaceReviewItem | None) -> str:
             "</div>",
             _render_snippet_group("Positive evidence", item.evidence_payload.get("positive_snippets", []), "positive"),
             _render_snippet_group("Negative evidence", item.evidence_payload.get("negative_snippets", []), "negative"),
-            _render_actions(item),
+            _render_actions(item, policy_decision=policy_decision),
             "</section>",
         ]
     )
@@ -562,18 +611,23 @@ def _render_snippet_group(title: str, snippets: Any, css_kind: str) -> str:
     return "\n".join(rows)
 
 
-def _render_actions(item: WorkspaceReviewItem) -> str:
+def _render_actions(item: WorkspaceReviewItem, *, policy_decision: PolicyDecision) -> str:
     note = item.review_decision.note if item.review_decision else ""
     buttons = []
+    disabled = "" if policy_decision.is_allowed else " disabled"
     for decision, label in _DECISION_LABELS.items():
         class_name = ' class="primary"' if decision == ReviewDecisionStatus.ACCEPTED.value else ""
-        buttons.append(f'<button{class_name} type="submit" name="decision" value="{_escape(decision)}">{_escape(label)}</button>')
+        buttons.append(f'<button{class_name}{disabled} type="submit" name="decision" value="{_escape(decision)}">{_escape(label)}</button>')
+    notice = ""
+    if not policy_decision.is_allowed:
+        notice = f'<div class="notice">Read-only policy mode: {_escape(policy_decision.reason)}</div>'
     return "\n".join(
         [
             '<form class="actions" method="post" action="/decision">',
             f'<input type="hidden" name="surface" value="{_escape(item.normalized_surface)}">',
             '<h3 class="section-title">Review decision</h3>',
-            f'<textarea name="note" placeholder="Optional reviewer note">{_escape(note)}</textarea>',
+            notice,
+            f'<textarea name="note" placeholder="Optional reviewer note"{disabled}>{_escape(note)}</textarea>',
             '<div class="button-row">',
             *buttons,
             "</div>",
