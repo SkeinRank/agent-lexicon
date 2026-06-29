@@ -38,11 +38,16 @@ from .core import (
     resolve_text,
 )
 from .evals import (
+    BehaviorMetrics,
+    EvalQueryResult,
+    EvalReport,
+    EvalToolCallResult,
     EvalDatasetError,
     EvalQuery,
     EvalToolCallExpectation,
     eval_query_from_dict,
     load_eval_queries,
+    run_behavior_eval,
     loads_eval_queries,
 )
 
@@ -56,6 +61,11 @@ __all__ = [
     "EvidenceSpan",
     "EvalToolCallExpectation",
     "EvalQuery",
+    "BehaviorMetrics",
+    "EvalQueryResult",
+    "EvalReport",
+    "EvalToolCallResult",
+    "run_behavior_eval",
     "EvalDatasetError",
     "Lexicon",
     "LexiconResolver",

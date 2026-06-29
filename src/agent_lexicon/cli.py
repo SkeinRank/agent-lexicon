@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 from . import __version__, about
@@ -15,7 +16,7 @@ from .core import (
     load_lexicon,
     resolve_text,
 )
-from .evals import EvalDatasetError, load_eval_queries
+from .evals import EvalDatasetError, load_eval_queries, run_behavior_eval
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -46,6 +47,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="Validate a JSONL eval query dataset.",
     )
     validate_queries_parser.add_argument("path", help="Path to a queries.jsonl file.")
+
+    check_parser = subparsers.add_parser(
+        "check",
+        help="Run behavior metrics for a lexicon and queries.jsonl dataset.",
+    )
+    check_parser.add_argument("lexicon_path", help="Path to a lexicon .json, .yaml, or .yml file.")
+    check_parser.add_argument("queries_path", help="Path to a queries.jsonl file.")
+    check_parser.add_argument(
+        "--exclude-deprecated",
+        action="store_true",
+        help="Ignore deprecated aliases or deprecated terms.",
+    )
+    check_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the full eval report as JSON.",
+    )
 
     match_parser = subparsers.add_parser(
         "match",
@@ -127,6 +145,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "validate-queries":
         return _validate_queries_command(path=Path(args.path))
 
+    if args.command == "check":
+        return _check_command(
+            lexicon_path=Path(args.lexicon_path),
+            queries_path=Path(args.queries_path),
+            include_deprecated=not args.exclude_deprecated,
+            as_json=args.json,
+        )
+
     if args.command == "match":
         return _match_command(
             path=Path(args.path),
@@ -189,6 +215,57 @@ def _validate_queries_command(*, path: Path) -> int:
         f"{scoped_count} scoped queries"
     )
     return 0
+
+
+def _check_command(
+    *,
+    lexicon_path: Path,
+    queries_path: Path,
+    include_deprecated: bool,
+    as_json: bool,
+) -> int:
+    try:
+        lexicon = load_lexicon(lexicon_path)
+    except AgentLexiconLoadError as exc:
+        print(f"Invalid lexicon: {exc}")
+        return 1
+    try:
+        queries = load_eval_queries(queries_path)
+    except EvalDatasetError as exc:
+        print(f"Invalid eval dataset: {exc}")
+        return 1
+
+    report = run_behavior_eval(lexicon, queries, include_deprecated=include_deprecated)
+    if as_json:
+        print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+        return 0 if report.passed else 1
+
+    metrics = report.metrics
+    print(
+        "Behavior check: "
+        f"{metrics.passed_checks}/{metrics.total_checks} checks passed "
+        f"across {metrics.query_count} queries"
+    )
+    _print_metric("Overall accuracy", metrics.overall_accuracy)
+    _print_metric("Ambiguity detection", metrics.ambiguity_detection_rate)
+    _print_metric("Canonicalization", metrics.canonicalization_accuracy)
+    _print_metric("Wrong tool prevention", metrics.wrong_tool_prevention_rate)
+    _print_metric("Tool status", metrics.tool_status_accuracy)
+    _print_metric("Tool allowed", metrics.tool_allowed_accuracy)
+
+    failed = [result for result in report.results if not result.passed]
+    if failed:
+        print("Failed queries:")
+        for result in failed:
+            print(f"- {result.query.id}: {result.query.text}")
+    return 0 if report.passed else 1
+
+
+def _print_metric(label: str, value: float | None) -> None:
+    if value is None:
+        print(f"{label}: n/a")
+        return
+    print(f"{label}: {value * 100:.1f}%")
 
 
 def _match_command(

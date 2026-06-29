@@ -213,6 +213,35 @@ The `guard` command returns `0` for allowed or no-match decisions and `2` when
 the tool call is blocked or needs clarification. This makes it usable in local
 agent wrappers and future CI checks.
 
+
+## Behavior metrics
+
+Agent Lexicon can run deterministic behavior checks against a local `queries.jsonl` dataset.
+The report measures terminology resolution, ambiguity detection, canonicalization,
+and unsafe tool-call prevention.
+
+```bash
+agent-lexicon check examples/customer_limits/lexicon.yaml examples/customer_limits/queries.jsonl
+```
+
+Example output:
+
+```text
+Behavior check: 38/38 checks passed across 5 queries
+Overall accuracy: 100.0%
+Ambiguity detection: 100.0%
+Canonicalization: 100.0%
+Wrong tool prevention: 100.0%
+Tool status: 100.0%
+Tool allowed: 100.0%
+```
+
+For automation and dashboards, the same report can be emitted as JSON:
+
+```bash
+agent-lexicon check examples/customer_limits/lexicon.yaml examples/customer_limits/queries.jsonl --json
+```
+
 ## Development
 
 Install the development environment with Poetry:
