@@ -139,6 +139,23 @@ class AgentLexiconSmokeTests(unittest.TestCase):
         )
         self.assertIn("Valid lexicon", completed.stdout)
 
+    def test_cli_validate_queries_example(self) -> None:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "agent_lexicon",
+                "validate-queries",
+                "examples/customer_limits/queries.jsonl",
+            ],
+            check=True,
+            text=True,
+            capture_output=True,
+            env=_subprocess_env(),
+        )
+        self.assertIn("Valid eval dataset", completed.stdout)
+        self.assertIn("5 queries", completed.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

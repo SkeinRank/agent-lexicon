@@ -15,6 +15,7 @@ from .core import (
     load_lexicon,
     resolve_text,
 )
+from .evals import EvalDatasetError, load_eval_queries
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -40,6 +41,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Override lexicon format detection.",
     )
+    validate_queries_parser = subparsers.add_parser(
+        "validate-queries",
+        help="Validate a JSONL eval query dataset.",
+    )
+    validate_queries_parser.add_argument("path", help="Path to a queries.jsonl file.")
+
     match_parser = subparsers.add_parser(
         "match",
         help="Find known canonical terms and aliases in text.",
@@ -117,6 +124,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "validate":
         return _validate_command(path=Path(args.path), document_format=args.format)
 
+    if args.command == "validate-queries":
+        return _validate_queries_command(path=Path(args.path))
+
     if args.command == "match":
         return _match_command(
             path=Path(args.path),
@@ -159,6 +169,24 @@ def _validate_command(*, path: Path, document_format: str | None) -> int:
         f"{len(lexicon.scopes)} scopes, "
         f"{len(lexicon.terms)} terms, "
         f"{len(lexicon.proposals)} proposals"
+    )
+    return 0
+
+
+def _validate_queries_command(*, path: Path) -> int:
+    try:
+        queries = load_eval_queries(path)
+    except EvalDatasetError as exc:
+        print(f"Invalid eval dataset: {exc}")
+        return 1
+
+    tool_call_count = sum(len(query.tool_calls) for query in queries)
+    scoped_count = sum(1 for query in queries if query.scopes)
+    print(
+        "Valid eval dataset: "
+        f"{len(queries)} queries, "
+        f"{tool_call_count} tool call expectations, "
+        f"{scoped_count} scoped queries"
     )
     return 0
 

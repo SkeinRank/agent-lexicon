@@ -37,6 +37,14 @@ from .core import (
     loads_lexicon,
     resolve_text,
 )
+from .evals import (
+    EvalDatasetError,
+    EvalQuery,
+    EvalToolCallExpectation,
+    eval_query_from_dict,
+    load_eval_queries,
+    loads_eval_queries,
+)
 
 __all__ = [
     "__version__",
@@ -46,6 +54,9 @@ __all__ = [
     "Alias",
     "EvidenceKind",
     "EvidenceSpan",
+    "EvalToolCallExpectation",
+    "EvalQuery",
+    "EvalDatasetError",
     "Lexicon",
     "LexiconResolver",
     "ProposalCandidate",
@@ -70,6 +81,9 @@ __all__ = [
     "build_surface_matcher",
     "find_surface_matches",
     "guard_tool_call",
+    "loads_eval_queries",
+    "load_eval_queries",
+    "eval_query_from_dict",
     "lexicon_from_dict",
     "load_lexicon",
     "loads_lexicon",

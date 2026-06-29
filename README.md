@@ -20,6 +20,7 @@ agent-lexicon validate examples/customer_limits/lexicon.yaml
 agent-lexicon match examples/customer_limits/lexicon.yaml "The customer cap and rate limit changed." --longest-only
 agent-lexicon resolve examples/customer_limits/lexicon.yaml "increase the limit"
 agent-lexicon guard examples/customer_limits/lexicon.yaml "increase the limit" --tool api.update_rate_limit
+agent-lexicon validate-queries examples/customer_limits/queries.jsonl
 ```
 
 ## Core schema
@@ -243,3 +244,37 @@ proposal review, governed snapshots, and search/RAG integration.
 ## License
 
 Apache License 2.0.
+
+## Eval query datasets
+
+Agent Lexicon uses JSONL query datasets to describe expected runtime behavior.
+Each row contains one user query, optional scopes, expected terminology
+resolution, and optional tool-call safety expectations. Metrics are computed by
+the evaluation runner, while this layer keeps the dataset format validated and
+portable.
+
+Example row:
+
+```json
+{"id":"ambiguous.limit","text":"increase the limit","expected_status":"ambiguous","expected_action":"ask_clarification","expected_term_ids":["billing.credit_limit","api.rate_limit"],"tool_calls":[{"tool_name":"api.update_rate_limit","expected_status":"needs_clarification","expected_action":"ask_clarification","expected_allowed":false}]}
+```
+
+Validate a dataset from the command line:
+
+```bash
+agent-lexicon validate-queries examples/customer_limits/queries.jsonl
+```
+
+Load the same dataset from Python:
+
+```python
+from agent_lexicon import load_eval_queries
+
+queries = load_eval_queries("examples/customer_limits/queries.jsonl")
+assert queries[0].expected_status.value == "ambiguous"
+```
+
+The loader validates duplicate ids, JSONL structure, expected resolver statuses,
+expected resolver actions, tool guard statuses, tool guard actions, and primary
+term references before returning typed query objects.
+
