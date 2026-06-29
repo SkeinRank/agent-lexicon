@@ -1,0 +1,22 @@
+version: 1
+metadata:
+  name: Project terminology
+  description: Git-tracked Agent Lexicon dictionary.
+scopes:
+  - id: project
+    label: Project
+    description: Local project terminology.
+terms:
+  - id: project.example_term
+    canonical: example term
+    description: Starter term used to verify the dictionary-as-code layout.
+    scopes: [project]
+    aliases:
+      - surface: example concept
+        scopes: [project]
+    evidence:
+      - source_path: README.md
+        start_line: 1
+        snippet: Example term for a local dictionary-as-code layout.
+        kind: context
+proposals: []

@@ -31,6 +31,11 @@ agent-lexicon workspace status --root examples/customer_limits
 agent-lexicon review --root examples/customer_limits
 agent-lexicon workspace export-review-events --root examples/customer_limits
 agent-lexicon discover-migrations examples/customer_limits/lexicon.yaml
+agent-lexicon dictionary init --root .
+agent-lexicon dictionary validate --root .
+agent-lexicon dictionary diff lexicon/lexicon.yaml lexicon-next.yaml
+agent-lexicon dictionary merge lexicon-base.yaml lexicon-ours.yaml lexicon-theirs.yaml --output lexicon-merged.json
+agent-lexicon dictionary pr-check --root .
 ```
 
 ## Core schema
@@ -524,6 +529,145 @@ print(snapshot.snapshot_id, snapshot.generated_term_count)
 Only `accepted` review decisions are promoted. Rejected, ambiguous, and
 needs-split candidates remain in the workspace review history and can still be
 exported through the review events JSONL workflow.
+
+## Dictionary-as-code layout
+
+Agent Lexicon separates local workspace state from git-tracked dictionary files.
+The `.agent-lexicon/` directory stores SQLite cache, local review decisions, and
+workspace metadata. The `lexicon/` directory is the reviewable source of truth
+that can be committed, reviewed in pull requests, validated in CI, and used by
+runtime agents.
+
+Create the standard layout:
+
+```bash
+agent-lexicon dictionary init --root .
+```
+
+The command creates:
+
+```text
+lexicon/
+  README.md
+  lexicon.yaml
+  queries.jsonl
+  proposals/
+  snapshots/
+  review-events/
+```
+
+Validate the layout before opening a pull request:
+
+```bash
+agent-lexicon dictionary validate --root .
+agent-lexicon check lexicon/lexicon.yaml lexicon/queries.jsonl
+```
+
+Python usage:
+
+```python
+from agent_lexicon import init_dictionary_layout, validate_dictionary_layout
+
+summary = init_dictionary_layout(".")
+assert summary.valid
+
+validated = validate_dictionary_layout(".")
+print(validated.layout.lexicon_path)
+```
+
+The layout command preserves existing files by default. Use `--force` only when
+you intentionally want to overwrite the generated starter files.
+
+## Semantic diff
+
+Agent Lexicon can compare two validated lexicon files by terminology semantics
+instead of raw line changes. This keeps pull request review focused on canonical
+terms, aliases, scopes, tool mappings, evidence, proposals, and metadata.
+
+```bash
+agent-lexicon dictionary diff lexicon/lexicon.yaml lexicon-next.yaml
+agent-lexicon dictionary diff lexicon/lexicon.yaml lexicon-next.yaml --json
+agent-lexicon dictionary diff lexicon/lexicon.yaml lexicon-next.yaml --fail-on-change
+```
+
+Python usage:
+
+```python
+from agent_lexicon import diff_lexicon_files
+
+report = diff_lexicon_files("lexicon/lexicon.yaml", "lexicon-next.yaml")
+for change in report.changes:
+    print(change.to_text())
+```
+
+Use `--fail-on-change` in automation when a workflow needs to detect whether a
+lexicon update contains any semantic changes.
+
+## Semantic merge
+
+Agent Lexicon can perform a three-way merge for lexicon files using terminology
+objects instead of raw text. Non-overlapping changes are merged automatically;
+competing edits to the same semantic field become conflicts that can be handled
+in review before publishing a dictionary update.
+
+```bash
+agent-lexicon dictionary merge lexicon-base.yaml lexicon-ours.yaml lexicon-theirs.yaml --output lexicon-merged.json
+agent-lexicon dictionary merge lexicon-base.yaml lexicon-ours.yaml lexicon-theirs.yaml --check
+agent-lexicon dictionary merge lexicon-base.yaml lexicon-ours.yaml lexicon-theirs.yaml --json
+```
+
+Python usage:
+
+```python
+from agent_lexicon import merge_lexicon_files, write_merged_lexicon_json
+
+report = merge_lexicon_files(
+    "lexicon-base.yaml",
+    "lexicon-ours.yaml",
+    "lexicon-theirs.yaml",
+)
+
+if report.has_conflicts:
+    for conflict in report.conflicts:
+        print(conflict.to_text())
+else:
+    write_merged_lexicon_json(report, "lexicon-merged.json")
+```
+
+Use semantic merge when multiple branches update terminology at the same time.
+It can combine independent additions such as new aliases, tools, metadata, or
+evidence while blocking ambiguous edits such as two different canonical names for
+the same term.
+
+## CI and pull request validation
+
+Agent Lexicon includes a single dictionary PR check command for local CI and
+GitHub Actions. It validates the git-tracked dictionary layout, runs the behavior
+dataset, optionally prints a semantic diff against a base lexicon, and can check
+three-way semantic merge inputs for conflicts.
+
+```bash
+agent-lexicon dictionary pr-check --root .
+agent-lexicon dictionary pr-check --root . --base-lexicon /tmp/base-lexicon.yaml
+agent-lexicon dictionary pr-check --root . --base-lexicon /tmp/base-lexicon.yaml --json
+```
+
+For stricter automation, fail when any semantic change is detected:
+
+```bash
+agent-lexicon dictionary pr-check --root . --base-lexicon /tmp/base-lexicon.yaml --fail-on-semantic-change
+```
+
+For merge validation, provide all three merge inputs together:
+
+```bash
+agent-lexicon dictionary pr-check --root . --merge-base base.yaml --merge-ours ours.yaml --merge-theirs theirs.yaml
+```
+
+The repository also includes a `Dictionary` GitHub Actions workflow that runs the
+PR check on `main` pushes and pull requests. On pull requests, it attempts to
+load the base branch `lexicon/lexicon.yaml` and includes a semantic diff in the
+check output.
 
 ## Development
 

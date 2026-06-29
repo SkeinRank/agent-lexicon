@@ -37,6 +37,45 @@ from .core import (
     loads_lexicon,
     resolve_text,
 )
+
+from .dictionary import (
+    DictionaryCheckError,
+    DictionaryCheckItem,
+    DictionaryCheckKind,
+    DictionaryCheckStatus,
+    DictionaryPrCheckReport,
+    SemanticChangeKind,
+    SemanticDiffError,
+    SemanticDiffItem,
+    SemanticDiffReport,
+    SemanticDiffSummary,
+    SemanticObjectKind,
+    SemanticMergeConflict,
+    SemanticMergeError,
+    SemanticMergeReport,
+    SemanticMergeStatus,
+    diff_lexicon_files,
+    diff_lexicons,
+    merge_lexicon_files,
+    merge_lexicons,
+    write_merged_lexicon_json,
+    run_dictionary_pr_checks,
+    DEFAULT_DICTIONARY_DIR,
+    DEFAULT_LEXICON_FILENAME,
+    DEFAULT_PROPOSALS_DIR,
+    DEFAULT_QUERIES_FILENAME,
+    DEFAULT_REVIEW_EVENTS_DIR,
+    DEFAULT_SNAPSHOTS_DIR,
+    DictionaryLayout,
+    DictionaryLayoutError,
+    DictionaryLayoutSummary,
+    dictionary_layout_path,
+    init_dictionary_layout,
+    inspect_dictionary_layout,
+    validate_dictionary_layout,
+    write_dictionary_manifest,
+)
+
 from .evals import (
     BehaviorMetrics,
     EvalQueryResult,
@@ -114,6 +153,41 @@ from .web import ReviewInboxError, build_review_inbox_html, run_review_inbox
 
 
 __all__ = [
+    "DictionaryCheckError",
+    "DictionaryCheckItem",
+    "DictionaryCheckKind",
+    "DictionaryCheckStatus",
+    "DictionaryPrCheckReport",
+    "run_dictionary_pr_checks",
+    "SemanticChangeKind",
+    "SemanticDiffError",
+    "SemanticDiffItem",
+    "SemanticDiffReport",
+    "SemanticDiffSummary",
+    "SemanticObjectKind",
+    "SemanticMergeConflict",
+    "SemanticMergeError",
+    "SemanticMergeReport",
+    "SemanticMergeStatus",
+    "diff_lexicon_files",
+    "diff_lexicons",
+    "merge_lexicon_files",
+    "merge_lexicons",
+    "write_merged_lexicon_json",
+    "DEFAULT_DICTIONARY_DIR",
+    "DEFAULT_LEXICON_FILENAME",
+    "DEFAULT_PROPOSALS_DIR",
+    "DEFAULT_QUERIES_FILENAME",
+    "DEFAULT_REVIEW_EVENTS_DIR",
+    "DEFAULT_SNAPSHOTS_DIR",
+    "DictionaryLayout",
+    "DictionaryLayoutError",
+    "DictionaryLayoutSummary",
+    "dictionary_layout_path",
+    "init_dictionary_layout",
+    "inspect_dictionary_layout",
+    "validate_dictionary_layout",
+    "write_dictionary_manifest",
     "__version__",
     "DEFAULT_DATABASE_NAME",
     "DEFAULT_WORKSPACE_DIR",
@@ -218,7 +292,7 @@ __all__ = [
     "resolve_text",
 ]
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 
 def about() -> str:

@@ -1,4 +1,4 @@
-.PHONY: install test test-unit check ci clean
+.PHONY: install test test-unit dictionary-check check ci clean
 
 install:
 	poetry install --with dev
@@ -9,7 +9,10 @@ test:
 test-unit:
 	poetry run pytest -q tests
 
-check: test
+dictionary-check:
+	poetry run python -m agent_lexicon dictionary pr-check --root .
+
+check: test dictionary-check
 
 ci: check
 

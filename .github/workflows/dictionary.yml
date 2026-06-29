@@ -1,0 +1,47 @@
+name: Dictionary
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  dictionary-check:
+    name: Dictionary-as-code validation
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Poetry
+        run: python -m pip install --upgrade poetry==2.1.1
+
+      - name: Install development environment
+        run: poetry install --with dev
+
+      - name: Run dictionary checks
+        if: github.event_name != 'pull_request'
+        run: poetry run agent-lexicon dictionary pr-check --root .
+
+      - name: Prepare base lexicon for PR
+        if: github.event_name == 'pull_request'
+        run: |
+          git show "origin/${{ github.base_ref }}:lexicon/lexicon.yaml" > /tmp/base-lexicon.yaml || true
+
+      - name: Run dictionary PR checks
+        if: github.event_name == 'pull_request'
+        run: |
+          if [ -s /tmp/base-lexicon.yaml ]; then
+            poetry run agent-lexicon dictionary pr-check --root . --base-lexicon /tmp/base-lexicon.yaml
+          else
+            poetry run agent-lexicon dictionary pr-check --root .
+          fi

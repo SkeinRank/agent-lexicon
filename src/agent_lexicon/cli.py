@@ -7,6 +7,19 @@ import json
 from pathlib import Path
 
 from . import __version__, about
+from .dictionary import (
+    DictionaryLayoutError,
+    SemanticDiffError,
+    SemanticMergeError,
+    diff_lexicon_files,
+    merge_lexicon_files,
+    run_dictionary_pr_checks,
+    init_dictionary_layout,
+    inspect_dictionary_layout,
+    validate_dictionary_layout,
+    write_dictionary_manifest,
+    write_merged_lexicon_json,
+)
 from .core import (
     AgentLexiconLoadError,
     ResolutionStatus,
@@ -271,6 +284,173 @@ def build_parser() -> argparse.ArgumentParser:
         "--jsonl",
         action="store_true",
         help="Print one migration candidate per line.",
+    )
+
+    dictionary_parser = subparsers.add_parser(
+        "dictionary",
+        help="Manage the git-tracked dictionary-as-code layout.",
+    )
+    dictionary_subparsers = dictionary_parser.add_subparsers(dest="dictionary_command")
+
+    dictionary_init_parser = dictionary_subparsers.add_parser(
+        "init",
+        help="Create a git-tracked dictionary-as-code layout.",
+    )
+    dictionary_init_parser.add_argument(
+        "--root",
+        default=".",
+        help="Project root where the dictionary layout is stored.",
+    )
+    dictionary_init_parser.add_argument(
+        "--layout-dir",
+        default="lexicon",
+        help="Dictionary layout directory relative to the project root.",
+    )
+    dictionary_init_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite generated starter files if they already exist.",
+    )
+    dictionary_init_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print layout status as JSON.",
+    )
+
+    dictionary_status_parser = dictionary_subparsers.add_parser(
+        "status",
+        help="Inspect a dictionary-as-code layout.",
+    )
+    dictionary_status_parser.add_argument(
+        "--root",
+        default=".",
+        help="Project root where the dictionary layout is stored.",
+    )
+    dictionary_status_parser.add_argument(
+        "--layout-dir",
+        default="lexicon",
+        help="Dictionary layout directory relative to the project root.",
+    )
+    dictionary_status_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print layout status as JSON.",
+    )
+
+    dictionary_validate_parser = dictionary_subparsers.add_parser(
+        "validate",
+        help="Validate a dictionary-as-code layout.",
+    )
+    dictionary_validate_parser.add_argument(
+        "--root",
+        default=".",
+        help="Project root where the dictionary layout is stored.",
+    )
+    dictionary_validate_parser.add_argument(
+        "--layout-dir",
+        default="lexicon",
+        help="Dictionary layout directory relative to the project root.",
+    )
+    dictionary_validate_parser.add_argument(
+        "--manifest",
+        default=None,
+        help="Optional JSON manifest output path for the validated layout.",
+    )
+    dictionary_validate_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print layout status as JSON.",
+    )
+
+
+    dictionary_diff_parser = dictionary_subparsers.add_parser(
+        "diff",
+        help="Compare two lexicon files by terminology semantics.",
+    )
+    dictionary_diff_parser.add_argument("before_path", help="Previous lexicon .json, .yaml, or .yml file.")
+    dictionary_diff_parser.add_argument("after_path", help="Current lexicon .json, .yaml, or .yml file.")
+    dictionary_diff_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the full semantic diff report as JSON.",
+    )
+    dictionary_diff_parser.add_argument(
+        "--fail-on-change",
+        action="store_true",
+        help="Return exit code 1 when semantic changes are detected.",
+    )
+
+    dictionary_merge_parser = dictionary_subparsers.add_parser(
+        "merge",
+        help="Merge three lexicon files by terminology semantics.",
+    )
+    dictionary_merge_parser.add_argument("base_path", help="Common base lexicon .json, .yaml, or .yml file.")
+    dictionary_merge_parser.add_argument("ours_path", help="Our lexicon .json, .yaml, or .yml file.")
+    dictionary_merge_parser.add_argument("theirs_path", help="Their lexicon .json, .yaml, or .yml file.")
+    dictionary_merge_parser.add_argument(
+        "--output",
+        default=None,
+        help="Output path for the merged lexicon JSON file.",
+    )
+    dictionary_merge_parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Check whether the semantic merge is clean without writing a merged lexicon.",
+    )
+    dictionary_merge_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the full semantic merge report as JSON.",
+    )
+
+    dictionary_pr_check_parser = dictionary_subparsers.add_parser(
+        "pr-check",
+        help="Run dictionary-as-code checks for CI and pull requests.",
+    )
+    dictionary_pr_check_parser.add_argument(
+        "--root",
+        default=".",
+        help="Project root where the dictionary layout is stored.",
+    )
+    dictionary_pr_check_parser.add_argument(
+        "--layout-dir",
+        default="lexicon",
+        help="Dictionary layout directory relative to the project root.",
+    )
+    dictionary_pr_check_parser.add_argument(
+        "--base-lexicon",
+        default=None,
+        help="Optional base lexicon file for PR semantic diff output.",
+    )
+    dictionary_pr_check_parser.add_argument(
+        "--fail-on-semantic-change",
+        action="store_true",
+        help="Return exit code 1 when --base-lexicon produces semantic changes.",
+    )
+    dictionary_pr_check_parser.add_argument(
+        "--merge-base",
+        default=None,
+        help="Optional common-base lexicon for three-way semantic merge validation.",
+    )
+    dictionary_pr_check_parser.add_argument(
+        "--merge-ours",
+        default=None,
+        help="Optional ours lexicon for three-way semantic merge validation.",
+    )
+    dictionary_pr_check_parser.add_argument(
+        "--merge-theirs",
+        default=None,
+        help="Optional theirs lexicon for three-way semantic merge validation.",
+    )
+    dictionary_pr_check_parser.add_argument(
+        "--exclude-deprecated",
+        action="store_true",
+        help="Ignore deprecated aliases or deprecated terms during behavior checks.",
+    )
+    dictionary_pr_check_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the full dictionary PR check report as JSON.",
     )
 
     workspace_parser = subparsers.add_parser(
@@ -589,6 +769,9 @@ def main(argv: list[str] | None = None) -> int:
             as_json=args.json,
             as_jsonl=args.jsonl,
         )
+
+    if args.command == "dictionary":
+        return _dictionary_command(args)
 
     if args.command == "workspace":
         return _workspace_command(args)
@@ -970,6 +1153,236 @@ def _discover_migrations_command(
         if candidate.surfaces_to_preserve:
             print(f"  preserve aliases: {', '.join(candidate.surfaces_to_preserve)}")
     return 0
+
+
+def _dictionary_command(args: argparse.Namespace) -> int:
+    if args.dictionary_command == "init":
+        try:
+            summary = init_dictionary_layout(
+                Path(args.root),
+                layout_dir=args.layout_dir,
+                force=args.force,
+            )
+        except DictionaryLayoutError as exc:
+            print(f"Invalid dictionary layout input: {exc}")
+            return 1
+        if args.json:
+            print(json.dumps(summary.to_dict(), indent=2, sort_keys=True))
+            return 0
+        print(f"Dictionary layout initialized: {summary.layout.layout_path}")
+        _print_dictionary_summary(summary)
+        return 0
+
+    if args.dictionary_command == "status":
+        try:
+            summary = inspect_dictionary_layout(Path(args.root), layout_dir=args.layout_dir)
+        except DictionaryLayoutError as exc:
+            print(f"Invalid dictionary layout input: {exc}")
+            return 1
+        if args.json:
+            print(json.dumps(summary.to_dict(), indent=2, sort_keys=True))
+            return 0
+        _print_dictionary_summary(summary)
+        return 0 if summary.exists else 1
+
+    if args.dictionary_command == "validate":
+        try:
+            summary = validate_dictionary_layout(Path(args.root), layout_dir=args.layout_dir)
+            if args.manifest:
+                write_dictionary_manifest(summary, Path(args.manifest))
+        except DictionaryLayoutError as exc:
+            print(f"Invalid dictionary layout: {exc}")
+            return 1
+        if args.json:
+            print(json.dumps(summary.to_dict(), indent=2, sort_keys=True))
+            return 0
+        print(f"Valid dictionary layout: {summary.layout.layout_path}")
+        _print_dictionary_summary(summary)
+        if args.manifest:
+            print(f"Manifest written: {args.manifest}")
+        return 0
+
+    if args.dictionary_command == "diff":
+        return _dictionary_diff_command(
+            before_path=Path(args.before_path),
+            after_path=Path(args.after_path),
+            as_json=args.json,
+            fail_on_change=args.fail_on_change,
+        )
+
+    if args.dictionary_command == "merge":
+        return _dictionary_merge_command(
+            base_path=Path(args.base_path),
+            ours_path=Path(args.ours_path),
+            theirs_path=Path(args.theirs_path),
+            output_path=Path(args.output) if args.output else None,
+            check_only=args.check,
+            as_json=args.json,
+        )
+
+    if args.dictionary_command == "pr-check":
+        return _dictionary_pr_check_command(
+            root=Path(args.root),
+            layout_dir=args.layout_dir,
+            base_lexicon_path=Path(args.base_lexicon) if args.base_lexicon else None,
+            merge_base_path=Path(args.merge_base) if args.merge_base else None,
+            merge_ours_path=Path(args.merge_ours) if args.merge_ours else None,
+            merge_theirs_path=Path(args.merge_theirs) if args.merge_theirs else None,
+            fail_on_semantic_change=args.fail_on_semantic_change,
+            include_deprecated=not args.exclude_deprecated,
+            as_json=args.json,
+        )
+
+    print("Dictionary command required: init, status, validate, diff, merge, or pr-check")
+    return 1
+
+
+def _dictionary_diff_command(
+    *,
+    before_path: Path,
+    after_path: Path,
+    as_json: bool,
+    fail_on_change: bool,
+) -> int:
+    try:
+        report = diff_lexicon_files(before_path, after_path)
+    except SemanticDiffError as exc:
+        print(f"Invalid semantic diff input: {exc}")
+        return 1
+
+    if as_json:
+        print(report.to_json())
+        return 1 if fail_on_change and report.has_changes else 0
+
+    summary = report.summary
+    print(
+        "Semantic diff: "
+        f"{summary.total} changes "
+        f"({summary.added} added, {summary.removed} removed, {summary.changed} changed)"
+    )
+    print(f"Before: {report.before_label}")
+    print(f"After: {report.after_label}")
+    if not report.has_changes:
+        print("No semantic changes.")
+        return 0
+
+    for change in report.changes:
+        print(change.to_text())
+    return 1 if fail_on_change else 0
+
+
+def _dictionary_merge_command(
+    *,
+    base_path: Path,
+    ours_path: Path,
+    theirs_path: Path,
+    output_path: Path | None,
+    check_only: bool,
+    as_json: bool,
+) -> int:
+    try:
+        report = merge_lexicon_files(base_path, ours_path, theirs_path)
+    except SemanticMergeError as exc:
+        print(f"Invalid semantic merge input: {exc}")
+        return 1
+
+    if report.has_conflicts:
+        if as_json:
+            print(report.to_json())
+        else:
+            print(f"Semantic merge: conflict ({report.conflict_count} conflicts)")
+            print(f"Base: {report.base_label}")
+            print(f"Ours: {report.ours_label}")
+            print(f"Theirs: {report.theirs_label}")
+            for conflict in report.conflicts:
+                print(conflict.to_text())
+        return 1
+
+    if output_path is not None and not check_only:
+        try:
+            written_path = write_merged_lexicon_json(report, output_path)
+        except SemanticMergeError as exc:
+            print(f"Invalid semantic merge output: {exc}")
+            return 1
+    else:
+        written_path = None
+
+    if as_json:
+        print(report.to_json(include_merged_lexicon=output_path is None and not check_only))
+        return 0
+
+    summary = report.merged_diff_summary
+    print(
+        "Semantic merge: clean "
+        f"({summary.total} merged changes; "
+        f"{summary.added} added, {summary.removed} removed, {summary.changed} changed)"
+    )
+    print(f"Base: {report.base_label}")
+    print(f"Ours: {report.ours_label}")
+    print(f"Theirs: {report.theirs_label}")
+    if check_only:
+        print("Check only: no merged lexicon was written.")
+    elif written_path is not None:
+        print(f"Merged lexicon written: {written_path}")
+    else:
+        print("No output path provided. Use --output to write the merged lexicon.")
+    return 0
+
+
+def _dictionary_pr_check_command(
+    *,
+    root: Path,
+    layout_dir: str,
+    base_lexicon_path: Path | None,
+    merge_base_path: Path | None,
+    merge_ours_path: Path | None,
+    merge_theirs_path: Path | None,
+    fail_on_semantic_change: bool,
+    include_deprecated: bool,
+    as_json: bool,
+) -> int:
+    report = run_dictionary_pr_checks(
+        root,
+        layout_dir=layout_dir,
+        base_lexicon_path=base_lexicon_path,
+        merge_base_path=merge_base_path,
+        merge_ours_path=merge_ours_path,
+        merge_theirs_path=merge_theirs_path,
+        fail_on_semantic_change=fail_on_semantic_change,
+        include_deprecated=include_deprecated,
+    )
+    if as_json:
+        print(report.to_json())
+        return 0 if report.passed else 1
+
+    print(
+        "Dictionary PR check: "
+        f"{'passed' if report.passed else 'failed'} "
+        f"({report.passed_count} passed, {report.failed_count} failed, {report.skipped_count} skipped)"
+    )
+    for item in report.checks:
+        print(item.to_text())
+    return 0 if report.passed else 1
+
+
+def _print_dictionary_summary(summary) -> None:
+    metadata = dict(summary.metadata)
+    print(
+        "Dictionary status: "
+        f"valid={'yes' if summary.valid else 'no'}, "
+        f"scopes={metadata.get('scope_count', 0)}, "
+        f"terms={metadata.get('term_count', 0)}, "
+        f"queries={metadata.get('query_count', 0)}, "
+        f"proposal_files={summary.proposal_file_count}, "
+        f"snapshot_files={summary.snapshot_file_count}, "
+        f"review_event_files={summary.review_event_file_count}"
+    )
+    print(f"Lexicon: {summary.layout.lexicon_path}")
+    print(f"Queries: {summary.layout.queries_path}")
+    if summary.lexicon_error:
+        print(f"Lexicon error: {summary.lexicon_error}")
+    if summary.queries_error:
+        print(f"Queries error: {summary.queries_error}")
 
 
 def _workspace_command(args: argparse.Namespace) -> int:
