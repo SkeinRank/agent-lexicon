@@ -24,6 +24,7 @@ agent-lexicon validate-queries examples/customer_limits/queries.jsonl
 agent-lexicon check examples/customer_limits/lexicon.yaml examples/customer_limits/queries.jsonl
 agent-lexicon ingest README.md src examples/customer_limits/docs --root .
 agent-lexicon discover-candidates examples/customer_limits/docs --root examples/customer_limits
+agent-lexicon build-evidence examples/customer_limits/docs --root examples/customer_limits
 ```
 
 ## Core schema
@@ -231,6 +232,7 @@ Command line usage:
 ```bash
 agent-lexicon ingest README.md src examples/customer_limits/docs --root .
 agent-lexicon discover-candidates examples/customer_limits/docs --root examples/customer_limits
+agent-lexicon build-evidence examples/customer_limits/docs --root examples/customer_limits
 agent-lexicon ingest examples/customer_limits/docs --root examples/customer_limits --jsonl
 ```
 
@@ -279,6 +281,38 @@ Each candidate includes a surface, normalized surface, kind, score, jargon
 score, background penalty, occurrence count, document count, source occurrences,
 and a deterministic score breakdown. Existing lexicon surfaces can be filtered
 out with `existing_surfaces_from_lexicon(...)` or the CLI `--lexicon` option.
+
+## Evidence packs
+
+Evidence packs turn discovered candidates into reviewable snippets with file
+paths and line numbers. Positive snippets show exact candidate occurrences.
+Negative snippets show partial token overlap without the exact surface, which
+helps reviewers spot broad, overloaded, or weak terminology candidates.
+
+Command line usage:
+
+```bash
+agent-lexicon build-evidence examples/customer_limits/docs --root examples/customer_limits
+agent-lexicon build-evidence examples/customer_limits/docs --root examples/customer_limits --json
+agent-lexicon build-evidence examples/customer_limits/docs --root examples/customer_limits --jsonl
+```
+
+Python usage:
+
+```python
+from agent_lexicon import build_evidence_packs, discover_scout_candidates, ingest_local_paths
+
+ingest_report = ingest_local_paths(["examples/customer_limits/docs"], root="examples/customer_limits")
+candidate_report = discover_scout_candidates(ingest_report.documents)
+evidence_report = build_evidence_packs(ingest_report.documents, candidate_report.candidates)
+
+for pack in evidence_report.packs:
+    print(pack.surface, pack.positive_count, pack.negative_count)
+```
+
+Each pack includes the candidate surface, score, positive snippets, negative
+snippets, line ranges, reasons, and source metadata. This is the local evidence
+foundation for proposal review and future snapshot publishing.
 
 ## Behavior metrics
 
@@ -361,6 +395,7 @@ agent-lexicon validate-queries examples/customer_limits/queries.jsonl
 agent-lexicon check examples/customer_limits/lexicon.yaml examples/customer_limits/queries.jsonl
 agent-lexicon ingest README.md src examples/customer_limits/docs --root .
 agent-lexicon discover-candidates examples/customer_limits/docs --root examples/customer_limits
+agent-lexicon build-evidence examples/customer_limits/docs --root examples/customer_limits
 ```
 
 Load the same dataset from Python:

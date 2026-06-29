@@ -20,7 +20,7 @@ def _subprocess_env() -> dict[str, str]:
 
 class AgentLexiconSmokeTests(unittest.TestCase):
     def test_version_is_initialized(self) -> None:
-        self.assertEqual(agent_lexicon.__version__, "0.1.0")
+        self.assertEqual(agent_lexicon.__version__, "0.2.0")
 
     def test_about_mentions_agent_lexicon(self) -> None:
         self.assertIn("Agent Lexicon", agent_lexicon.about())
@@ -36,7 +36,7 @@ class AgentLexiconSmokeTests(unittest.TestCase):
             capture_output=True,
             env=_subprocess_env(),
         )
-        self.assertEqual(completed.stdout.strip(), "0.1.0")
+        self.assertEqual(completed.stdout.strip(), "0.2.0")
 
 
     def test_cli_match_example(self) -> None:
@@ -175,6 +175,27 @@ class AgentLexiconSmokeTests(unittest.TestCase):
             env=_subprocess_env(),
         )
         self.assertIn("Candidate discovery:", completed.stdout)
+        self.assertIn("billing.update_credit_limit", completed.stdout)
+
+    def test_cli_build_evidence_example(self) -> None:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "agent_lexicon",
+                "build-evidence",
+                "examples/customer_limits/docs",
+                "--root",
+                "examples/customer_limits",
+                "--max-candidates",
+                "5",
+            ],
+            check=True,
+            text=True,
+            capture_output=True,
+            env=_subprocess_env(),
+        )
+        self.assertIn("Evidence packs:", completed.stdout)
         self.assertIn("billing.update_credit_limit", completed.stdout)
 
 

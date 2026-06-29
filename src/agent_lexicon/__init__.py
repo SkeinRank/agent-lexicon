@@ -53,10 +53,16 @@ from .evals import (
 
 from .scout import (
     CandidateSurfaceKind,
+    EvidencePack,
+    EvidencePackError,
+    EvidencePackReport,
+    EvidenceSnippet,
+    EvidenceSnippetKind,
     ScoutCandidate,
     ScoutCandidateError,
     ScoutCandidateOccurrence,
     ScoutCandidateReport,
+    build_evidence_packs,
     discover_scout_candidates,
     existing_surfaces_from_lexicon,
 )
@@ -78,6 +84,12 @@ from .ingest import (
 __all__ = [
     "__version__",
     "existing_surfaces_from_lexicon",
+    "build_evidence_packs",
+    "EvidencePack",
+    "EvidencePackError",
+    "EvidencePackReport",
+    "EvidenceSnippet",
+    "EvidenceSnippetKind",
     "discover_scout_candidates",
     "ScoutCandidateReport",
     "ScoutCandidateOccurrence",
@@ -142,7 +154,7 @@ __all__ = [
     "resolve_text",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 
 def about() -> str:
