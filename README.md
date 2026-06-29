@@ -442,6 +442,41 @@ For automation and dashboards, the same report can be emitted as JSON:
 agent-lexicon check examples/customer_limits/lexicon.yaml examples/customer_limits/queries.jsonl --json
 ```
 
+## Published local snapshots
+
+Accepted local review decisions can be promoted into a lexicon-compatible JSON
+snapshot. The snapshot can be validated and loaded by the same runtime APIs used
+for normal lexicon documents. This keeps the local review workflow simple: scout
+finds candidates, reviewers accept the terms they trust, and `publish-snapshot`
+writes a deterministic artifact for agents and CI.
+
+Command line usage after accepting candidates in the local review inbox:
+
+```bash
+agent-lexicon workspace publish-snapshot --root examples/customer_limits
+agent-lexicon workspace publish-snapshot --root examples/customer_limits --output examples/customer_limits/snapshot.json
+agent-lexicon workspace publish-snapshot --root examples/customer_limits --lexicon examples/customer_limits/lexicon.yaml --json
+agent-lexicon validate examples/customer_limits/snapshot.json
+```
+
+Python usage:
+
+```python
+from agent_lexicon import open_workspace, publish_local_snapshot
+
+state = open_workspace("examples/customer_limits")
+snapshot = publish_local_snapshot(
+    state,
+    output_path="examples/customer_limits/snapshot.json",
+)
+
+print(snapshot.snapshot_id, snapshot.generated_term_count)
+```
+
+Only `accepted` review decisions are promoted. Rejected, ambiguous, and
+needs-split candidates remain in the workspace review history and can still be
+exported through the review events JSONL workflow.
+
 ## Development
 
 Install the development environment with Poetry:

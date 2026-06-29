@@ -26,7 +26,14 @@ from .scout import (
     existing_surfaces_from_lexicon,
 )
 from .web import ReviewInboxError, run_review_inbox
-from .workspace import ReviewDecisionStatus, WorkspaceError, init_workspace, open_workspace
+from .workspace import (
+    ReviewDecisionStatus,
+    SnapshotPublishError,
+    WorkspaceError,
+    init_workspace,
+    open_workspace,
+    publish_local_snapshot,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -355,6 +362,36 @@ def build_parser() -> argparse.ArgumentParser:
         choices=tuple(status.value for status in ReviewDecisionStatus),
         default=None,
         help="Export only events with a specific review decision.",
+    )
+
+    workspace_publish_snapshot_parser = workspace_subparsers.add_parser(
+        "publish-snapshot",
+        help="Publish accepted local review decisions to a lexicon snapshot.",
+    )
+    workspace_publish_snapshot_parser.add_argument(
+        "--root",
+        default=".",
+        help="Project root where .agent-lexicon/ is stored.",
+    )
+    workspace_publish_snapshot_parser.add_argument(
+        "--lexicon",
+        default=None,
+        help="Optional base lexicon to include before accepted local terms.",
+    )
+    workspace_publish_snapshot_parser.add_argument(
+        "--output",
+        default=None,
+        help="Output snapshot path. Defaults to .agent-lexicon/snapshots/<snapshot-id>.json.",
+    )
+    workspace_publish_snapshot_parser.add_argument(
+        "--snapshot-id",
+        default=None,
+        help="Optional stable snapshot id. If omitted, one is generated.",
+    )
+    workspace_publish_snapshot_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print snapshot publish summary as JSON.",
     )
 
 
@@ -869,7 +906,8 @@ def _workspace_command(args: argparse.Namespace) -> int:
             f"{summary.candidate_count} candidates, "
             f"{summary.evidence_pack_count} evidence packs, "
             f"{summary.review_decision_count} review decisions, "
-            f"{summary.review_event_count} review events"
+            f"{summary.review_event_count} review events, "
+            f"{summary.snapshot_count} snapshots"
         )
         print(f"Database: {summary.db_path}")
         return 0
@@ -896,7 +934,16 @@ def _workspace_command(args: argparse.Namespace) -> int:
             decision=args.decision,
         )
 
-    print("Workspace command required: init, status, sync, or export-review-events")
+    if args.workspace_command == "publish-snapshot":
+        return _workspace_publish_snapshot_command(
+            root=Path(args.root),
+            lexicon_path=Path(args.lexicon) if args.lexicon else None,
+            output_path=Path(args.output) if args.output else None,
+            snapshot_id=args.snapshot_id,
+            as_json=args.json,
+        )
+
+    print("Workspace command required: init, status, sync, export-review-events, or publish-snapshot")
     return 1
 
 
@@ -991,6 +1038,56 @@ def _workspace_export_review_events_command(
 
     event_count = content.count("\n") if content else 0
     print(f"Review events exported: {event_count} events -> {output_path}")
+    return 0
+
+
+
+def _workspace_publish_snapshot_command(
+    *,
+    root: Path,
+    lexicon_path: Path | None,
+    output_path: Path | None,
+    snapshot_id: str | None,
+    as_json: bool,
+) -> int:
+    try:
+        state = open_workspace(root, create=False)
+    except WorkspaceError as exc:
+        print(f"Invalid workspace input: {exc}")
+        return 1
+
+    base_lexicon = None
+    if lexicon_path is not None:
+        try:
+            base_lexicon = load_lexicon(lexicon_path)
+        except AgentLexiconLoadError as exc:
+            print(f"Invalid lexicon: {exc}")
+            return 1
+
+    try:
+        snapshot = publish_local_snapshot(
+            state,
+            output_path=output_path,
+            base_lexicon=base_lexicon,
+            snapshot_id=snapshot_id,
+        )
+    except (SnapshotPublishError, WorkspaceError) as exc:
+        print(f"Invalid snapshot publish input: {exc}")
+        return 1
+
+    if as_json:
+        print(json.dumps(snapshot.to_dict(), indent=2, sort_keys=True))
+        return 0
+
+    print(f"Snapshot published: {snapshot.output_path}")
+    print(f"Snapshot id: {snapshot.snapshot_id}")
+    print(
+        "Terms: "
+        f"{snapshot.term_count} total, "
+        f"{snapshot.generated_term_count} generated from "
+        f"{snapshot.accepted_count} accepted decisions, "
+        f"{snapshot.skipped_count} skipped"
+    )
     return 0
 
 

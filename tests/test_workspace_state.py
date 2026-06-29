@@ -34,6 +34,7 @@ def test_init_workspace_creates_sqlite_database(tmp_path: Path) -> None:
     assert summary.candidate_count == 0
     assert summary.evidence_pack_count == 0
     assert summary.review_decision_count == 0
+    assert summary.snapshot_count == 0
 
 
 def test_workspace_stores_ingest_candidates_and_evidence(tmp_path: Path) -> None:
@@ -130,6 +131,7 @@ def test_cli_workspace_status_json(tmp_path: Path, capsys) -> None:
     assert payload["candidate_count"] == 0
     assert payload["evidence_pack_count"] == 0
     assert payload["review_decision_count"] == 0
+    assert payload["snapshot_count"] == 0
 
 
 def test_workspace_review_decisions_and_items(tmp_path: Path) -> None:

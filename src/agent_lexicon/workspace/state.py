@@ -39,7 +39,7 @@ class ReviewEventType(str, Enum):
     DECISION_SAVED = "review_decision_saved"
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 DEFAULT_WORKSPACE_DIR = ".agent-lexicon"
 DEFAULT_DATABASE_NAME = "agent_lexicon.db"
 
@@ -56,6 +56,7 @@ class WorkspaceSummary:
     evidence_pack_count: int
     review_decision_count: int = 0
     review_event_count: int = 0
+    snapshot_count: int = 0
 
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-serializable workspace summary."""
@@ -68,6 +69,7 @@ class WorkspaceSummary:
             "evidence_pack_count": self.evidence_pack_count,
             "review_decision_count": self.review_decision_count,
             "review_event_count": self.review_event_count,
+            "snapshot_count": self.snapshot_count,
         }
 
 
@@ -153,6 +155,49 @@ class WorkspaceReviewEvent:
     def to_json_line(self) -> str:
         """Return this review event as one JSONL row."""
         return json.dumps(self.to_dict(), ensure_ascii=False, sort_keys=True)
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceSnapshotRecord:
+    """Stored local snapshot publication metadata."""
+
+    snapshot_id: str
+    created_at: str
+    term_count: int
+    accepted_count: int
+    generated_term_count: int
+    skipped_count: int
+    output_path: str
+    payload: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "snapshot_id", _clean_text(self.snapshot_id, field_name="snapshot_id"))
+        object.__setattr__(self, "created_at", _clean_text(self.created_at, field_name="created_at"))
+        object.__setattr__(self, "output_path", _clean_text(self.output_path, field_name="output_path"))
+        if self.term_count < 0:
+            raise WorkspaceError("term_count must be greater than or equal to 0")
+        if self.accepted_count < 0:
+            raise WorkspaceError("accepted_count must be greater than or equal to 0")
+        if self.generated_term_count < 0:
+            raise WorkspaceError("generated_term_count must be greater than or equal to 0")
+        if self.skipped_count < 0:
+            raise WorkspaceError("skipped_count must be greater than or equal to 0")
+        if not isinstance(self.payload, Mapping):
+            raise WorkspaceError("payload must be a mapping")
+        object.__setattr__(self, "payload", dict(self.payload))
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-serializable snapshot record."""
+        return {
+            "snapshot_id": self.snapshot_id,
+            "created_at": self.created_at,
+            "term_count": self.term_count,
+            "accepted_count": self.accepted_count,
+            "generated_term_count": self.generated_term_count,
+            "skipped_count": self.skipped_count,
+            "output_path": self.output_path,
+            "payload": dict(self.payload),
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -253,6 +298,7 @@ class WorkspaceState:
                 evidence_pack_count=_table_count(connection, "evidence_packs"),
                 review_decision_count=_table_count(connection, "review_decisions"),
                 review_event_count=_table_count(connection, "review_events"),
+                snapshot_count=_table_count(connection, "snapshots"),
             )
 
     def store_documents(self, documents: Iterable[IngestDocument]) -> int:
@@ -527,6 +573,69 @@ class WorkspaceState:
             path.write_text(content, encoding="utf-8")
         return content
 
+
+    def store_snapshot_record(self, snapshot: Any) -> WorkspaceSnapshotRecord:
+        """Store metadata for one published local snapshot."""
+        snapshot_id = _clean_text(str(getattr(snapshot, "snapshot_id")), field_name="snapshot_id")
+        created_at = _clean_text(str(getattr(snapshot, "created_at")), field_name="created_at")
+        output_path = _clean_text(str(getattr(snapshot, "output_path")), field_name="output_path")
+        payload = snapshot.to_dict(include_lexicon=False)
+        record = WorkspaceSnapshotRecord(
+            snapshot_id=snapshot_id,
+            created_at=created_at,
+            term_count=int(getattr(snapshot, "term_count")),
+            accepted_count=int(getattr(snapshot, "accepted_count")),
+            generated_term_count=int(getattr(snapshot, "generated_term_count")),
+            skipped_count=int(getattr(snapshot, "skipped_count")),
+            output_path=output_path,
+            payload=payload,
+        )
+        self.ensure_schema()
+        with _connect(self.db_path) as connection:
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO snapshots (
+                    snapshot_id,
+                    created_at,
+                    term_count,
+                    accepted_count,
+                    generated_term_count,
+                    skipped_count,
+                    output_path,
+                    payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record.snapshot_id,
+                    record.created_at,
+                    record.term_count,
+                    record.accepted_count,
+                    record.generated_term_count,
+                    record.skipped_count,
+                    record.output_path,
+                    _json_dumps(record.to_dict()),
+                ),
+            )
+        return record
+
+    def list_snapshots(self, *, limit: int = 20) -> tuple[WorkspaceSnapshotRecord, ...]:
+        """Return local snapshot records ordered from newest to oldest."""
+        if limit < 1:
+            raise WorkspaceError("limit must be greater than 0")
+        self.ensure_schema()
+        with _connect(self.db_path) as connection:
+            rows = connection.execute(
+                """
+                SELECT snapshot_id, created_at, term_count, accepted_count,
+                       generated_term_count, skipped_count, output_path, payload_json
+                FROM snapshots
+                ORDER BY created_at DESC, snapshot_id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return tuple(_snapshot_record_from_row(row) for row in rows)
+
     def list_review_items(self, *, limit: int = 100) -> tuple[WorkspaceReviewItem, ...]:
         """Return candidate/evidence rows for the local proposal inbox."""
         if limit < 1:
@@ -697,6 +806,11 @@ def export_review_events_jsonl(
     return state.export_review_events_jsonl(output_path, decision=decision)
 
 
+def list_snapshots(state: WorkspaceState, *, limit: int = 20) -> tuple[WorkspaceSnapshotRecord, ...]:
+    """Return local snapshot records from a workspace."""
+    return state.list_snapshots(limit=limit)
+
+
 def _connect(db_path: Path) -> sqlite3.Connection:
     connection = sqlite3.connect(str(db_path))
     connection.execute("PRAGMA foreign_keys = ON")
@@ -786,6 +900,19 @@ def _create_schema(connection: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_review_events_surface ON review_events (normalized_surface);
         CREATE INDEX IF NOT EXISTS idx_review_events_decision ON review_events (decision);
         CREATE INDEX IF NOT EXISTS idx_review_events_created_at ON review_events (created_at ASC);
+
+        CREATE TABLE IF NOT EXISTS snapshots (
+            snapshot_id TEXT PRIMARY KEY,
+            created_at TEXT NOT NULL,
+            term_count INTEGER NOT NULL,
+            accepted_count INTEGER NOT NULL,
+            generated_term_count INTEGER NOT NULL,
+            skipped_count INTEGER NOT NULL,
+            output_path TEXT NOT NULL,
+            payload_json TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_snapshots_created_at ON snapshots (created_at DESC);
         """
     )
 
@@ -798,10 +925,23 @@ def _read_schema_version(connection: sqlite3.Connection) -> int:
 
 
 def _table_count(connection: sqlite3.Connection, table_name: str) -> int:
-    if table_name not in {"documents", "candidates", "evidence_packs", "review_decisions", "review_events"}:
+    if table_name not in {"documents", "candidates", "evidence_packs", "review_decisions", "review_events", "snapshots"}:
         raise WorkspaceError(f"unsupported workspace table: {table_name}")
     row = connection.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()
     return int(row[0]) if row is not None else 0
+
+
+def _snapshot_record_from_row(row: sqlite3.Row | tuple[Any, ...]) -> WorkspaceSnapshotRecord:
+    return WorkspaceSnapshotRecord(
+        snapshot_id=str(row[0]),
+        created_at=str(row[1]),
+        term_count=int(row[2]),
+        accepted_count=int(row[3]),
+        generated_term_count=int(row[4]),
+        skipped_count=int(row[5]),
+        output_path=str(row[6]),
+        payload=_json_loads_mapping(str(row[7])),
+    )
 
 
 def _review_item_from_row(row: sqlite3.Row | tuple[Any, ...]) -> WorkspaceReviewItem:
