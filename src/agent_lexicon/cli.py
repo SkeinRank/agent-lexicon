@@ -13,6 +13,7 @@ from .dictionary import (
     SemanticMergeError,
     diff_lexicon_files,
     merge_lexicon_files,
+    run_dictionary_pr_checks,
     init_dictionary_layout,
     inspect_dictionary_layout,
     validate_dictionary_layout,
@@ -400,6 +401,56 @@ def build_parser() -> argparse.ArgumentParser:
         "--json",
         action="store_true",
         help="Print the full semantic merge report as JSON.",
+    )
+
+    dictionary_pr_check_parser = dictionary_subparsers.add_parser(
+        "pr-check",
+        help="Run dictionary-as-code checks for CI and pull requests.",
+    )
+    dictionary_pr_check_parser.add_argument(
+        "--root",
+        default=".",
+        help="Project root where the dictionary layout is stored.",
+    )
+    dictionary_pr_check_parser.add_argument(
+        "--layout-dir",
+        default="lexicon",
+        help="Dictionary layout directory relative to the project root.",
+    )
+    dictionary_pr_check_parser.add_argument(
+        "--base-lexicon",
+        default=None,
+        help="Optional base lexicon file for PR semantic diff output.",
+    )
+    dictionary_pr_check_parser.add_argument(
+        "--fail-on-semantic-change",
+        action="store_true",
+        help="Return exit code 1 when --base-lexicon produces semantic changes.",
+    )
+    dictionary_pr_check_parser.add_argument(
+        "--merge-base",
+        default=None,
+        help="Optional common-base lexicon for three-way semantic merge validation.",
+    )
+    dictionary_pr_check_parser.add_argument(
+        "--merge-ours",
+        default=None,
+        help="Optional ours lexicon for three-way semantic merge validation.",
+    )
+    dictionary_pr_check_parser.add_argument(
+        "--merge-theirs",
+        default=None,
+        help="Optional theirs lexicon for three-way semantic merge validation.",
+    )
+    dictionary_pr_check_parser.add_argument(
+        "--exclude-deprecated",
+        action="store_true",
+        help="Ignore deprecated aliases or deprecated terms during behavior checks.",
+    )
+    dictionary_pr_check_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the full dictionary PR check report as JSON.",
     )
 
     workspace_parser = subparsers.add_parser(
@@ -1169,7 +1220,20 @@ def _dictionary_command(args: argparse.Namespace) -> int:
             as_json=args.json,
         )
 
-    print("Dictionary command required: init, status, validate, diff, or merge")
+    if args.dictionary_command == "pr-check":
+        return _dictionary_pr_check_command(
+            root=Path(args.root),
+            layout_dir=args.layout_dir,
+            base_lexicon_path=Path(args.base_lexicon) if args.base_lexicon else None,
+            merge_base_path=Path(args.merge_base) if args.merge_base else None,
+            merge_ours_path=Path(args.merge_ours) if args.merge_ours else None,
+            merge_theirs_path=Path(args.merge_theirs) if args.merge_theirs else None,
+            fail_on_semantic_change=args.fail_on_semantic_change,
+            include_deprecated=not args.exclude_deprecated,
+            as_json=args.json,
+        )
+
+    print("Dictionary command required: init, status, validate, diff, merge, or pr-check")
     return 1
 
 
@@ -1263,6 +1327,42 @@ def _dictionary_merge_command(
     else:
         print("No output path provided. Use --output to write the merged lexicon.")
     return 0
+
+
+def _dictionary_pr_check_command(
+    *,
+    root: Path,
+    layout_dir: str,
+    base_lexicon_path: Path | None,
+    merge_base_path: Path | None,
+    merge_ours_path: Path | None,
+    merge_theirs_path: Path | None,
+    fail_on_semantic_change: bool,
+    include_deprecated: bool,
+    as_json: bool,
+) -> int:
+    report = run_dictionary_pr_checks(
+        root,
+        layout_dir=layout_dir,
+        base_lexicon_path=base_lexicon_path,
+        merge_base_path=merge_base_path,
+        merge_ours_path=merge_ours_path,
+        merge_theirs_path=merge_theirs_path,
+        fail_on_semantic_change=fail_on_semantic_change,
+        include_deprecated=include_deprecated,
+    )
+    if as_json:
+        print(report.to_json())
+        return 0 if report.passed else 1
+
+    print(
+        "Dictionary PR check: "
+        f"{'passed' if report.passed else 'failed'} "
+        f"({report.passed_count} passed, {report.failed_count} failed, {report.skipped_count} skipped)"
+    )
+    for item in report.checks:
+        print(item.to_text())
+    return 0 if report.passed else 1
 
 
 def _print_dictionary_summary(summary) -> None:

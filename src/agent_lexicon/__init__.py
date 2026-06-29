@@ -39,6 +39,11 @@ from .core import (
 )
 
 from .dictionary import (
+    DictionaryCheckError,
+    DictionaryCheckItem,
+    DictionaryCheckKind,
+    DictionaryCheckStatus,
+    DictionaryPrCheckReport,
     SemanticChangeKind,
     SemanticDiffError,
     SemanticDiffItem,
@@ -54,6 +59,7 @@ from .dictionary import (
     merge_lexicon_files,
     merge_lexicons,
     write_merged_lexicon_json,
+    run_dictionary_pr_checks,
     DEFAULT_DICTIONARY_DIR,
     DEFAULT_LEXICON_FILENAME,
     DEFAULT_PROPOSALS_DIR,
@@ -147,6 +153,12 @@ from .web import ReviewInboxError, build_review_inbox_html, run_review_inbox
 
 
 __all__ = [
+    "DictionaryCheckError",
+    "DictionaryCheckItem",
+    "DictionaryCheckKind",
+    "DictionaryCheckStatus",
+    "DictionaryPrCheckReport",
+    "run_dictionary_pr_checks",
     "SemanticChangeKind",
     "SemanticDiffError",
     "SemanticDiffItem",

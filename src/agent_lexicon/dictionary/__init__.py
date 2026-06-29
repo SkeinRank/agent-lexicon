@@ -2,6 +2,15 @@
 
 from __future__ import annotations
 
+from .ci import (
+    DictionaryCheckError,
+    DictionaryCheckItem,
+    DictionaryCheckKind,
+    DictionaryCheckStatus,
+    DictionaryPrCheckReport,
+    run_dictionary_pr_checks,
+)
+
 from .diff import (
     SemanticChangeKind,
     SemanticDiffError,
@@ -40,6 +49,12 @@ from .layout import (
 )
 
 __all__ = [
+    "DictionaryCheckError",
+    "DictionaryCheckItem",
+    "DictionaryCheckKind",
+    "DictionaryCheckStatus",
+    "DictionaryPrCheckReport",
+    "run_dictionary_pr_checks",
     "SemanticChangeKind",
     "SemanticDiffError",
     "SemanticDiffItem",

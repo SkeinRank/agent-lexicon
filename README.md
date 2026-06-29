@@ -35,6 +35,7 @@ agent-lexicon dictionary init --root .
 agent-lexicon dictionary validate --root .
 agent-lexicon dictionary diff lexicon/lexicon.yaml lexicon-next.yaml
 agent-lexicon dictionary merge lexicon-base.yaml lexicon-ours.yaml lexicon-theirs.yaml --output lexicon-merged.json
+agent-lexicon dictionary pr-check --root .
 ```
 
 ## Core schema
@@ -637,6 +638,36 @@ Use semantic merge when multiple branches update terminology at the same time.
 It can combine independent additions such as new aliases, tools, metadata, or
 evidence while blocking ambiguous edits such as two different canonical names for
 the same term.
+
+## CI and pull request validation
+
+Agent Lexicon includes a single dictionary PR check command for local CI and
+GitHub Actions. It validates the git-tracked dictionary layout, runs the behavior
+dataset, optionally prints a semantic diff against a base lexicon, and can check
+three-way semantic merge inputs for conflicts.
+
+```bash
+agent-lexicon dictionary pr-check --root .
+agent-lexicon dictionary pr-check --root . --base-lexicon /tmp/base-lexicon.yaml
+agent-lexicon dictionary pr-check --root . --base-lexicon /tmp/base-lexicon.yaml --json
+```
+
+For stricter automation, fail when any semantic change is detected:
+
+```bash
+agent-lexicon dictionary pr-check --root . --base-lexicon /tmp/base-lexicon.yaml --fail-on-semantic-change
+```
+
+For merge validation, provide all three merge inputs together:
+
+```bash
+agent-lexicon dictionary pr-check --root . --merge-base base.yaml --merge-ours ours.yaml --merge-theirs theirs.yaml
+```
+
+The repository also includes a `Dictionary` GitHub Actions workflow that runs the
+PR check on `main` pushes and pull requests. On pull requests, it attempts to
+load the base branch `lexicon/lexicon.yaml` and includes a semantic diff in the
+check output.
 
 ## Development
 
