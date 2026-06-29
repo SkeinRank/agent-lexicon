@@ -16,6 +16,7 @@ from enum import Enum
 from typing import Any, Iterable, Mapping
 
 from agent_lexicon.ingest import IngestDocument
+from agent_lexicon.safety import scan_prompt_injection_text
 from agent_lexicon.scout.candidates import CandidateSurfaceKind, ScoutCandidate
 
 
@@ -198,6 +199,7 @@ def build_evidence_packs(
     context_lines: int = 1,
     max_positive_snippets: int = 3,
     max_negative_snippets: int = 3,
+    include_prompt_safety: bool = True,
 ) -> EvidencePackReport:
     """Build positive and negative evidence packs for scout candidates.
 
@@ -211,6 +213,8 @@ def build_evidence_packs(
         raise EvidencePackError("max_positive_snippets must be greater than 0")
     if max_negative_snippets < 0:
         raise EvidencePackError("max_negative_snippets must be greater than or equal to 0")
+    if not isinstance(include_prompt_safety, bool):
+        raise EvidencePackError("include_prompt_safety must be a boolean")
 
     document_tuple = tuple(documents)
     candidate_tuple = tuple(candidates)
@@ -237,6 +241,10 @@ def build_evidence_packs(
             max_snippets=max_negative_snippets,
             positive_snippets=positive_snippets,
         )
+        if include_prompt_safety:
+            positive_snippets = _annotate_snippets_with_prompt_safety(positive_snippets)
+            negative_snippets = _annotate_snippets_with_prompt_safety(negative_snippets)
+        prompt_safety_summary = _prompt_safety_summary((*positive_snippets, *negative_snippets))
         packs.append(
             EvidencePack(
                 surface=candidate.surface,
@@ -251,10 +259,12 @@ def build_evidence_packs(
                     "jargon_score": candidate.jargon_score,
                     "background_penalty": candidate.background_penalty,
                     "candidate_metadata": dict(candidate.metadata),
+                    "prompt_safety": prompt_safety_summary,
                 },
             )
         )
 
+    report_prompt_safety = _report_prompt_safety_summary(packs)
     return EvidencePackReport(
         packs=tuple(packs),
         document_count=len(document_tuple),
@@ -263,8 +273,101 @@ def build_evidence_packs(
             "context_lines": context_lines,
             "max_positive_snippets": max_positive_snippets,
             "max_negative_snippets": max_negative_snippets,
+            "include_prompt_safety": include_prompt_safety,
+            "prompt_safety": report_prompt_safety,
         },
     )
+
+
+def _annotate_snippets_with_prompt_safety(snippets: tuple[EvidenceSnippet, ...]) -> tuple[EvidenceSnippet, ...]:
+    annotated: list[EvidenceSnippet] = []
+    for snippet in snippets:
+        report = scan_prompt_injection_text(
+            snippet.text,
+            source_path=snippet.document_path,
+            start_line=snippet.start_line,
+        )
+        metadata = dict(snippet.metadata)
+        metadata["prompt_safety"] = report.to_dict(include_findings=True)
+        annotated.append(
+            EvidenceSnippet(
+                document_path=snippet.document_path,
+                start_line=snippet.start_line,
+                end_line=snippet.end_line,
+                text=snippet.text,
+                kind=snippet.kind,
+                reason=snippet.reason,
+                matched_surface=snippet.matched_surface,
+                metadata=metadata,
+            )
+        )
+    return tuple(annotated)
+
+
+def _prompt_safety_summary(snippets: tuple[EvidenceSnippet, ...]) -> dict[str, Any]:
+    highest_risk = "none"
+    action = "allow"
+    finding_count = 0
+    high_count = 0
+    medium_count = 0
+    low_count = 0
+    for snippet in snippets:
+        prompt_safety = dict(snippet.metadata.get("prompt_safety", {}))
+        if not prompt_safety:
+            continue
+        finding_count += int(prompt_safety.get("finding_count", 0))
+        high_count += int(prompt_safety.get("high_count", 0))
+        medium_count += int(prompt_safety.get("medium_count", 0))
+        low_count += int(prompt_safety.get("low_count", 0))
+        snippet_risk = str(prompt_safety.get("highest_risk", "none"))
+        if _risk_rank(snippet_risk) > _risk_rank(highest_risk):
+            highest_risk = snippet_risk
+            action = str(prompt_safety.get("action", "allow"))
+    return {
+        "finding_count": finding_count,
+        "highest_risk": highest_risk,
+        "action": action,
+        "high_count": high_count,
+        "medium_count": medium_count,
+        "low_count": low_count,
+        "is_safe_for_llm_review": action != "block_llm_review",
+    }
+
+
+def _report_prompt_safety_summary(packs: list[EvidencePack]) -> dict[str, Any]:
+    highest_risk = "none"
+    action = "allow"
+    finding_count = 0
+    high_count = 0
+    medium_count = 0
+    low_count = 0
+    unsafe_pack_count = 0
+    for pack in packs:
+        summary = dict(pack.metadata.get("prompt_safety", {}))
+        finding_count += int(summary.get("finding_count", 0))
+        high_count += int(summary.get("high_count", 0))
+        medium_count += int(summary.get("medium_count", 0))
+        low_count += int(summary.get("low_count", 0))
+        if summary.get("is_safe_for_llm_review") is False:
+            unsafe_pack_count += 1
+        pack_risk = str(summary.get("highest_risk", "none"))
+        if _risk_rank(pack_risk) > _risk_rank(highest_risk):
+            highest_risk = pack_risk
+            action = str(summary.get("action", "allow"))
+    return {
+        "finding_count": finding_count,
+        "highest_risk": highest_risk,
+        "action": action,
+        "high_count": high_count,
+        "medium_count": medium_count,
+        "low_count": low_count,
+        "unsafe_pack_count": unsafe_pack_count,
+        "is_safe_for_llm_review": action != "block_llm_review",
+    }
+
+
+def _risk_rank(value: str) -> int:
+    return {"none": 0, "low": 1, "medium": 2, "high": 3}.get(value, 0)
 
 
 def _build_positive_snippets(

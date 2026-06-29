@@ -90,6 +90,17 @@ from .evals import (
     loads_eval_queries,
 )
 
+from .safety import (
+    PromptInjectionRisk,
+    PromptSafetyAction,
+    PromptSafetyError,
+    PromptSafetyFinding,
+    PromptSafetyReport,
+    format_evidence_pack_for_llm_review,
+    sanitize_text_for_llm_review,
+    scan_documents_for_prompt_injection,
+    scan_prompt_injection_text,
+)
 from .scout import (
     CandidateSurfaceKind,
     CanonicalMigrationCandidate,
@@ -153,6 +164,15 @@ from .web import ReviewInboxError, build_review_inbox_html, run_review_inbox
 
 
 __all__ = [
+    "PromptInjectionRisk",
+    "PromptSafetyAction",
+    "PromptSafetyError",
+    "PromptSafetyFinding",
+    "PromptSafetyReport",
+    "format_evidence_pack_for_llm_review",
+    "sanitize_text_for_llm_review",
+    "scan_documents_for_prompt_injection",
+    "scan_prompt_injection_text",
     "DictionaryCheckError",
     "DictionaryCheckItem",
     "DictionaryCheckKind",

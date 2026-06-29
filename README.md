@@ -25,6 +25,7 @@ agent-lexicon check examples/customer_limits/lexicon.yaml examples/customer_limi
 agent-lexicon ingest README.md src examples/customer_limits/docs --root .
 agent-lexicon discover-candidates examples/customer_limits/docs --root examples/customer_limits
 agent-lexicon build-evidence examples/customer_limits/docs --root examples/customer_limits
+agent-lexicon safety scan examples/customer_limits/docs --root examples/customer_limits
 agent-lexicon workspace init --root examples/customer_limits
 agent-lexicon workspace sync examples/customer_limits/docs --root examples/customer_limits --max-candidates 5
 agent-lexicon workspace status --root examples/customer_limits
@@ -324,6 +325,44 @@ for pack in evidence_report.packs:
 Each pack includes the candidate surface, score, positive snippets, negative
 snippets, line ranges, reasons, and source metadata. This is the local evidence
 foundation for proposal review and future snapshot publishing.
+
+
+## Prompt safety
+
+Agent Lexicon treats local docs and evidence snippets as untrusted input before
+they are shown to a future LLM reviewer. The prompt-safety scanner detects common
+prompt-injection patterns such as attempts to override instructions, reveal
+system prompts, exfiltrate secrets, or force tool execution. Evidence packs are
+annotated with prompt-safety metadata by default, so review workflows can block
+high-risk snippets before they are sent to an LLM.
+
+Command line usage:
+
+```bash
+agent-lexicon safety scan examples/customer_limits/docs --root examples/customer_limits
+agent-lexicon safety scan examples/customer_limits/docs --root examples/customer_limits --json
+agent-lexicon safety scan examples/customer_limits/docs --root examples/customer_limits --fail-on-high-risk
+agent-lexicon build-evidence examples/customer_limits/docs --root examples/customer_limits
+```
+
+Python usage:
+
+```python
+from agent_lexicon import (
+    format_evidence_pack_for_llm_review,
+    ingest_local_paths,
+    scan_documents_for_prompt_injection,
+)
+
+ingest_report = ingest_local_paths(["examples/customer_limits/docs"], root="examples/customer_limits")
+safety_report = scan_documents_for_prompt_injection(ingest_report.documents)
+
+print(safety_report.highest_risk.value, safety_report.action.value)
+```
+
+The helper `format_evidence_pack_for_llm_review(...)` renders evidence as
+data-only context with explicit untrusted boundaries. This keeps future review
+agents from accidentally following instructions embedded inside project docs.
 
 ## SQLite workspace state
 
