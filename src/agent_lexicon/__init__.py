@@ -50,6 +50,20 @@ from .evals import (
     run_behavior_eval,
     loads_eval_queries,
 )
+from .ingest import (
+    DEFAULT_EXCLUDE_DIRS,
+    DEFAULT_INCLUDE_GLOBS,
+    DEFAULT_MAX_FILE_BYTES,
+    IngestDocument,
+    IngestSourceKind,
+    LocalIngestError,
+    LocalIngestReport,
+    classify_source_kind,
+    discover_local_files,
+    ingest_local_paths,
+    read_local_document,
+)
+
 
 __all__ = [
     "__version__",
@@ -60,6 +74,17 @@ __all__ = [
     "EvidenceKind",
     "EvidenceSpan",
     "EvalToolCallExpectation",
+    "read_local_document",
+    "ingest_local_paths",
+    "discover_local_files",
+    "classify_source_kind",
+    "LocalIngestReport",
+    "LocalIngestError",
+    "IngestSourceKind",
+    "IngestDocument",
+    "DEFAULT_MAX_FILE_BYTES",
+    "DEFAULT_INCLUDE_GLOBS",
+    "DEFAULT_EXCLUDE_DIRS",
     "EvalQuery",
     "BehaviorMetrics",
     "EvalQueryResult",

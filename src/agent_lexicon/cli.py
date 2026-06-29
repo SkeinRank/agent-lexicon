@@ -17,6 +17,7 @@ from .core import (
     resolve_text,
 )
 from .evals import EvalDatasetError, load_eval_queries, run_behavior_eval
+from .ingest import LocalIngestError, ingest_local_paths
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -63,6 +64,38 @@ def build_parser() -> argparse.ArgumentParser:
         "--json",
         action="store_true",
         help="Print the full eval report as JSON.",
+    )
+
+    ingest_parser = subparsers.add_parser(
+        "ingest",
+        help="Read local docs, README files, source files, and explicit local files.",
+    )
+    ingest_parser.add_argument(
+        "paths",
+        nargs="+",
+        help="Files or directories to ingest. Directories use local project defaults.",
+    )
+    ingest_parser.add_argument(
+        "--root",
+        default=None,
+        help="Root path used for relative paths in output.",
+    )
+    ingest_parser.add_argument(
+        "--include",
+        action="append",
+        default=None,
+        help="Glob to include when scanning directories. Can be provided multiple times.",
+    )
+    ingest_parser.add_argument(
+        "--max-file-bytes",
+        type=int,
+        default=1_000_000,
+        help="Maximum size of one ingested file in bytes.",
+    )
+    ingest_parser.add_argument(
+        "--jsonl",
+        action="store_true",
+        help="Print one JSON object per ingested document, including text.",
     )
 
     match_parser = subparsers.add_parser(
@@ -151,6 +184,15 @@ def main(argv: list[str] | None = None) -> int:
             queries_path=Path(args.queries_path),
             include_deprecated=not args.exclude_deprecated,
             as_json=args.json,
+        )
+
+    if args.command == "ingest":
+        return _ingest_command(
+            paths=[Path(path) for path in args.paths],
+            root=Path(args.root) if args.root is not None else None,
+            include_globs=args.include,
+            max_file_bytes=args.max_file_bytes,
+            as_jsonl=args.jsonl,
         )
 
     if args.command == "match":
@@ -266,6 +308,48 @@ def _print_metric(label: str, value: float | None) -> None:
         print(f"{label}: n/a")
         return
     print(f"{label}: {value * 100:.1f}%")
+
+
+def _ingest_command(
+    *,
+    paths: list[Path],
+    root: Path | None,
+    include_globs: list[str] | None,
+    max_file_bytes: int,
+    as_jsonl: bool,
+) -> int:
+    try:
+        report = ingest_local_paths(
+            paths,
+            root=root,
+            include_globs=include_globs,
+            max_file_bytes=max_file_bytes,
+        )
+    except LocalIngestError as exc:
+        print(f"Invalid local ingest input: {exc}")
+        return 1
+
+    if as_jsonl:
+        for document in report.documents:
+            print(document.to_json_line(include_text=True))
+        return 0
+
+    print(
+        "Local ingest: "
+        f"{report.document_count} documents, "
+        f"{report.total_lines} lines, "
+        f"{report.total_size_bytes} bytes"
+    )
+    for document in report.documents:
+        print(
+            f"- {document.relative_path} "
+            f"({document.kind.value}, {document.line_count} lines, {document.size_bytes} bytes)"
+        )
+    if report.skipped_paths:
+        print("Skipped paths:")
+        for skipped_path in report.skipped_paths:
+            print(f"- {skipped_path}")
+    return 0
 
 
 def _match_command(

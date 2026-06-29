@@ -21,6 +21,8 @@ agent-lexicon match examples/customer_limits/lexicon.yaml "The customer cap and 
 agent-lexicon resolve examples/customer_limits/lexicon.yaml "increase the limit"
 agent-lexicon guard examples/customer_limits/lexicon.yaml "increase the limit" --tool api.update_rate_limit
 agent-lexicon validate-queries examples/customer_limits/queries.jsonl
+agent-lexicon check examples/customer_limits/lexicon.yaml examples/customer_limits/queries.jsonl
+agent-lexicon ingest README.md src examples/customer_limits/docs --root .
 ```
 
 ## Core schema
@@ -214,6 +216,37 @@ the tool call is blocked or needs clarification. This makes it usable in local
 agent wrappers and future CI checks.
 
 
+
+## Local ingest
+
+Agent Lexicon can read local project files into deterministic text documents for
+future scout, evidence, and review workflows. Directory scans use local-project
+defaults: README files, `docs/`, `src/`, Markdown, JSON/YAML, TOML, and common
+text/code files. Large files, binary files, virtual environments, build outputs,
+and cache directories are skipped.
+
+Command line usage:
+
+```bash
+agent-lexicon ingest README.md src examples/customer_limits/docs --root .
+agent-lexicon ingest examples/customer_limits/docs --root examples/customer_limits --jsonl
+```
+
+Python usage:
+
+```python
+from agent_lexicon import ingest_local_paths
+
+report = ingest_local_paths(["README.md", "src", "examples/customer_limits/docs"], root=".")
+
+for document in report.documents:
+    print(document.relative_path, document.kind.value, document.line_count)
+```
+
+The ingest report exposes `document_count`, `total_lines`, `total_size_bytes`,
+`documents`, and `skipped_paths`. Each document includes a stable SHA-256 hash,
+relative path, source kind, line count, byte size, and text content.
+
 ## Behavior metrics
 
 Agent Lexicon can run deterministic behavior checks against a local `queries.jsonl` dataset.
@@ -292,6 +325,8 @@ Validate a dataset from the command line:
 
 ```bash
 agent-lexicon validate-queries examples/customer_limits/queries.jsonl
+agent-lexicon check examples/customer_limits/lexicon.yaml examples/customer_limits/queries.jsonl
+agent-lexicon ingest README.md src examples/customer_limits/docs --root .
 ```
 
 Load the same dataset from Python:
