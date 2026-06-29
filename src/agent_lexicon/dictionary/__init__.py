@@ -12,6 +12,16 @@ from .diff import (
     diff_lexicon_files,
     diff_lexicons,
 )
+
+from .merge import (
+    SemanticMergeConflict,
+    SemanticMergeError,
+    SemanticMergeReport,
+    SemanticMergeStatus,
+    merge_lexicon_files,
+    merge_lexicons,
+    write_merged_lexicon_json,
+)
 from .layout import (
     DEFAULT_DICTIONARY_DIR,
     DEFAULT_LEXICON_FILENAME,
@@ -38,6 +48,13 @@ __all__ = [
     "SemanticObjectKind",
     "diff_lexicon_files",
     "diff_lexicons",
+    "SemanticMergeConflict",
+    "SemanticMergeError",
+    "SemanticMergeReport",
+    "SemanticMergeStatus",
+    "merge_lexicon_files",
+    "merge_lexicons",
+    "write_merged_lexicon_json",
     "DEFAULT_DICTIONARY_DIR",
     "DEFAULT_LEXICON_FILENAME",
     "DEFAULT_PROPOSALS_DIR",

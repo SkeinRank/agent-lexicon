@@ -10,11 +10,14 @@ from . import __version__, about
 from .dictionary import (
     DictionaryLayoutError,
     SemanticDiffError,
+    SemanticMergeError,
     diff_lexicon_files,
+    merge_lexicon_files,
     init_dictionary_layout,
     inspect_dictionary_layout,
     validate_dictionary_layout,
     write_dictionary_manifest,
+    write_merged_lexicon_json,
 )
 from .core import (
     AgentLexiconLoadError,
@@ -374,6 +377,29 @@ def build_parser() -> argparse.ArgumentParser:
         "--fail-on-change",
         action="store_true",
         help="Return exit code 1 when semantic changes are detected.",
+    )
+
+    dictionary_merge_parser = dictionary_subparsers.add_parser(
+        "merge",
+        help="Merge three lexicon files by terminology semantics.",
+    )
+    dictionary_merge_parser.add_argument("base_path", help="Common base lexicon .json, .yaml, or .yml file.")
+    dictionary_merge_parser.add_argument("ours_path", help="Our lexicon .json, .yaml, or .yml file.")
+    dictionary_merge_parser.add_argument("theirs_path", help="Their lexicon .json, .yaml, or .yml file.")
+    dictionary_merge_parser.add_argument(
+        "--output",
+        default=None,
+        help="Output path for the merged lexicon JSON file.",
+    )
+    dictionary_merge_parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Check whether the semantic merge is clean without writing a merged lexicon.",
+    )
+    dictionary_merge_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the full semantic merge report as JSON.",
     )
 
     workspace_parser = subparsers.add_parser(
@@ -1133,7 +1159,17 @@ def _dictionary_command(args: argparse.Namespace) -> int:
             fail_on_change=args.fail_on_change,
         )
 
-    print("Dictionary command required: init, status, validate, or diff")
+    if args.dictionary_command == "merge":
+        return _dictionary_merge_command(
+            base_path=Path(args.base_path),
+            ours_path=Path(args.ours_path),
+            theirs_path=Path(args.theirs_path),
+            output_path=Path(args.output) if args.output else None,
+            check_only=args.check,
+            as_json=args.json,
+        )
+
+    print("Dictionary command required: init, status, validate, diff, or merge")
     return 1
 
 
@@ -1169,6 +1205,64 @@ def _dictionary_diff_command(
     for change in report.changes:
         print(change.to_text())
     return 1 if fail_on_change else 0
+
+
+def _dictionary_merge_command(
+    *,
+    base_path: Path,
+    ours_path: Path,
+    theirs_path: Path,
+    output_path: Path | None,
+    check_only: bool,
+    as_json: bool,
+) -> int:
+    try:
+        report = merge_lexicon_files(base_path, ours_path, theirs_path)
+    except SemanticMergeError as exc:
+        print(f"Invalid semantic merge input: {exc}")
+        return 1
+
+    if report.has_conflicts:
+        if as_json:
+            print(report.to_json())
+        else:
+            print(f"Semantic merge: conflict ({report.conflict_count} conflicts)")
+            print(f"Base: {report.base_label}")
+            print(f"Ours: {report.ours_label}")
+            print(f"Theirs: {report.theirs_label}")
+            for conflict in report.conflicts:
+                print(conflict.to_text())
+        return 1
+
+    if output_path is not None and not check_only:
+        try:
+            written_path = write_merged_lexicon_json(report, output_path)
+        except SemanticMergeError as exc:
+            print(f"Invalid semantic merge output: {exc}")
+            return 1
+    else:
+        written_path = None
+
+    if as_json:
+        print(report.to_json(include_merged_lexicon=output_path is None and not check_only))
+        return 0
+
+    summary = report.merged_diff_summary
+    print(
+        "Semantic merge: clean "
+        f"({summary.total} merged changes; "
+        f"{summary.added} added, {summary.removed} removed, {summary.changed} changed)"
+    )
+    print(f"Base: {report.base_label}")
+    print(f"Ours: {report.ours_label}")
+    print(f"Theirs: {report.theirs_label}")
+    if check_only:
+        print("Check only: no merged lexicon was written.")
+    elif written_path is not None:
+        print(f"Merged lexicon written: {written_path}")
+    else:
+        print("No output path provided. Use --output to write the merged lexicon.")
+    return 0
 
 
 def _print_dictionary_summary(summary) -> None:

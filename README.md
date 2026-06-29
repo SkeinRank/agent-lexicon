@@ -34,6 +34,7 @@ agent-lexicon discover-migrations examples/customer_limits/lexicon.yaml
 agent-lexicon dictionary init --root .
 agent-lexicon dictionary validate --root .
 agent-lexicon dictionary diff lexicon/lexicon.yaml lexicon-next.yaml
+agent-lexicon dictionary merge lexicon-base.yaml lexicon-ours.yaml lexicon-theirs.yaml --output lexicon-merged.json
 ```
 
 ## Core schema
@@ -600,6 +601,42 @@ for change in report.changes:
 
 Use `--fail-on-change` in automation when a workflow needs to detect whether a
 lexicon update contains any semantic changes.
+
+## Semantic merge
+
+Agent Lexicon can perform a three-way merge for lexicon files using terminology
+objects instead of raw text. Non-overlapping changes are merged automatically;
+competing edits to the same semantic field become conflicts that can be handled
+in review before publishing a dictionary update.
+
+```bash
+agent-lexicon dictionary merge lexicon-base.yaml lexicon-ours.yaml lexicon-theirs.yaml --output lexicon-merged.json
+agent-lexicon dictionary merge lexicon-base.yaml lexicon-ours.yaml lexicon-theirs.yaml --check
+agent-lexicon dictionary merge lexicon-base.yaml lexicon-ours.yaml lexicon-theirs.yaml --json
+```
+
+Python usage:
+
+```python
+from agent_lexicon import merge_lexicon_files, write_merged_lexicon_json
+
+report = merge_lexicon_files(
+    "lexicon-base.yaml",
+    "lexicon-ours.yaml",
+    "lexicon-theirs.yaml",
+)
+
+if report.has_conflicts:
+    for conflict in report.conflicts:
+        print(conflict.to_text())
+else:
+    write_merged_lexicon_json(report, "lexicon-merged.json")
+```
+
+Use semantic merge when multiple branches update terminology at the same time.
+It can combine independent additions such as new aliases, tools, metadata, or
+evidence while blocking ambiguous edits such as two different canonical names for
+the same term.
 
 ## Development
 
