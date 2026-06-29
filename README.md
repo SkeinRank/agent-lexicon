@@ -33,6 +33,7 @@ agent-lexicon workspace export-review-events --root examples/customer_limits
 agent-lexicon discover-migrations examples/customer_limits/lexicon.yaml
 agent-lexicon dictionary init --root .
 agent-lexicon dictionary validate --root .
+agent-lexicon dictionary diff lexicon/lexicon.yaml lexicon-next.yaml
 ```
 
 ## Core schema
@@ -574,6 +575,31 @@ print(validated.layout.lexicon_path)
 
 The layout command preserves existing files by default. Use `--force` only when
 you intentionally want to overwrite the generated starter files.
+
+## Semantic diff
+
+Agent Lexicon can compare two validated lexicon files by terminology semantics
+instead of raw line changes. This keeps pull request review focused on canonical
+terms, aliases, scopes, tool mappings, evidence, proposals, and metadata.
+
+```bash
+agent-lexicon dictionary diff lexicon/lexicon.yaml lexicon-next.yaml
+agent-lexicon dictionary diff lexicon/lexicon.yaml lexicon-next.yaml --json
+agent-lexicon dictionary diff lexicon/lexicon.yaml lexicon-next.yaml --fail-on-change
+```
+
+Python usage:
+
+```python
+from agent_lexicon import diff_lexicon_files
+
+report = diff_lexicon_files("lexicon/lexicon.yaml", "lexicon-next.yaml")
+for change in report.changes:
+    print(change.to_text())
+```
+
+Use `--fail-on-change` in automation when a workflow needs to detect whether a
+lexicon update contains any semantic changes.
 
 ## Development
 

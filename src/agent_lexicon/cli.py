@@ -9,6 +9,8 @@ from pathlib import Path
 from . import __version__, about
 from .dictionary import (
     DictionaryLayoutError,
+    SemanticDiffError,
+    diff_lexicon_files,
     init_dictionary_layout,
     inspect_dictionary_layout,
     validate_dictionary_layout,
@@ -354,6 +356,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--json",
         action="store_true",
         help="Print layout status as JSON.",
+    )
+
+
+    dictionary_diff_parser = dictionary_subparsers.add_parser(
+        "diff",
+        help="Compare two lexicon files by terminology semantics.",
+    )
+    dictionary_diff_parser.add_argument("before_path", help="Previous lexicon .json, .yaml, or .yml file.")
+    dictionary_diff_parser.add_argument("after_path", help="Current lexicon .json, .yaml, or .yml file.")
+    dictionary_diff_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the full semantic diff report as JSON.",
+    )
+    dictionary_diff_parser.add_argument(
+        "--fail-on-change",
+        action="store_true",
+        help="Return exit code 1 when semantic changes are detected.",
     )
 
     workspace_parser = subparsers.add_parser(
@@ -1105,8 +1125,50 @@ def _dictionary_command(args: argparse.Namespace) -> int:
             print(f"Manifest written: {args.manifest}")
         return 0
 
-    print("Dictionary command required: init, status, or validate")
+    if args.dictionary_command == "diff":
+        return _dictionary_diff_command(
+            before_path=Path(args.before_path),
+            after_path=Path(args.after_path),
+            as_json=args.json,
+            fail_on_change=args.fail_on_change,
+        )
+
+    print("Dictionary command required: init, status, validate, or diff")
     return 1
+
+
+def _dictionary_diff_command(
+    *,
+    before_path: Path,
+    after_path: Path,
+    as_json: bool,
+    fail_on_change: bool,
+) -> int:
+    try:
+        report = diff_lexicon_files(before_path, after_path)
+    except SemanticDiffError as exc:
+        print(f"Invalid semantic diff input: {exc}")
+        return 1
+
+    if as_json:
+        print(report.to_json())
+        return 1 if fail_on_change and report.has_changes else 0
+
+    summary = report.summary
+    print(
+        "Semantic diff: "
+        f"{summary.total} changes "
+        f"({summary.added} added, {summary.removed} removed, {summary.changed} changed)"
+    )
+    print(f"Before: {report.before_label}")
+    print(f"After: {report.after_label}")
+    if not report.has_changes:
+        print("No semantic changes.")
+        return 0
+
+    for change in report.changes:
+        print(change.to_text())
+    return 1 if fail_on_change else 0
 
 
 def _print_dictionary_summary(summary) -> None:

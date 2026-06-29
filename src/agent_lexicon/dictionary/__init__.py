@@ -2,6 +2,16 @@
 
 from __future__ import annotations
 
+from .diff import (
+    SemanticChangeKind,
+    SemanticDiffError,
+    SemanticDiffItem,
+    SemanticDiffReport,
+    SemanticDiffSummary,
+    SemanticObjectKind,
+    diff_lexicon_files,
+    diff_lexicons,
+)
 from .layout import (
     DEFAULT_DICTIONARY_DIR,
     DEFAULT_LEXICON_FILENAME,
@@ -20,6 +30,14 @@ from .layout import (
 )
 
 __all__ = [
+    "SemanticChangeKind",
+    "SemanticDiffError",
+    "SemanticDiffItem",
+    "SemanticDiffReport",
+    "SemanticDiffSummary",
+    "SemanticObjectKind",
+    "diff_lexicon_files",
+    "diff_lexicons",
     "DEFAULT_DICTIONARY_DIR",
     "DEFAULT_LEXICON_FILENAME",
     "DEFAULT_PROPOSALS_DIR",

@@ -39,6 +39,14 @@ from .core import (
 )
 
 from .dictionary import (
+    SemanticChangeKind,
+    SemanticDiffError,
+    SemanticDiffItem,
+    SemanticDiffReport,
+    SemanticDiffSummary,
+    SemanticObjectKind,
+    diff_lexicon_files,
+    diff_lexicons,
     DEFAULT_DICTIONARY_DIR,
     DEFAULT_LEXICON_FILENAME,
     DEFAULT_PROPOSALS_DIR,
@@ -132,6 +140,14 @@ from .web import ReviewInboxError, build_review_inbox_html, run_review_inbox
 
 
 __all__ = [
+    "SemanticChangeKind",
+    "SemanticDiffError",
+    "SemanticDiffItem",
+    "SemanticDiffReport",
+    "SemanticDiffSummary",
+    "SemanticObjectKind",
+    "diff_lexicon_files",
+    "diff_lexicons",
     "DEFAULT_DICTIONARY_DIR",
     "DEFAULT_LEXICON_FILENAME",
     "DEFAULT_PROPOSALS_DIR",
