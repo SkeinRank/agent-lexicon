@@ -25,6 +25,7 @@ from .scout import (
     discover_scout_candidates,
     existing_surfaces_from_lexicon,
 )
+from .web import ReviewInboxError, run_review_inbox
 from .workspace import WorkspaceError, init_workspace, open_workspace
 
 
@@ -335,6 +336,34 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print workspace status as JSON after sync.",
     )
 
+
+    review_parser = subparsers.add_parser(
+        "review",
+        help="Open the local web proposal inbox for workspace candidates.",
+        description="Open the local web proposal inbox for workspace candidates.",
+    )
+    review_parser.add_argument(
+        "--root",
+        default=".",
+        help="Project root where .agent-lexicon/ is stored.",
+    )
+    review_parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Host interface for the local inbox.",
+    )
+    review_parser.add_argument(
+        "--port",
+        type=int,
+        default=8765,
+        help="Port for the local inbox.",
+    )
+    review_parser.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="Do not open the inbox URL in a browser automatically.",
+    )
+
     match_parser = subparsers.add_parser(
         "match",
         help="Find known canonical terms and aliases in text.",
@@ -463,6 +492,14 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "workspace":
         return _workspace_command(args)
+
+    if args.command == "review":
+        return _review_command(
+            root=Path(args.root),
+            host=args.host,
+            port=args.port,
+            open_browser=not args.no_browser,
+        )
 
     if args.command == "match":
         return _match_command(
@@ -901,6 +938,16 @@ def _workspace_sync_command(
         f"{evidence_report.pack_count} evidence packs saved"
     )
     print(f"Database: {summary.db_path}")
+    return 0
+
+
+
+def _review_command(*, root: Path, host: str, port: int, open_browser: bool) -> int:
+    try:
+        run_review_inbox(root, host=host, port=port, open_browser=open_browser)
+    except (ReviewInboxError, WorkspaceError, OSError) as exc:
+        print(f"Invalid review inbox input: {exc}")
+        return 1
     return 0
 
 

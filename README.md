@@ -28,6 +28,7 @@ agent-lexicon build-evidence examples/customer_limits/docs --root examples/custo
 agent-lexicon workspace init --root examples/customer_limits
 agent-lexicon workspace sync examples/customer_limits/docs --root examples/customer_limits --max-candidates 5
 agent-lexicon workspace status --root examples/customer_limits
+agent-lexicon review --root examples/customer_limits
 ```
 
 ## Core schema
@@ -347,9 +348,40 @@ summary = state.summary()
 print(summary.document_count, summary.db_path)
 ```
 
-The workspace stores documents, candidate payloads, and evidence pack payloads
-with deterministic primary keys. Later review, event, and snapshot workflows can
-use the same local database without requiring a service backend.
+The workspace stores documents, candidate payloads, evidence pack payloads, and
+local review decisions with deterministic primary keys. Later event and snapshot
+workflows can use the same local database without requiring a service backend.
+
+## Local web proposal inbox
+
+The local proposal inbox turns workspace candidates and evidence packs into a
+small browser-based review queue. It runs only on localhost by default and does
+not require a frontend build, a database server, or a hosted service.
+
+Start by syncing a workspace, then open the inbox:
+
+```bash
+agent-lexicon workspace sync examples/customer_limits/docs --root examples/customer_limits --max-candidates 5
+agent-lexicon review --root examples/customer_limits
+```
+
+The default URL is:
+
+```text
+http://127.0.0.1:8765
+```
+
+The inbox shows each candidate surface, score, jargon signal, background
+penalty, positive evidence, and negative evidence. Reviewer decisions are saved
+back to the local SQLite workspace as `accepted`, `rejected`, `ambiguous`, or
+`needs_split`. The interface is intentionally minimal: one candidate list, one
+evidence card, and one decision area.
+
+For terminal-only environments, keep the server from opening a browser:
+
+```bash
+agent-lexicon review --root examples/customer_limits --no-browser
+```
 
 ## Behavior metrics
 
