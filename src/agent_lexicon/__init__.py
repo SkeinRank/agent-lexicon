@@ -90,6 +90,32 @@ from .evals import (
     loads_eval_queries,
 )
 
+
+from .policy import (
+    DEFAULT_POLICY_FILENAME,
+    LocalPolicy,
+    LocalPolicyError,
+    LocalPolicyMode,
+    LocalPolicyRole,
+    PolicyAction,
+    PolicyDecision,
+    check_local_policy,
+    init_local_policy,
+    load_local_policy,
+    policy_path,
+)
+
+from .safety import (
+    PromptInjectionRisk,
+    PromptSafetyAction,
+    PromptSafetyError,
+    PromptSafetyFinding,
+    PromptSafetyReport,
+    format_evidence_pack_for_llm_review,
+    sanitize_text_for_llm_review,
+    scan_documents_for_prompt_injection,
+    scan_prompt_injection_text,
+)
 from .scout import (
     CandidateSurfaceKind,
     CanonicalMigrationCandidate,
@@ -151,8 +177,51 @@ from .workspace import (
 )
 from .web import ReviewInboxError, build_review_inbox_html, run_review_inbox
 
+from .mcp import (
+    DEFAULT_MCP_TOOLS,
+    MCP_PROTOCOL_VERSION,
+    McpServerConfig,
+    McpServerError,
+    call_mcp_tool,
+    handle_mcp_message,
+    mcp_tool_definitions,
+    mcp_tool_result,
+    run_mcp_stdio_server,
+)
+
 
 __all__ = [
+
+
+    "DEFAULT_MCP_TOOLS",
+    "MCP_PROTOCOL_VERSION",
+    "McpServerConfig",
+    "McpServerError",
+    "call_mcp_tool",
+    "handle_mcp_message",
+    "mcp_tool_definitions",
+    "mcp_tool_result",
+    "run_mcp_stdio_server",
+    "DEFAULT_POLICY_FILENAME",
+    "LocalPolicy",
+    "LocalPolicyError",
+    "LocalPolicyMode",
+    "LocalPolicyRole",
+    "PolicyAction",
+    "PolicyDecision",
+    "check_local_policy",
+    "init_local_policy",
+    "load_local_policy",
+    "policy_path",
+    "PromptInjectionRisk",
+    "PromptSafetyAction",
+    "PromptSafetyError",
+    "PromptSafetyFinding",
+    "PromptSafetyReport",
+    "format_evidence_pack_for_llm_review",
+    "sanitize_text_for_llm_review",
+    "scan_documents_for_prompt_injection",
+    "scan_prompt_injection_text",
     "DictionaryCheckError",
     "DictionaryCheckItem",
     "DictionaryCheckKind",
@@ -292,7 +361,7 @@ __all__ = [
     "resolve_text",
 ]
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 
 def about() -> str:

@@ -31,6 +31,18 @@ from .core import (
 )
 from .evals import EvalDatasetError, load_eval_queries, run_behavior_eval
 from .ingest import LocalIngestError, ingest_local_paths
+from .mcp import McpServerError, mcp_tool_definitions, run_mcp_stdio_server
+from .policy import (
+    LocalPolicyError,
+    LocalPolicyMode,
+    LocalPolicyRole,
+    PolicyAction,
+    check_local_policy,
+    init_local_policy,
+    load_local_policy,
+    policy_path,
+)
+from .safety import PromptSafetyError, scan_documents_for_prompt_injection
 from .scout import (
     CanonicalMigrationError,
     EvidencePackError,
@@ -245,6 +257,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum file size to read during local ingest.",
     )
     build_evidence_parser.add_argument(
+        "--skip-prompt-safety",
+        action="store_true",
+        help="Do not annotate evidence snippets with prompt-safety findings.",
+    )
+    build_evidence_parser.add_argument(
         "--json",
         action="store_true",
         help="Print the full evidence report as JSON.",
@@ -254,6 +271,149 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print one JSON evidence pack per line.",
     )
+
+    safety_parser = subparsers.add_parser(
+        "safety",
+        help="Scan local docs for prompt-injection indicators before LLM review.",
+    )
+    safety_subparsers = safety_parser.add_subparsers(dest="safety_command")
+    safety_scan_parser = safety_subparsers.add_parser(
+        "scan",
+        help="Scan local docs, README files, source files, and explicit local files for prompt-injection indicators.",
+    )
+    safety_scan_parser.add_argument(
+        "paths",
+        nargs="+",
+        help="Files or directories to scan. Directories use local project defaults.",
+    )
+    safety_scan_parser.add_argument(
+        "--root",
+        default=None,
+        help="Root path used for relative paths in output.",
+    )
+    safety_scan_parser.add_argument(
+        "--include",
+        action="append",
+        default=None,
+        help="Glob to include when scanning directories. Can be provided multiple times.",
+    )
+    safety_scan_parser.add_argument(
+        "--max-file-bytes",
+        type=int,
+        default=1_000_000,
+        help="Maximum file size to read during local ingest.",
+    )
+    safety_scan_parser.add_argument(
+        "--fail-on-high-risk",
+        action="store_true",
+        help="Return exit code 1 when high-risk findings are detected.",
+    )
+    safety_scan_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the full prompt-safety report as JSON.",
+    )
+
+    policy_parser = subparsers.add_parser(
+        "policy",
+        help="Manage local RBAC-lite policy modes.",
+    )
+    policy_subparsers = policy_parser.add_subparsers(dest="policy_command")
+
+    policy_init_parser = policy_subparsers.add_parser(
+        "init",
+        help="Create a local policy file under .agent-lexicon/.",
+    )
+    policy_init_parser.add_argument("--root", default=".", help="Project root where .agent-lexicon/ is stored.")
+    policy_init_parser.add_argument(
+        "--mode",
+        choices=tuple(mode.value for mode in LocalPolicyMode),
+        default=LocalPolicyMode.SOLO.value,
+        help="Local policy mode to write.",
+    )
+    policy_init_parser.add_argument("--actor", default="local", help="Actor to store in the policy file.")
+    policy_init_parser.add_argument(
+        "--role",
+        choices=tuple(role.value for role in LocalPolicyRole),
+        default=LocalPolicyRole.OWNER.value,
+        help="Role assigned to --actor.",
+    )
+    policy_init_parser.add_argument("--force", action="store_true", help="Overwrite an existing local policy file.")
+    policy_init_parser.add_argument("--json", action="store_true", help="Print the policy document as JSON.")
+
+    policy_status_parser = policy_subparsers.add_parser(
+        "status",
+        help="Show the effective local policy.",
+    )
+    policy_status_parser.add_argument("--root", default=".", help="Project root where .agent-lexicon/ is stored.")
+    policy_status_parser.add_argument(
+        "--policy-mode",
+        choices=tuple(mode.value for mode in LocalPolicyMode),
+        default=None,
+        help="Temporarily override the local policy mode.",
+    )
+    policy_status_parser.add_argument("--actor", default="local", help="Actor used for role resolution.")
+    policy_status_parser.add_argument(
+        "--role",
+        choices=tuple(role.value for role in LocalPolicyRole),
+        default=None,
+        help="Explicit role override for this command.",
+    )
+    policy_status_parser.add_argument("--json", action="store_true", help="Print policy status as JSON.")
+
+    policy_check_parser = policy_subparsers.add_parser(
+        "check",
+        help="Check whether a local action is allowed.",
+    )
+    policy_check_parser.add_argument(
+        "--action",
+        required=True,
+        choices=tuple(action.value for action in PolicyAction),
+        help="Local action to check.",
+    )
+    policy_check_parser.add_argument("--root", default=".", help="Project root where .agent-lexicon/ is stored.")
+    policy_check_parser.add_argument(
+        "--policy-mode",
+        choices=tuple(mode.value for mode in LocalPolicyMode),
+        default=None,
+        help="Temporarily override the local policy mode.",
+    )
+    policy_check_parser.add_argument("--actor", default="local", help="Actor used for role resolution.")
+    policy_check_parser.add_argument(
+        "--role",
+        choices=tuple(role.value for role in LocalPolicyRole),
+        default=None,
+        help="Explicit role override for this command.",
+    )
+    policy_check_parser.add_argument("--json", action="store_true", help="Print the policy decision as JSON.")
+
+    mcp_parser = subparsers.add_parser(
+        "mcp",
+        help="Run the local Model Context Protocol server.",
+    )
+    mcp_subparsers = mcp_parser.add_subparsers(dest="mcp_command")
+
+    mcp_serve_parser = mcp_subparsers.add_parser(
+        "serve",
+        help="Run a dependency-free MCP stdio server for local agents.",
+    )
+    mcp_serve_parser.add_argument(
+        "--root",
+        default=".",
+        help="Project root used for lexicon/ and .agent-lexicon/ state.",
+    )
+    mcp_serve_parser.add_argument(
+        "--lexicon",
+        default=None,
+        help="Optional lexicon file path. Defaults to lexicon/lexicon.yaml under --root.",
+    )
+    _add_local_policy_options(mcp_serve_parser)
+
+    mcp_tools_parser = mcp_subparsers.add_parser(
+        "tools",
+        help="List Agent Lexicon MCP tools as JSON.",
+    )
+    mcp_tools_parser.add_argument("--json", action="store_true", help="Print the tool list as JSON.")
 
     discover_migrations_parser = subparsers.add_parser(
         "discover-migrations",
@@ -550,6 +710,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=1_000_000,
         help="Maximum file size to read during local ingest.",
     )
+    _add_local_policy_options(workspace_sync_parser)
     workspace_sync_parser.add_argument(
         "--json",
         action="store_true",
@@ -570,6 +731,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional output path. If omitted, JSONL is printed to stdout.",
     )
+    _add_local_policy_options(workspace_export_events_parser)
     workspace_export_events_parser.add_argument(
         "--decision",
         choices=tuple(status.value for status in ReviewDecisionStatus),
@@ -601,6 +763,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional stable snapshot id. If omitted, one is generated.",
     )
+    _add_local_policy_options(workspace_publish_snapshot_parser)
     workspace_publish_snapshot_parser.add_argument(
         "--json",
         action="store_true",
@@ -629,6 +792,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=8765,
         help="Port for the local inbox.",
     )
+    _add_local_policy_options(review_parser)
     review_parser.add_argument(
         "--no-browser",
         action="store_true",
@@ -701,6 +865,23 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _add_local_policy_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--actor", default="local", help="Local policy actor for this command.")
+    parser.add_argument(
+        "--role",
+        choices=tuple(role.value for role in LocalPolicyRole),
+        default=None,
+        help="Explicit local policy role for this command.",
+    )
+    parser.add_argument(
+        "--policy-mode",
+        choices=tuple(mode.value for mode in LocalPolicyMode),
+        default=None,
+        help="Temporarily override the local policy mode.",
+    )
+
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -757,9 +938,19 @@ def main(argv: list[str] | None = None) -> int:
             max_positive_snippets=args.max_positive_snippets,
             max_negative_snippets=args.max_negative_snippets,
             max_file_bytes=args.max_file_bytes,
+            include_prompt_safety=not args.skip_prompt_safety,
             as_json=args.json,
             as_jsonl=args.jsonl,
         )
+
+    if args.command == "safety":
+        return _safety_command(args)
+
+    if args.command == "policy":
+        return _policy_command(args)
+
+    if args.command == "mcp":
+        return _mcp_command(args)
 
     if args.command == "discover-migrations":
         return _discover_migrations_command(
@@ -782,6 +973,9 @@ def main(argv: list[str] | None = None) -> int:
             host=args.host,
             port=args.port,
             open_browser=not args.no_browser,
+            actor=args.actor,
+            role=args.role,
+            policy_mode=args.policy_mode,
         )
 
     if args.command == "match":
@@ -812,6 +1006,35 @@ def main(argv: list[str] | None = None) -> int:
 
     print(about())
     return 0
+
+
+def _mcp_command(args: argparse.Namespace) -> int:
+    if args.mcp_command == "tools":
+        tools = mcp_tool_definitions()
+        if args.json:
+            print(json.dumps({"tools": tools}, indent=2, sort_keys=True))
+        else:
+            print("Agent Lexicon MCP tools:")
+            for tool in tools:
+                print(f"- {tool['name']}: {tool['description']}")
+        return 0
+
+    if args.mcp_command == "serve":
+        try:
+            return run_mcp_stdio_server(
+                root=Path(args.root),
+                lexicon_path=Path(args.lexicon) if args.lexicon else None,
+                policy_mode=args.policy_mode,
+                actor=args.actor,
+                role=args.role,
+            )
+        except McpServerError as exc:
+            print(f"MCP server error: {exc}")
+            return 1
+
+    print("MCP command required: serve or tools")
+    return 1
+
 
 
 def _validate_command(*, path: Path, document_format: str | None) -> int:
@@ -957,6 +1180,7 @@ def _discover_candidates_command(
         print("Invalid candidate discovery input: choose either --json or --jsonl")
         return 1
 
+
     try:
         ingest_report = ingest_local_paths(
             paths,
@@ -1029,6 +1253,7 @@ def _build_evidence_command(
     max_positive_snippets: int,
     max_negative_snippets: int,
     max_file_bytes: int,
+    include_prompt_safety: bool,
     as_json: bool,
     as_jsonl: bool,
 ) -> int:
@@ -1069,6 +1294,7 @@ def _build_evidence_command(
             context_lines=context_lines,
             max_positive_snippets=max_positive_snippets,
             max_negative_snippets=max_negative_snippets,
+            include_prompt_safety=include_prompt_safety,
         )
     except (ScoutCandidateError, EvidencePackError) as exc:
         print(f"Invalid evidence input: {exc}")
@@ -1089,6 +1315,14 @@ def _build_evidence_command(
         f"({evidence_report.positive_count} positive, "
         f"{evidence_report.negative_count} negative snippets)"
     )
+    prompt_safety = dict(evidence_report.metadata.get("prompt_safety", {}))
+    if prompt_safety:
+        print(
+            "Prompt safety: "
+            f"risk={prompt_safety.get('highest_risk', 'none')}, "
+            f"action={prompt_safety.get('action', 'allow')}, "
+            f"findings={prompt_safety.get('finding_count', 0)}"
+        )
     for pack in evidence_report.packs:
         print(
             f"- {pack.surface} "
@@ -1103,6 +1337,149 @@ def _build_evidence_command(
             print(f"  - {snippet.document_path}:{snippet.start_line}-{snippet.end_line} {snippet.text.splitlines()[0]}")
     return 0
 
+
+
+def _safety_command(args: argparse.Namespace) -> int:
+    if args.safety_command == "scan":
+        return _safety_scan_command(
+            paths=[Path(path) for path in args.paths],
+            root=Path(args.root) if args.root is not None else None,
+            include_globs=args.include,
+            max_file_bytes=args.max_file_bytes,
+            fail_on_high_risk=args.fail_on_high_risk,
+            as_json=args.json,
+        )
+    print("Safety command required: scan")
+    return 1
+
+
+def _safety_scan_command(
+    *,
+    paths: list[Path],
+    root: Path | None,
+    include_globs: list[str] | None,
+    max_file_bytes: int,
+    fail_on_high_risk: bool,
+    as_json: bool,
+) -> int:
+    try:
+        ingest_report = ingest_local_paths(
+            paths,
+            root=root,
+            include_globs=include_globs,
+            max_file_bytes=max_file_bytes,
+        )
+        report = scan_documents_for_prompt_injection(ingest_report.documents)
+    except (LocalIngestError, PromptSafetyError) as exc:
+        print(f"Invalid prompt-safety input: {exc}")
+        return 1
+
+    if as_json:
+        print(report.to_json())
+        return 1 if fail_on_high_risk and report.high_count > 0 else 0
+
+    print(
+        "Prompt safety scan: "
+        f"risk={report.highest_risk.value}, "
+        f"action={report.action.value}, "
+        f"findings={report.finding_count}, "
+        f"documents={report.source_count}"
+    )
+    if report.findings:
+        for finding in report.findings:
+            print(
+                f"[{finding.risk.value.upper()}] "
+                f"{finding.source_path}:{finding.line_number} "
+                f"{finding.rule_id} — {finding.message} "
+                f"({finding.matched_text!r})"
+            )
+    else:
+        print("No prompt-injection indicators found.")
+    return 1 if fail_on_high_risk and report.high_count > 0 else 0
+
+
+def _policy_command(args: argparse.Namespace) -> int:
+    if args.policy_command == "init":
+        try:
+            policy = init_local_policy(
+                Path(args.root),
+                mode=args.mode,
+                actor=args.actor,
+                role=args.role,
+                force=args.force,
+            )
+        except LocalPolicyError as exc:
+            print(f"Invalid local policy input: {exc}")
+            return 1
+        if args.json:
+            print(policy.to_json())
+            return 0
+        print(f"Local policy initialized: {policy_path(args.root)}")
+        print(f"Mode: {policy.mode.value}")
+        print(f"Actor: {args.actor} -> {args.role}")
+        return 0
+
+    if args.policy_command == "status":
+        try:
+            policy = load_local_policy(Path(args.root), mode=args.policy_mode)
+            decision = check_local_policy(
+                policy,
+                PolicyAction.READ_WORKSPACE,
+                actor=args.actor,
+                role=args.role,
+            )
+        except LocalPolicyError as exc:
+            print(f"Invalid local policy input: {exc}")
+            return 1
+        if args.json:
+            print(json.dumps({"policy": policy.to_dict(), "effective_role": decision.role.value, "path": str(policy_path(args.root))}, indent=2, sort_keys=True))
+            return 0
+        print(f"Local policy: {policy.mode.value}")
+        print(f"Path: {policy_path(args.root)}")
+        print(f"Default role: {policy.default_role.value if policy.default_role is not None else 'none'}")
+        print(f"Effective actor: {decision.actor} ({decision.role.value})")
+        return 0
+
+    if args.policy_command == "check":
+        try:
+            policy = load_local_policy(Path(args.root), mode=args.policy_mode)
+            decision = check_local_policy(policy, args.action, actor=args.actor, role=args.role)
+        except LocalPolicyError as exc:
+            print(f"Invalid local policy input: {exc}")
+            return 1
+        if args.json:
+            print(decision.to_json())
+            return 0 if decision.is_allowed else 2
+        print(f"Policy check: {'allowed' if decision.is_allowed else 'denied'}")
+        print(f"Mode: {decision.mode.value}")
+        print(f"Actor: {decision.actor}")
+        print(f"Role: {decision.role.value}")
+        print(f"Action: {decision.action.value}")
+        print(f"Reason: {decision.reason}")
+        return 0 if decision.is_allowed else 2
+
+    print("Policy command required: init, status, or check")
+    return 1
+
+
+def _check_policy_or_print(
+    *,
+    root: Path,
+    action: PolicyAction,
+    actor: str,
+    role: str | None,
+    policy_mode: str | None,
+) -> int:
+    try:
+        policy = load_local_policy(root, mode=policy_mode)
+        decision = check_local_policy(policy, action, actor=actor, role=role)
+    except LocalPolicyError as exc:
+        print(f"Invalid local policy input: {exc}")
+        return 1
+    if decision.is_allowed:
+        return 0
+    print(f"Policy denied: {decision.reason}")
+    return 2
 
 
 def _discover_migrations_command(
@@ -1430,6 +1807,9 @@ def _workspace_command(args: argparse.Namespace) -> int:
             max_negative_snippets=args.max_negative_snippets,
             max_file_bytes=args.max_file_bytes,
             as_json=args.json,
+            actor=args.actor,
+            role=args.role,
+            policy_mode=args.policy_mode,
         )
 
     if args.workspace_command == "export-review-events":
@@ -1437,6 +1817,9 @@ def _workspace_command(args: argparse.Namespace) -> int:
             root=Path(args.root),
             output_path=Path(args.output) if args.output else None,
             decision=args.decision,
+            actor=args.actor,
+            role=args.role,
+            policy_mode=args.policy_mode,
         )
 
     if args.workspace_command == "publish-snapshot":
@@ -1446,6 +1829,9 @@ def _workspace_command(args: argparse.Namespace) -> int:
             output_path=Path(args.output) if args.output else None,
             snapshot_id=args.snapshot_id,
             as_json=args.json,
+            actor=args.actor,
+            role=args.role,
+            policy_mode=args.policy_mode,
         )
 
     print("Workspace command required: init, status, sync, export-review-events, or publish-snapshot")
@@ -1465,7 +1851,20 @@ def _workspace_sync_command(
     max_negative_snippets: int,
     max_file_bytes: int,
     as_json: bool,
+    actor: str,
+    role: str | None,
+    policy_mode: str | None,
 ) -> int:
+    policy_exit_code = _check_policy_or_print(
+        root=root,
+        action=PolicyAction.SYNC_WORKSPACE,
+        actor=actor,
+        role=role,
+        policy_mode=policy_mode,
+    )
+    if policy_exit_code != 0:
+        return policy_exit_code
+
     try:
         ingest_report = ingest_local_paths(
             paths,
@@ -1529,7 +1928,20 @@ def _workspace_export_review_events_command(
     root: Path,
     output_path: Path | None,
     decision: str | None,
+    actor: str,
+    role: str | None,
+    policy_mode: str | None,
 ) -> int:
+    policy_exit_code = _check_policy_or_print(
+        root=root,
+        action=PolicyAction.EXPORT_REVIEW_EVENTS,
+        actor=actor,
+        role=role,
+        policy_mode=policy_mode,
+    )
+    if policy_exit_code != 0:
+        return policy_exit_code
+
     try:
         state = open_workspace(root, create=False)
         content = state.export_review_events_jsonl(output_path, decision=decision)
@@ -1554,7 +1966,20 @@ def _workspace_publish_snapshot_command(
     output_path: Path | None,
     snapshot_id: str | None,
     as_json: bool,
+    actor: str,
+    role: str | None,
+    policy_mode: str | None,
 ) -> int:
+    policy_exit_code = _check_policy_or_print(
+        root=root,
+        action=PolicyAction.PUBLISH_SNAPSHOT,
+        actor=actor,
+        role=role,
+        policy_mode=policy_mode,
+    )
+    if policy_exit_code != 0:
+        return policy_exit_code
+
     try:
         state = open_workspace(root, create=False)
     except WorkspaceError as exc:
@@ -1597,10 +2022,27 @@ def _workspace_publish_snapshot_command(
 
 
 
-def _review_command(*, root: Path, host: str, port: int, open_browser: bool) -> int:
+def _review_command(
+    *,
+    root: Path,
+    host: str,
+    port: int,
+    open_browser: bool,
+    actor: str,
+    role: str | None,
+    policy_mode: str | None,
+) -> int:
     try:
-        run_review_inbox(root, host=host, port=port, open_browser=open_browser)
-    except (ReviewInboxError, WorkspaceError, OSError) as exc:
+        run_review_inbox(
+            root,
+            host=host,
+            port=port,
+            open_browser=open_browser,
+            actor=actor,
+            role=role,
+            policy_mode=policy_mode,
+        )
+    except (ReviewInboxError, WorkspaceError, LocalPolicyError, OSError) as exc:
         print(f"Invalid review inbox input: {exc}")
         return 1
     return 0

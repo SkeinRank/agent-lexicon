@@ -25,6 +25,8 @@ agent-lexicon check examples/customer_limits/lexicon.yaml examples/customer_limi
 agent-lexicon ingest README.md src examples/customer_limits/docs --root .
 agent-lexicon discover-candidates examples/customer_limits/docs --root examples/customer_limits
 agent-lexicon build-evidence examples/customer_limits/docs --root examples/customer_limits
+agent-lexicon safety scan examples/customer_limits/docs --root examples/customer_limits
+agent-lexicon policy status --root examples/customer_limits
 agent-lexicon workspace init --root examples/customer_limits
 agent-lexicon workspace sync examples/customer_limits/docs --root examples/customer_limits --max-candidates 5
 agent-lexicon workspace status --root examples/customer_limits
@@ -36,6 +38,8 @@ agent-lexicon dictionary validate --root .
 agent-lexicon dictionary diff lexicon/lexicon.yaml lexicon-next.yaml
 agent-lexicon dictionary merge lexicon-base.yaml lexicon-ours.yaml lexicon-theirs.yaml --output lexicon-merged.json
 agent-lexicon dictionary pr-check --root .
+agent-lexicon mcp tools
+agent-lexicon mcp serve --root . --lexicon lexicon/lexicon.yaml
 ```
 
 ## Core schema
@@ -324,6 +328,95 @@ for pack in evidence_report.packs:
 Each pack includes the candidate surface, score, positive snippets, negative
 snippets, line ranges, reasons, and source metadata. This is the local evidence
 foundation for proposal review and future snapshot publishing.
+
+
+## Prompt safety
+
+Agent Lexicon treats local docs and evidence snippets as untrusted input before
+they are shown to a future LLM reviewer. The prompt-safety scanner detects common
+prompt-injection patterns such as attempts to override instructions, reveal
+system prompts, exfiltrate secrets, or force tool execution. Evidence packs are
+annotated with prompt-safety metadata by default, so review workflows can block
+high-risk snippets before they are sent to an LLM.
+
+Command line usage:
+
+```bash
+agent-lexicon safety scan examples/customer_limits/docs --root examples/customer_limits
+agent-lexicon safety scan examples/customer_limits/docs --root examples/customer_limits --json
+agent-lexicon safety scan examples/customer_limits/docs --root examples/customer_limits --fail-on-high-risk
+agent-lexicon build-evidence examples/customer_limits/docs --root examples/customer_limits
+```
+
+Python usage:
+
+```python
+from agent_lexicon import (
+    format_evidence_pack_for_llm_review,
+    ingest_local_paths,
+    scan_documents_for_prompt_injection,
+)
+
+ingest_report = ingest_local_paths(["examples/customer_limits/docs"], root="examples/customer_limits")
+safety_report = scan_documents_for_prompt_injection(ingest_report.documents)
+
+print(safety_report.highest_risk.value, safety_report.action.value)
+```
+
+The helper `format_evidence_pack_for_llm_review(...)` renders evidence as
+data-only context with explicit untrusted boundaries. This keeps future review
+agents from accidentally following instructions embedded inside project docs.
+
+
+## Local policy modes
+
+Agent Lexicon includes a small local policy layer for review workflows that need
+more structure than a single-user scratchpad but do not require an enterprise
+RBAC service. The policy is intentionally declarative: the CLI caller declares
+an `actor` and optional `role`, then Agent Lexicon checks the requested local
+action against the active mode.
+
+Supported modes:
+
+- `solo` — local-first mode where all roles can perform workspace actions.
+- `team` — review and export are allowed for reviewers, while sync and snapshot publishing require maintainers or owners.
+- `locked` — read-only for everyone except owners.
+
+Create and inspect a local policy file:
+
+```bash
+agent-lexicon policy init --root examples/customer_limits --mode team --actor maxim --role owner
+agent-lexicon policy status --root examples/customer_limits --actor maxim
+agent-lexicon policy check --root examples/customer_limits --action publish_snapshot --actor maxim
+```
+
+The same policy checks are used by sensitive local commands:
+
+```bash
+agent-lexicon workspace sync examples/customer_limits/docs --root examples/customer_limits --actor maxim
+agent-lexicon workspace publish-snapshot --root examples/customer_limits --actor maxim
+agent-lexicon review --root examples/customer_limits --actor reviewer-1 --role reviewer
+```
+
+Python usage:
+
+```python
+from agent_lexicon import PolicyAction, check_local_policy, load_local_policy
+
+policy = load_local_policy("examples/customer_limits")
+decision = check_local_policy(
+    policy,
+    PolicyAction.PUBLISH_SNAPSHOT,
+    actor="reviewer-1",
+    role="reviewer",
+)
+
+print(decision.allowed, decision.reason)
+```
+
+This is RBAC-lite, not authentication. It is designed for local workflows, CI,
+and future MCP/LLM review boundaries where the agent should know which actions
+are allowed before changing review state or publishing snapshots.
 
 ## SQLite workspace state
 
@@ -739,3 +832,29 @@ The loader validates duplicate ids, JSONL structure, expected resolver statuses,
 expected resolver actions, tool guard statuses, tool guard actions, and primary
 term references before returning typed query objects.
 
+
+
+## MCP server
+
+Agent Lexicon can run a local Model Context Protocol stdio server so desktop
+agents and coding agents can use the same terminology checks as the CLI. The
+server is dependency-free, local-first, and reads the git-tracked lexicon plus
+optional `.agent-lexicon/` workspace state.
+
+```bash
+agent-lexicon mcp tools
+agent-lexicon mcp serve --root . --lexicon lexicon/lexicon.yaml
+```
+
+The local MCP server exposes these tools:
+
+- `resolve_term` — resolve text and return `resolved`, `ambiguous`, or `unknown`.
+- `check_language` — check whether text is safe for an agent to interpret directly.
+- `guard_tool_call` — block unsafe tool calls when terminology is ambiguous or mismatched.
+- `find_evidence` — return lexicon or workspace evidence for a term or surface.
+- `submit_proposal` — save a local review decision under workspace policy.
+- `get_snapshot` — return published local snapshot metadata.
+
+For local clients, point the MCP command at your repository root and lexicon file.
+Sensitive write actions use the same RBAC-lite policy layer as the workspace and
+review commands.
