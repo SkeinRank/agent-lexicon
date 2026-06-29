@@ -129,6 +129,12 @@ class SimpleAnalysisItem:
     positive_count: int
     negative_count: int
     document_count: int
+    priority_reasons: tuple[str, ...] = ()
+    cluster_key: str | None = None
+    cluster_size: int = 1
+    oov_proxy_score: float = 0.0
+    token_fragmentation_score: float = 0.0
+    surface_risk_score: float = 0.0
     recommendation: str | None = None
     reviewer_note: str | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
@@ -140,6 +146,12 @@ class SimpleAnalysisItem:
             "normalized_surface": self.normalized_surface,
             "priority": self.priority,
             "priority_score": self.priority_score,
+            "priority_reasons": list(self.priority_reasons),
+            "cluster_key": self.cluster_key,
+            "cluster_size": self.cluster_size,
+            "oov_proxy_score": self.oov_proxy_score,
+            "token_fragmentation_score": self.token_fragmentation_score,
+            "surface_risk_score": self.surface_risk_score,
             "review_status": self.review_status,
             "candidate_kind": self.candidate_kind,
             "score": self.score,
@@ -322,14 +334,17 @@ def run_simple_analyze(
     *,
     limit: int = 10,
     include_review_agent: bool = False,
+    priority: str = "all",
 ) -> SimpleAnalyzeReport:
     """Summarize the highest-priority local review items."""
     if limit < 1:
         raise SimpleWorkflowError("limit must be greater than 0")
+    if priority not in {"all", "important", "later"}:
+        raise SimpleWorkflowError("priority must be one of: all, important, later")
     root_path = Path(root).expanduser().resolve()
     try:
         state = open_workspace(root_path, create=False)
-        review_items = state.list_review_items(limit=limit)
+        review_items = state.list_review_items(limit=max(limit, 100))
     except WorkspaceError as exc:
         raise SimpleWorkflowError(str(exc)) from exc
 
@@ -341,13 +356,24 @@ def run_simple_analyze(
                 decision = run_review_agent(review_item)
             except ReviewAgentError:
                 decision = None
-        priority_score = _priority_score(review_item)
+        quality = _quality_metadata(review_item)
+        priority_score = _priority_score(review_item, quality=quality)
+        priority = str(quality.get("priority") or ("important" if priority_score >= 0.55 else "later"))
+        if priority not in {"important", "later"}:
+            priority = "important" if priority_score >= 0.55 else "later"
+        cluster = _cluster_metadata(review_item)
         items.append(
             SimpleAnalysisItem(
                 surface=review_item.surface,
                 normalized_surface=review_item.normalized_surface,
-                priority="important" if priority_score >= 0.55 else "later",
+                priority=priority,
                 priority_score=priority_score,
+                priority_reasons=tuple(str(reason) for reason in quality.get("priority_reasons", [])),
+                cluster_key=str(quality.get("cluster_key") or cluster.get("cluster_key") or "") or None,
+                cluster_size=int(cluster.get("candidate_count", quality.get("metadata", {}).get("cluster_size", 1)) or 1),
+                oov_proxy_score=float(quality.get("oov_proxy_score", 0.0) or 0.0),
+                token_fragmentation_score=float(quality.get("token_fragmentation_score", 0.0) or 0.0),
+                surface_risk_score=float(quality.get("surface_risk_score", 0.0) or 0.0),
                 review_status=review_item.review_decision.decision.value if review_item.review_decision else "unreviewed",
                 candidate_kind=review_item.candidate_kind,
                 score=review_item.score,
@@ -358,15 +384,17 @@ def run_simple_analyze(
                 document_count=review_item.document_count,
                 recommendation=decision.recommendation.value if decision else None,
                 reviewer_note=decision.reviewer_note if decision else None,
-                metadata={"occurrence_count": review_item.occurrence_count},
+                metadata={"occurrence_count": review_item.occurrence_count, "quality": quality, "cluster": cluster},
             )
         )
     items.sort(key=lambda item: (item.priority != "important", -item.priority_score, item.surface.casefold()))
+    if priority != "all":
+        items = [item for item in items if item.priority == priority]
     return SimpleAnalyzeReport(
-        items=tuple(items),
+        items=tuple(items[:limit]),
         workspace=state.summary(),
         review_agent_enabled=include_review_agent,
-        metadata={"root": str(root_path)},
+        metadata={"root": str(root_path), "priority_filter": priority},
     )
 
 
@@ -436,14 +464,44 @@ def _resolve_default_lexicon_path(
     return default_path if default_path.exists() else None
 
 
-def _priority_score(review_item: Any) -> float:
-    score = float(review_item.score) * 0.45
-    score += float(review_item.jargon_score) * 0.25
-    score += min(float(review_item.document_count) / 3.0, 1.0) * 0.10
-    score += 0.10 if int(review_item.negative_count) > 0 else 0.0
-    score += 0.10 if str(review_item.candidate_kind) in {"identifier", "acronym", "code"} else 0.0
+def _priority_score(review_item: Any, *, quality: Mapping[str, Any] | None = None) -> float:
+    quality = quality or _quality_metadata(review_item)
+    if "priority_score" in quality:
+        try:
+            return max(0.0, min(1.0, round(float(quality["priority_score"]), 4)))
+        except (TypeError, ValueError):
+            pass
+    score = float(review_item.score) * 0.36
+    score += float(review_item.jargon_score) * 0.20
+    score += float(quality.get("oov_proxy_score", 0.0) or 0.0) * 0.16
+    score += float(quality.get("surface_risk_score", 0.0) or 0.0) * 0.12
+    score += min(float(review_item.document_count) / 3.0, 1.0) * 0.08
+    score += 0.06 if int(review_item.negative_count) > 0 else 0.0
+    score += 0.08 if str(review_item.candidate_kind) in {"identifier", "acronym", "code"} else 0.0
     score -= float(review_item.background_penalty) * 0.10
     return max(0.0, min(1.0, round(score, 4)))
+
+
+def _quality_metadata(review_item: Any) -> Mapping[str, Any]:
+    payload = getattr(review_item, "candidate_payload", {})
+    if isinstance(payload, Mapping):
+        metadata = payload.get("metadata", {})
+        if isinstance(metadata, Mapping):
+            quality = metadata.get("quality", {})
+            if isinstance(quality, Mapping):
+                return quality
+    return {}
+
+
+def _cluster_metadata(review_item: Any) -> Mapping[str, Any]:
+    payload = getattr(review_item, "candidate_payload", {})
+    if isinstance(payload, Mapping):
+        metadata = payload.get("metadata", {})
+        if isinstance(metadata, Mapping):
+            cluster = metadata.get("cluster", {})
+            if isinstance(cluster, Mapping):
+                return cluster
+    return {}
 
 
 __all__ = [

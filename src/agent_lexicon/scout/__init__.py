@@ -2,6 +2,16 @@
 
 from __future__ import annotations
 
+from .quality import (
+    CandidateCluster,
+    CandidatePriority,
+    CandidateQualityError,
+    CandidateQualitySignals,
+    candidate_cluster_key,
+    cluster_surface_records,
+    compute_candidate_quality,
+    surface_fragments,
+)
 from .candidates import (
     CandidateSurfaceKind,
     ScoutCandidate,
@@ -28,6 +38,14 @@ from .evidence import (
 )
 
 __all__ = [
+    "CandidateCluster",
+    "CandidatePriority",
+    "CandidateQualityError",
+    "CandidateQualitySignals",
+    "candidate_cluster_key",
+    "cluster_surface_records",
+    "compute_candidate_quality",
+    "surface_fragments",
     "discover_canonical_migration_candidates",
     "CanonicalMigrationReport",
     "CanonicalMigrationError",

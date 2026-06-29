@@ -17,6 +17,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from agent_lexicon.core import Lexicon
 from agent_lexicon.ingest import IngestDocument
+from agent_lexicon.scout.quality import CandidateCluster, CandidateQualityError, cluster_surface_records, compute_candidate_quality
 
 
 class ScoutCandidateError(ValueError):
@@ -128,6 +129,7 @@ class ScoutCandidateReport:
 
     candidates: tuple[ScoutCandidate, ...]
     document_count: int
+    clusters: tuple[CandidateCluster, ...] = ()
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -138,6 +140,11 @@ class ScoutCandidateReport:
                 raise ScoutCandidateError("candidates must contain ScoutCandidate objects")
         if self.document_count < 0:
             raise ScoutCandidateError("document_count must be greater than or equal to 0")
+        if not isinstance(self.clusters, tuple):
+            object.__setattr__(self, "clusters", tuple(self.clusters))
+        for cluster in self.clusters:
+            if not isinstance(cluster, CandidateCluster):
+                raise ScoutCandidateError("clusters must contain CandidateCluster objects")
         if not isinstance(self.metadata, Mapping):
             raise ScoutCandidateError("metadata must be a mapping")
         object.__setattr__(self, "metadata", {str(key): value for key, value in self.metadata.items()})
@@ -147,12 +154,31 @@ class ScoutCandidateReport:
         """Return the number of discovered candidates."""
         return len(self.candidates)
 
+    @property
+    def cluster_count(self) -> int:
+        """Return the number of lightweight candidate clusters."""
+        return len(self.clusters)
+
+    @property
+    def important_count(self) -> int:
+        """Return the number of candidates prioritized for review."""
+        return sum(1 for candidate in self.candidates if _candidate_priority(candidate) == "important")
+
+    @property
+    def later_count(self) -> int:
+        """Return the number of lower-priority candidates."""
+        return sum(1 for candidate in self.candidates if _candidate_priority(candidate) == "later")
+
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable report representation."""
         return {
             "candidate_count": self.candidate_count,
             "document_count": self.document_count,
+            "cluster_count": self.cluster_count,
+            "important_count": self.important_count,
+            "later_count": self.later_count,
             "candidates": [candidate.to_dict() for candidate in self.candidates],
+            "clusters": [cluster.to_dict() for cluster in self.clusters],
             "metadata": dict(self.metadata),
         }
 
@@ -366,15 +392,18 @@ def discover_scout_candidates(
             candidate.normalized_surface,
         )
     )
-    selected = tuple(candidates[:max_candidates])
+    selected = _annotate_candidate_quality(tuple(candidates[:max_candidates]))
+    clusters = _clusters_from_candidates(selected)
     return ScoutCandidateReport(
         candidates=selected,
         document_count=total_documents,
+        clusters=clusters,
         metadata={
             "min_score": min_score,
             "max_candidates": max_candidates,
             "max_occurrences_per_candidate": max_occurrences_per_candidate,
             "existing_surface_count": len(known_surfaces),
+            "quality_signal_version": "quality-v1",
         },
     )
 
@@ -387,6 +416,98 @@ def existing_surfaces_from_lexicon(lexicon: Lexicon) -> tuple[str, ...]:
         for alias in term.aliases:
             surfaces.append(alias.surface)
     return tuple(surfaces)
+
+
+
+def _annotate_candidate_quality(candidates: tuple[ScoutCandidate, ...]) -> tuple[ScoutCandidate, ...]:
+    if not candidates:
+        return ()
+    clusters = _clusters_from_candidates(candidates)
+    cluster_by_surface: dict[str, CandidateCluster] = {}
+    for cluster in clusters:
+        for normalized_surface in cluster.normalized_surfaces:
+            cluster_by_surface[normalized_surface] = cluster
+
+    annotated: list[ScoutCandidate] = []
+    for candidate in candidates:
+        cluster = cluster_by_surface.get(candidate.normalized_surface)
+        try:
+            signals = compute_candidate_quality(
+                surface=candidate.surface,
+                normalized_surface=candidate.normalized_surface,
+                kind=candidate.kind.value,
+                score=candidate.score,
+                jargon_score=candidate.jargon_score,
+                background_penalty=candidate.background_penalty,
+                occurrence_count=candidate.occurrence_count,
+                document_count=candidate.document_count,
+                cluster_size=cluster.candidate_count if cluster else 1,
+            )
+        except CandidateQualityError as exc:
+            raise ScoutCandidateError(str(exc)) from exc
+        metadata = dict(candidate.metadata)
+        metadata["quality"] = signals.to_dict()
+        metadata["cluster"] = cluster.to_dict() if cluster else {"cluster_key": signals.cluster_key, "candidate_count": 1}
+        score_breakdown = dict(metadata.get("score_breakdown", {}))
+        score_breakdown.update(
+            {
+                "token_fragmentation_score": signals.token_fragmentation_score,
+                "oov_proxy_score": signals.oov_proxy_score,
+                "surface_shape_score": signals.surface_shape_score,
+                "surface_risk_score": signals.surface_risk_score,
+                "priority_score": signals.priority_score,
+            }
+        )
+        metadata["score_breakdown"] = score_breakdown
+        annotated.append(
+            ScoutCandidate(
+                surface=candidate.surface,
+                normalized_surface=candidate.normalized_surface,
+                kind=candidate.kind,
+                score=candidate.score,
+                jargon_score=candidate.jargon_score,
+                background_penalty=candidate.background_penalty,
+                occurrence_count=candidate.occurrence_count,
+                document_count=candidate.document_count,
+                occurrences=candidate.occurrences,
+                metadata=metadata,
+            )
+        )
+    annotated.sort(
+        key=lambda candidate: (
+            _candidate_priority(candidate) != "important",
+            -float(dict(candidate.metadata.get("quality", {})).get("priority_score", 0.0)),
+            -candidate.score,
+            candidate.normalized_surface,
+        )
+    )
+    return tuple(annotated)
+
+
+def _clusters_from_candidates(candidates: tuple[ScoutCandidate, ...]) -> tuple[CandidateCluster, ...]:
+    records = [
+        {
+            "surface": candidate.surface,
+            "normalized_surface": candidate.normalized_surface,
+            "score": candidate.score,
+            "occurrence_count": candidate.occurrence_count,
+            "document_count": candidate.document_count,
+        }
+        for candidate in candidates
+    ]
+    try:
+        return cluster_surface_records(records)
+    except CandidateQualityError as exc:
+        raise ScoutCandidateError(str(exc)) from exc
+
+
+def _candidate_priority(candidate: ScoutCandidate) -> str:
+    quality = candidate.metadata.get("quality", {}) if isinstance(candidate.metadata, Mapping) else {}
+    if isinstance(quality, Mapping):
+        value = str(quality.get("priority", "later"))
+        if value in {"important", "later"}:
+            return value
+    return "later"
 
 
 @dataclass(slots=True)

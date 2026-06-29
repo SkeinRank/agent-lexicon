@@ -18,16 +18,16 @@ Use the product-facing commands for the common local loop:
 ```bash
 agent-lexicon init
 agent-lexicon scan README.md docs src
-agent-lexicon analyze
+agent-lexicon analyze --priority important
 agent-lexicon review
 agent-lexicon publish
 agent-lexicon mcp serve --root . --lexicon lexicon/lexicon.yaml
 ```
 
 `scan` reads local project files, runs prompt-safety checks, discovers candidate
-terms, builds evidence packs, and saves the result to `.agent-lexicon/`.
-`analyze` summarizes the highest-priority candidates so reviewers can start with
-the important terminology first.
+terms, builds evidence packs, computes candidate-quality signals, and saves the
+result to `.agent-lexicon/`. `analyze` summarizes the highest-priority
+candidates so reviewers can start with the important terminology first.
 
 ## Quick check
 
@@ -86,20 +86,46 @@ agent-lexicon scan README.md docs src
 
 Reads local docs and source files, filters existing lexicon surfaces, scores
 terminology candidates, builds positive/negative evidence, runs prompt-safety
-checks, and stores the result in the local workspace.
+checks, adds OOV-proxy and clustering metadata, and stores the result in the
+local workspace.
 
 ```bash
 agent-lexicon analyze --review-agent
 ```
 
 Shows important candidates first and can include deterministic Review Agent
-recommendations for quick triage.
+recommendations for quick triage. Use `--priority important` to focus the inbox
+on surfaces that look risky, internal, clustered, or likely to affect agent
+behavior.
 
 ```bash
 agent-lexicon publish
 ```
 
 Publishes accepted review decisions into a lexicon-compatible local snapshot.
+
+## Candidate quality
+
+Local Scout now attaches dependency-free quality signals to each discovered
+candidate:
+
+- `oov_proxy_score` estimates tokenizer pain from code-style shape, separators,
+  camel case, acronyms, and digits.
+- `token_fragmentation_score` highlights surfaces that are likely to split into
+  many tokens.
+- `surface_risk_score` combines shape, OOV proxy, cluster size, and negative
+  evidence signals.
+- `cluster_key` groups variants such as `PaymentCore`, `payment-core`, and
+  `payments_core` before review.
+- `priority` separates candidates into `important` and `later` review buckets.
+
+This keeps the web inbox and `agent-lexicon analyze` focused on the candidates
+that are most likely to matter for agent behavior and retrieval quality.
+
+```bash
+agent-lexicon scan README.md docs src
+agent-lexicon analyze --priority important
+```
 
 ## Core schema
 

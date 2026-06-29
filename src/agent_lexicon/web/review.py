@@ -160,6 +160,14 @@ h1 {
   letter-spacing: -0.01em;
   word-break: break-word;
 }
+.priority {
+  font-size: 11px;
+  padding: 3px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+}
+.priority.important { background: #fef3c7; color: #7a4d00; }
+.priority.later { background: var(--soft); color: var(--muted); }
 .score {
   color: var(--muted);
   font-variant-numeric: tabular-nums;
@@ -529,6 +537,47 @@ def _render_page(
     )
 
 
+def _item_quality(item: WorkspaceReviewItem) -> dict[str, Any]:
+    metadata = item.candidate_payload.get("metadata", {}) if isinstance(item.candidate_payload, dict) else {}
+    quality = metadata.get("quality", {}) if isinstance(metadata, dict) else {}
+    return dict(quality) if isinstance(quality, dict) else {}
+
+
+def _item_cluster(item: WorkspaceReviewItem) -> dict[str, Any]:
+    metadata = item.candidate_payload.get("metadata", {}) if isinstance(item.candidate_payload, dict) else {}
+    cluster = metadata.get("cluster", {}) if isinstance(metadata, dict) else {}
+    return dict(cluster) if isinstance(cluster, dict) else {}
+
+
+def _item_priority(item: WorkspaceReviewItem) -> str:
+    priority = str(_item_quality(item).get("priority", "later"))
+    return priority if priority in {"important", "later"} else "later"
+
+
+def _item_quality_float(item: WorkspaceReviewItem, key: str) -> float:
+    try:
+        return float(_item_quality(item).get(key, 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _item_cluster_size(item: WorkspaceReviewItem) -> int:
+    cluster = _item_cluster(item)
+    try:
+        return max(1, int(cluster.get("candidate_count", 1) or 1))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _render_priority_reasons(item: WorkspaceReviewItem) -> str:
+    quality = _item_quality(item)
+    reasons = quality.get("priority_reasons", [])
+    if not isinstance(reasons, list) or not reasons:
+        return '<div class="meta">Priority reasons: none recorded.</div>'
+    pills = "".join(f'<span class="pill">{_escape(str(reason))}</span>' for reason in reasons[:6])
+    return f'<div class="summary">{pills}</div>'
+
+
 def _render_sidebar(items: tuple[WorkspaceReviewItem, ...], *, selected_surface: str) -> str:
     if not items:
         return '<aside class="panel sidebar"><div class="empty"><strong>No candidates yet</strong><span>Run workspace sync to populate the inbox.</span></div></aside>'
@@ -538,6 +587,7 @@ def _render_sidebar(items: tuple[WorkspaceReviewItem, ...], *, selected_surface:
     ]
     for item in items:
         active = " active" if item.normalized_surface == selected_surface else ""
+        priority = _item_priority(item)
         rows.append(
             f'<a class="item{active}" href="/?surface={quote(item.normalized_surface)}">'
             '<div class="item-main">'
@@ -545,6 +595,7 @@ def _render_sidebar(items: tuple[WorkspaceReviewItem, ...], *, selected_surface:
             f'<span class="score">{item.score:.3f}</span>'
             '</div>'
             f'<div class="meta">{_escape(item.candidate_kind)} · {item.positive_count} positive · {item.negative_count} negative</div>'
+            f'<span class="priority {priority}">{_escape(priority.upper())}</span>'
             f'<span class="status {_status_class(item.review_status)}">{_escape(_status_label(item.review_status))}</span>'
             '</a>'
         )
@@ -577,7 +628,11 @@ def _render_detail(item: WorkspaceReviewItem | None, *, policy_decision: PolicyD
             _metric("Score", f"{item.score:.3f}"),
             _metric("Jargon", f"{item.jargon_score:.3f}"),
             _metric("Background penalty", f"{item.background_penalty:.3f}"),
+            _metric("OOV proxy", f"{_item_quality_float(item, 'oov_proxy_score'):.3f}"),
+            _metric("Surface risk", f"{_item_quality_float(item, 'surface_risk_score'):.3f}"),
+            _metric("Cluster", str(_item_cluster_size(item))),
             "</div>",
+            _render_priority_reasons(item),
             _render_snippet_group("Positive evidence", item.evidence_payload.get("positive_snippets", []), "positive"),
             _render_snippet_group("Negative evidence", item.evidence_payload.get("negative_snippets", []), "negative"),
             _render_actions(item, policy_decision=policy_decision),

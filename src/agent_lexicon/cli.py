@@ -161,6 +161,12 @@ def build_parser() -> argparse.ArgumentParser:
     analyze_parser.add_argument("--root", default=".", help="Project root where .agent-lexicon/ is stored.")
     analyze_parser.add_argument("--limit", type=int, default=10, help="Maximum number of candidates to summarize.")
     analyze_parser.add_argument(
+        "--priority",
+        choices=("all", "important", "later"),
+        default="all",
+        help="Filter analysis output by priority bucket.",
+    )
+    analyze_parser.add_argument(
         "--review-agent",
         action="store_true",
         help="Include deterministic Review Agent recommendations in the analysis.",
@@ -1295,7 +1301,8 @@ def _simple_scan_command(args: argparse.Namespace) -> int:
         "Agent Lexicon scan: "
         f"{report.document_count} documents, "
         f"{report.candidate_count} candidates, "
-        f"{report.evidence_pack_count} evidence packs saved"
+        f"{report.evidence_pack_count} evidence packs saved, "
+        f"{report.candidates.important_count} important"
     )
     print(
         "Prompt safety: "
@@ -1334,6 +1341,7 @@ def _simple_analyze_command(args: argparse.Namespace) -> int:
             Path(args.root),
             limit=args.limit,
             include_review_agent=args.review_agent,
+            priority=args.priority,
         )
     except SimpleWorkflowError as exc:
         print(f"Invalid analyze input: {exc}")
@@ -1356,8 +1364,12 @@ def _simple_analyze_command(args: argparse.Namespace) -> int:
             f"[{label}] {item.surface} "
             f"priority={item.priority_score:.3f} "
             f"score={item.score:.3f} "
+            f"oov={item.oov_proxy_score:.3f} "
+            f"cluster={item.cluster_size} "
             f"status={item.review_status}"
         )
+        if item.priority_reasons:
+            print(f"  reasons={', '.join(item.priority_reasons[:4])}")
         if item.recommendation:
             print(f"  review-agent={item.recommendation}: {item.reviewer_note}")
     print("Next: agent-lexicon review")
