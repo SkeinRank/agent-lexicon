@@ -37,9 +37,13 @@ from agent_lexicon.safety import PromptSafetyError, PromptSafetyReport, scan_doc
 from agent_lexicon.scout import (
     EvidencePackError,
     EvidencePackReport,
+    ScoutQualityReport,
+    ScoutQualityReportError,
     ScoutCandidateError,
     ScoutCandidateReport,
     build_evidence_packs,
+    build_scout_quality_report,
+    build_scout_quality_report_from_review_items,
     discover_scout_candidates,
     existing_surfaces_from_lexicon,
 )
@@ -83,6 +87,7 @@ class SimpleScanReport:
     candidates: ScoutCandidateReport
     evidence: EvidencePackReport
     workspace: WorkspaceSummary
+    quality_report: ScoutQualityReport
     lexicon_path: str | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
@@ -115,6 +120,7 @@ class SimpleScanReport:
             "candidates": self.candidates.to_dict(),
             "evidence": self.evidence.to_dict(),
             "workspace": self.workspace.to_dict(),
+            "quality_report": self.quality_report.to_dict(),
             "metadata": dict(self.metadata),
         }
 
@@ -192,6 +198,7 @@ class SimpleAnalyzeReport:
 
     items: tuple[SimpleAnalysisItem, ...]
     workspace: WorkspaceSummary
+    quality_report: ScoutQualityReport
     review_agent_enabled: bool = False
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
@@ -219,6 +226,7 @@ class SimpleAnalyzeReport:
             "review_agent_enabled": self.review_agent_enabled,
             "items": [item.to_dict() for item in self.items],
             "workspace": self.workspace.to_dict(),
+            "quality_report": self.quality_report.to_dict(),
             "metadata": dict(self.metadata),
         }
 
@@ -330,12 +338,14 @@ def run_simple_scan(
         state.store_ingest_report(ingest)
         state.store_candidate_report(candidates)
         state.store_evidence_report(evidence)
+        quality_report = build_scout_quality_report(candidates, evidence)
     except (
         LocalIngestError,
         PromptSafetyError,
         AgentLexiconLoadError,
         ScoutCandidateError,
         EvidencePackError,
+        ScoutQualityReportError,
         WorkspaceError,
     ) as exc:
         raise SimpleWorkflowError(str(exc)) from exc
@@ -346,6 +356,7 @@ def run_simple_scan(
         candidates=candidates,
         evidence=evidence,
         workspace=state.summary(),
+        quality_report=quality_report,
         lexicon_path=str(resolved_lexicon_path) if resolved_lexicon_path is not None else None,
         metadata={"root": str(root_path), "paths": [str(path) for path in resolved_paths], "oov_tokenizer": oov_tokenizer},
     )
@@ -368,7 +379,12 @@ def run_simple_analyze(
     try:
         state = open_workspace(root_path, create=False)
         review_items = state.list_review_items(limit=max(limit, 100))
-    except WorkspaceError as exc:
+        workspace_summary = state.summary()
+        quality_report = build_scout_quality_report_from_review_items(
+            review_items,
+            document_count=workspace_summary.document_count,
+        )
+    except (WorkspaceError, ScoutQualityReportError) as exc:
         raise SimpleWorkflowError(str(exc)) from exc
 
     items: list[SimpleAnalysisItem] = []
@@ -387,15 +403,15 @@ def run_simple_analyze(
                 consensus = None
         quality = _quality_metadata(review_item)
         priority_score = _priority_score(review_item, quality=quality)
-        priority = str(quality.get("priority") or ("important" if priority_score >= 0.55 else "later"))
-        if priority not in {"important", "later"}:
-            priority = "important" if priority_score >= 0.55 else "later"
+        item_priority = str(quality.get("priority") or ("important" if priority_score >= 0.55 else "later"))
+        if item_priority not in {"important", "later"}:
+            item_priority = "important" if priority_score >= 0.55 else "later"
         cluster = _cluster_metadata(review_item)
         items.append(
             SimpleAnalysisItem(
                 surface=review_item.surface,
                 normalized_surface=review_item.normalized_surface,
-                priority=priority,
+                priority=item_priority,
                 priority_score=priority_score,
                 priority_reasons=tuple(str(reason) for reason in quality.get("priority_reasons", [])),
                 cluster_key=str(quality.get("cluster_key") or cluster.get("cluster_key") or "") or None,
@@ -428,7 +444,8 @@ def run_simple_analyze(
         items = [item for item in items if item.priority == priority]
     return SimpleAnalyzeReport(
         items=tuple(items[:limit]),
-        workspace=state.summary(),
+        workspace=workspace_summary,
+        quality_report=quality_report,
         review_agent_enabled=include_review_agent,
         metadata={"root": str(root_path), "priority_filter": priority, "review_agent_consensus": include_review_agent_consensus},
     )

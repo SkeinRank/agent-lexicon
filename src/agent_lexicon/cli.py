@@ -58,6 +58,8 @@ from .scout import (
     EvidencePackError,
     ScoutCandidateError,
     build_evidence_packs,
+    build_scout_quality_report,
+    ScoutQualityReportError,
     discover_canonical_migration_candidates,
     discover_scout_candidates,
     existing_surfaces_from_lexicon,
@@ -158,6 +160,7 @@ def build_parser() -> argparse.ArgumentParser:
     scan_parser.add_argument("--max-negative-snippets", type=int, default=3, help="Maximum negative snippets per candidate.")
     scan_parser.add_argument("--max-file-bytes", type=int, default=1_000_000, help="Maximum file size to read.")
     _add_local_policy_options(scan_parser)
+    scan_parser.add_argument("--quality-report", action="store_true", help="Print Scout quality metrics after scanning.")
     scan_parser.add_argument("--json", action="store_true", help="Print the scan report as JSON.")
 
     analyze_parser = subparsers.add_parser(
@@ -183,6 +186,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Use the Review Agent consensus and abstention wrapper when --review-agent is enabled.",
     )
     _add_local_policy_options(analyze_parser)
+    analyze_parser.add_argument("--quality-report", action="store_true", help="Print Scout quality metrics from the workspace.")
     analyze_parser.add_argument("--json", action="store_true", help="Print the analysis report as JSON.")
 
     publish_parser = subparsers.add_parser(
@@ -318,6 +322,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=1_000_000,
         help="Maximum file size to read during local ingest.",
+    )
+    discover_candidates_parser.add_argument(
+        "--quality-report",
+        action="store_true",
+        help="Print Scout quality metrics after candidate discovery.",
     )
     discover_candidates_parser.add_argument(
         "--json",
@@ -1219,6 +1228,7 @@ def main(argv: list[str] | None = None) -> int:
             max_file_bytes=args.max_file_bytes,
             as_json=args.json,
             as_jsonl=args.jsonl,
+            quality_report=args.quality_report,
         )
 
     if args.command == "build-evidence":
@@ -1378,6 +1388,8 @@ def _simple_scan_command(args: argparse.Namespace) -> int:
         f"action={report.safety.action.value}, "
         f"findings={report.safety.finding_count}"
     )
+    if getattr(args, "quality_report", False):
+        print(report.quality_report.to_text())
     for candidate in report.candidates.candidates[:5]:
         print(f"- {candidate.surface} score={candidate.score:.3f} jargon={candidate.jargon_score:.3f}")
     print("Next: agent-lexicon analyze")
@@ -1424,6 +1436,8 @@ def _simple_analyze_command(args: argparse.Namespace) -> int:
         f"{report.later_count} later, "
         f"{report.item_count} shown"
     )
+    if getattr(args, "quality_report", False):
+        print(report.quality_report.to_text())
     if not report.items:
         print("No workspace candidates found. Run: agent-lexicon scan README.md docs src")
         return 0
@@ -1798,6 +1812,7 @@ def _discover_candidates_command(
     max_file_bytes: int,
     as_json: bool,
     as_jsonl: bool,
+    quality_report: bool = False,
 ) -> int:
     if as_json and as_jsonl:
         print("Invalid candidate discovery input: choose either --json or --jsonl")
@@ -1849,6 +1864,12 @@ def _discover_candidates_command(
         f"{report.candidate_count} candidates from "
         f"{report.document_count} documents"
     )
+    if quality_report:
+        try:
+            print(build_scout_quality_report(report).to_text())
+        except ScoutQualityReportError as exc:
+            print(f"Scout quality report error: {exc}")
+            return 1
     for candidate in report.candidates:
         print(
             f"- {candidate.surface} "

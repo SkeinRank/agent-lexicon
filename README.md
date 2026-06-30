@@ -25,8 +25,9 @@ Use the product-facing commands for the common local loop:
 ```bash
 agent-lexicon init
 agent-lexicon scan README.md docs src
+agent-lexicon scan README.md docs src --quality-report
 agent-lexicon scan README.md docs src --oov-tokenizer auto
-agent-lexicon analyze --priority important
+agent-lexicon analyze --priority important --quality-report
 agent-lexicon review
 agent-lexicon publish
 agent-lexicon mcp serve --root . --lexicon lexicon/lexicon.yaml
@@ -34,7 +35,9 @@ agent-lexicon mcp serve --root . --lexicon lexicon/lexicon.yaml
 
 `scan` reads local project files, runs prompt-safety checks, discovers candidate
 terms, builds evidence packs, computes candidate-quality signals, and saves the
-result to `.agent-lexicon/`. `analyze` summarizes the highest-priority
+result to `.agent-lexicon/`. `--quality-report` shows how many candidates were
+classified as Important/Later, how much evidence coverage exists, and which
+signals drove the prioritization. `analyze` summarizes the highest-priority
 candidates so reviewers can start with the important terminology first.
 
 ## Quick check
@@ -53,7 +56,7 @@ agent-lexicon guard examples/customer_limits/lexicon.yaml "increase the limit" -
 agent-lexicon validate-queries examples/customer_limits/queries.jsonl
 agent-lexicon check examples/customer_limits/lexicon.yaml examples/customer_limits/queries.jsonl
 agent-lexicon ingest README.md src examples/customer_limits/docs --root .
-agent-lexicon discover-candidates examples/customer_limits/docs --root examples/customer_limits
+agent-lexicon discover-candidates examples/customer_limits/docs --root examples/customer_limits --quality-report
 agent-lexicon build-evidence examples/customer_limits/docs --root examples/customer_limits
 agent-lexicon safety scan examples/customer_limits/docs --root examples/customer_limits
 agent-lexicon policy status --root examples/customer_limits
@@ -96,7 +99,8 @@ agent-lexicon scan README.md docs src
 Reads local docs and source files, filters existing lexicon surfaces, scores
 terminology candidates, builds positive/negative evidence, runs prompt-safety
 checks, adds OOV-proxy and clustering metadata, and stores the result in the
-local workspace.
+local workspace. Add `--quality-report` to see candidate reduction, clusters,
+OOV/code-style counts, evidence coverage, and top priority reasons.
 
 ```bash
 agent-lexicon analyze --review-agent --consensus
@@ -106,7 +110,8 @@ Shows important candidates first and can include deterministic Review Agent
 recommendations for quick triage. Use `--consensus` to show the consensus and
 abstention wrapper used for safer auto-triage decisions. Use `--priority
 important` to focus the inbox on surfaces that look risky, internal, clustered,
-or likely to affect agent behavior.
+or likely to affect agent behavior. Add `--quality-report` to print the same
+Scout metrics from the stored workspace.
 
 ```bash
 agent-lexicon publish
@@ -139,12 +144,15 @@ guard calls.
 - `priority` separates candidates into `important` and `later` review buckets.
 
 This keeps the web inbox and `agent-lexicon analyze` focused on the candidates
-that are most likely to matter for agent behavior and retrieval quality.
+that are most likely to matter for agent behavior and retrieval quality. The
+quality report makes this visible as product metrics: Important/Later counts,
+review reduction, cluster coverage, high-OOV candidates, code-style candidates,
+negative-evidence coverage, and top priority reasons.
 
 ```bash
-agent-lexicon scan README.md docs src
-agent-lexicon scan README.md docs src --oov-tokenizer auto
-agent-lexicon analyze --priority important
+agent-lexicon scan README.md docs src --quality-report
+agent-lexicon scan README.md docs src --oov-tokenizer auto --quality-report
+agent-lexicon analyze --priority important --quality-report
 ```
 
 ## Core schema
@@ -373,7 +381,7 @@ Command line usage:
 
 ```bash
 agent-lexicon ingest README.md src examples/customer_limits/docs --root .
-agent-lexicon discover-candidates examples/customer_limits/docs --root examples/customer_limits
+agent-lexicon discover-candidates examples/customer_limits/docs --root examples/customer_limits --quality-report
 agent-lexicon build-evidence examples/customer_limits/docs --root examples/customer_limits
 agent-lexicon ingest examples/customer_limits/docs --root examples/customer_limits --jsonl
 ```
@@ -403,7 +411,7 @@ dominate the candidate list. This step is local-first and dependency-free.
 Command line usage:
 
 ```bash
-agent-lexicon discover-candidates examples/customer_limits/docs --root examples/customer_limits
+agent-lexicon discover-candidates examples/customer_limits/docs --root examples/customer_limits --quality-report
 agent-lexicon discover-candidates examples/customer_limits/docs --root examples/customer_limits --lexicon examples/customer_limits/lexicon.yaml --json
 ```
 
@@ -941,7 +949,7 @@ Validate a dataset from the command line:
 agent-lexicon validate-queries examples/customer_limits/queries.jsonl
 agent-lexicon check examples/customer_limits/lexicon.yaml examples/customer_limits/queries.jsonl
 agent-lexicon ingest README.md src examples/customer_limits/docs --root .
-agent-lexicon discover-candidates examples/customer_limits/docs --root examples/customer_limits
+agent-lexicon discover-candidates examples/customer_limits/docs --root examples/customer_limits --quality-report
 agent-lexicon build-evidence examples/customer_limits/docs --root examples/customer_limits
 agent-lexicon workspace sync examples/customer_limits/docs --root examples/customer_limits --max-candidates 5
 ```

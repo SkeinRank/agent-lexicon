@@ -44,6 +44,13 @@ from .evidence import (
     EvidenceSnippetKind,
     build_evidence_packs,
 )
+from .metrics import (
+    ScoutQualityCandidateSummary,
+    ScoutQualityReport,
+    ScoutQualityReportError,
+    build_scout_quality_report,
+    build_scout_quality_report_from_review_items,
+)
 
 __all__ = [
     "DEFAULT_OOV_TOKENIZER",
@@ -70,6 +77,11 @@ __all__ = [
     "EvidencePackReport",
     "EvidenceSnippet",
     "EvidenceSnippetKind",
+    "ScoutQualityCandidateSummary",
+    "ScoutQualityReport",
+    "ScoutQualityReportError",
+    "build_scout_quality_report",
+    "build_scout_quality_report_from_review_items",
     "ScoutCandidate",
     "ScoutCandidateError",
     "ScoutCandidateOccurrence",
