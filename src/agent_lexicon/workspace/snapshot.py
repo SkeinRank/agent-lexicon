@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from agent_lexicon.core import EvidenceKind, EvidenceSpan, Lexicon, Term
+from agent_lexicon.core.files import atomic_write_text
 
 from .state import ReviewDecisionStatus, WorkspaceError, WorkspaceReviewItem, WorkspaceState
 
@@ -165,10 +166,9 @@ def publish_local_snapshot(
     )
 
     resolved_output_path = Path(output_path) if output_path is not None else _default_snapshot_path(state, resolved_snapshot_id)
-    resolved_output_path.parent.mkdir(parents=True, exist_ok=True)
-    resolved_output_path.write_text(
+    atomic_write_text(
+        resolved_output_path,
         json.dumps(lexicon.to_dict(), indent=2, ensure_ascii=False, sort_keys=True) + "\n",
-        encoding="utf-8",
     )
 
     snapshot = PublishedSnapshot(

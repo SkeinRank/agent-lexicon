@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from agent_lexicon.core import AgentLexiconLoadError, Lexicon, lexicon_from_dict, load_lexicon
+from agent_lexicon.core.files import atomic_write_text
 
 from .diff import SemanticDiffSummary, SemanticObjectKind, diff_lexicons
 
@@ -244,10 +245,9 @@ def write_merged_lexicon_json(report: SemanticMergeReport, output_path: str | Pa
     if report.merged_lexicon is None or report.has_conflicts:
         raise SemanticMergeError("cannot write merged lexicon while semantic conflicts are present")
     output = Path(output_path)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(
+    atomic_write_text(
+        output,
         json.dumps(report.merged_lexicon.to_dict(), indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
     )
     return output
 

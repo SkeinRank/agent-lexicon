@@ -1066,7 +1066,11 @@ print(snapshot.snapshot_id, snapshot.generated_term_count)
 
 Only `accepted` review decisions are promoted. Rejected, ambiguous, and
 needs-split candidates remain in the workspace review history and can still be
-exported through the review events JSONL workflow.
+exported through the review events JSONL workflow. Snapshot files are written
+atomically: Agent Lexicon writes the new JSON to a temporary file in the same
+directory, flushes it, and then promotes it with an atomic replace. Readers see
+either the previous complete snapshot or the new complete snapshot, not a
+partially written file.
 
 ## Dictionary-as-code layout
 
@@ -1173,6 +1177,9 @@ else:
 ```
 
 Use semantic merge when multiple branches update terminology at the same time.
+Merged lexicon output is written atomically using the same local artifact write
+path as published snapshots. This keeps CI jobs and agent processes from reading
+a partially written merge result while another process is publishing it.
 It can combine independent additions such as new aliases, tools, metadata, or
 evidence while blocking ambiguous edits such as two different canonical names for
 the same term.

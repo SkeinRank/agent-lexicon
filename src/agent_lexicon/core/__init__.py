@@ -17,6 +17,7 @@ from .cache import (
     runtime_cache_stats,
 )
 from .loader import AgentLexiconLoadError, lexicon_from_dict, load_lexicon, loads_lexicon
+from .files import atomic_write_text
 from .linter import (
     LexiconLintCode,
     LexiconLintFinding,
@@ -72,6 +73,7 @@ __all__ = [
     "load_cached_lexicon",
     "runtime_cache_stats",
     "AgentLexiconModelError",
+    "atomic_write_text",
     "Alias",
     "EvidenceKind",
     "EvidenceSpan",

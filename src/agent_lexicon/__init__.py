@@ -6,6 +6,7 @@ from .core import (
     DEFAULT_RUNTIME_CACHE_SIZE,
     AgentLexiconLoadError,
     AgentLexiconModelError,
+    atomic_write_text,
     Alias,
     EvidenceKind,
     EvidenceSpan,
@@ -308,6 +309,7 @@ from .mcp import (
 
 __all__ = [
 
+    "atomic_write_text",
     "DEFAULT_OOV_TOKENIZER",
     "OovScorerError",
     "OovScoreResult",
