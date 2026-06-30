@@ -2622,6 +2622,10 @@ def _dictionary_merge_command(
             print(f"Theirs: {report.theirs_label}")
             for conflict in report.conflicts:
                 print(conflict.to_text())
+            if report.has_warnings:
+                print(f"Semantic warnings: {report.warning_count}")
+                for warning in report.warnings:
+                    print(warning.to_text())
         return 1
 
     if output_path is not None and not check_only:
@@ -2646,6 +2650,10 @@ def _dictionary_merge_command(
     print(f"Base: {report.base_label}")
     print(f"Ours: {report.ours_label}")
     print(f"Theirs: {report.theirs_label}")
+    if report.has_warnings:
+        print(f"Semantic warnings: {report.warning_count}")
+        for warning in report.warnings:
+            print(warning.to_text())
     if check_only:
         print("Check only: no merged lexicon was written.")
     elif written_path is not None:

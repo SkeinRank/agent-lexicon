@@ -73,6 +73,8 @@ from .dictionary import (
     SemanticMergeError,
     SemanticMergeReport,
     SemanticMergeStatus,
+    SemanticMergeWarning,
+    SemanticMergeWarningKind,
     diff_lexicon_files,
     diff_lexicons,
     merge_lexicon_files,

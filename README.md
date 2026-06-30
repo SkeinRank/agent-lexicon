@@ -1199,6 +1199,14 @@ It can combine independent additions such as new aliases, tools, metadata, or
 evidence while blocking ambiguous edits such as two different canonical names for
 the same term.
 
+Clean merges can still include semantic warnings. These warnings do not block
+writing the merged lexicon, but they flag cases that deserve reviewer attention.
+For example, if one branch renames a term's canonical surface while another
+branch adds aliases, tools, or evidence to the same term, Agent Lexicon reports a
+`canonical_rename_with_parallel_term_change` warning. This keeps terminology
+review aware that both branches may no longer be describing the same concept,
+even though the field-level merge is mechanically clean.
+
 ## CI and pull request validation
 
 Agent Lexicon includes a single dictionary PR check command for local CI and
