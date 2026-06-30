@@ -595,9 +595,9 @@ to the merge base.
 Example output:
 
 ```text
-Git merge terminology check: 1 files, 3 added lines
+Git merge terminology check: 1 files, 4 added lines
 Range: main...HEAD
-Summary: known=1, likely_alias=1, likely_new_term=1, unresolved_unknown=0
+Summary: known=1, likely_alias=1, likely_new_term=1, unresolved_unknown=0, hidden_unresolved=1
 Known terminology:
 - src/auth.py:12 'accessToken' -> auth.access_token (access token)
 Needs review:
@@ -605,6 +605,7 @@ Likely aliases:
 - src/auth.py:13 'authToken' unknown; near miss: auth.access_token (access token) confidence=0.623 via 'AccessToken' semantic_escalation=related_fragment_bridge
 New terminology candidates:
 - src/auth.py:14 'credentialBlob' unknown; possible new term
+Hidden unresolved identifiers: 1. Use --include-unresolved-unknowns to inspect low-signal identifiers.
 ```
 
 Known occurrences are useful for confirming that different branch naming styles
@@ -616,7 +617,9 @@ possible new lexicon term. Both classes keep the runtime decision unchanged: the
 identifier remains unknown until a reviewer adds an alias or a new term.
 
 Low-signal local identifiers such as helper function names, one-letter suffixes,
-and temporary variables stay out of the default report. Use
+and temporary variables stay out of the default report. The default output still
+shows `hidden_unresolved` and a short note when those items were suppressed, so a
+quiet report does not hide that a full-audit basket exists. Use
 `--include-unresolved-unknowns` when a workflow needs the full unknown identifier
 list, including low-signal items. Use `--fail-on-review` in CI when alias or
 new-term review items should block the workflow.

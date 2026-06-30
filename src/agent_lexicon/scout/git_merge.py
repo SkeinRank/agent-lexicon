@@ -287,8 +287,18 @@ class GitMergeTerminologyReport:
 
     @property
     def unresolved_unknown_count(self) -> int:
-        """Return the number of low-signal unknown identifiers."""
+        """Return the number of low-signal unknown identifiers included in the report."""
         return len(self.unresolved_unknowns)
+
+    @property
+    def hidden_unresolved_count(self) -> int:
+        """Return the number of low-signal unknown identifiers hidden from the default report."""
+        raw_count = self.metadata.get("hidden_unresolved_count", 0)
+        try:
+            count = int(raw_count)
+        except (TypeError, ValueError):
+            return 0
+        return max(count, 0)
 
     @property
     def has_review_items(self) -> bool:
@@ -311,6 +321,7 @@ class GitMergeTerminologyReport:
             "likely_alias_count": self.likely_alias_count,
             "likely_new_term_count": self.likely_new_term_count,
             "unresolved_unknown_count": self.unresolved_unknown_count,
+            "hidden_unresolved_count": self.hidden_unresolved_count,
             "has_review_items": self.has_review_items,
             "added_lines": [line.to_dict() for line in self.added_lines],
             "known_occurrences": [occurrence.to_dict() for occurrence in self.known_occurrences],
@@ -332,7 +343,8 @@ class GitMergeTerminologyReport:
             f"known={self.known_occurrence_count}, "
             f"likely_alias={self.likely_alias_count}, "
             f"likely_new_term={self.likely_new_term_count}, "
-            f"unresolved_unknown={self.unresolved_unknown_count}",
+            f"unresolved_unknown={self.unresolved_unknown_count}, "
+            f"hidden_unresolved={self.hidden_unresolved_count}",
         ]
         if self.known_occurrences:
             lines.append("Known terminology:")
@@ -358,7 +370,13 @@ class GitMergeTerminologyReport:
             lines.append("Low-signal unknown identifiers:")
             for identifier in self.unresolved_unknowns:
                 lines.append(f"- {identifier.to_text()}")
-        if not self.known_occurrences and not self.unknown_identifiers:
+        if self.hidden_unresolved_count:
+            lines.append(
+                "Hidden unresolved identifiers: "
+                f"{self.hidden_unresolved_count}. "
+                "Use --include-unresolved-unknowns to inspect low-signal identifiers."
+            )
+        if not self.known_occurrences and not self.unknown_identifiers and not self.hidden_unresolved_count:
             lines.append("No terminology surfaces found in added lines.")
         return "\n".join(lines)
 
@@ -490,6 +508,7 @@ def build_git_merge_terminology_report(
     matcher = SurfaceMatcher.from_lexicon(lexicon, include_deprecated=include_deprecated)
     known_occurrences: list[GitMergeKnownOccurrence] = []
     unknown_identifiers: list[GitMergeUnknownIdentifier] = []
+    hidden_unresolved_count = 0
     seen_known: set[tuple[str, int, str, str]] = set()
     seen_unknown: set[tuple[str, int, str]] = set()
 
@@ -539,6 +558,7 @@ def build_git_merge_terminology_report(
                 suggestions = ()
             review_kind = _unknown_review_kind(surface, text=line.text, suggestions=suggestions)
             if review_kind == GitMergeReviewKind.UNRESOLVED_IDENTIFIER and not include_unresolved_unknowns:
+                hidden_unresolved_count += 1
                 continue
             unknown_identifiers.append(
                 GitMergeUnknownIdentifier(
@@ -553,6 +573,7 @@ def build_git_merge_terminology_report(
 
     report_metadata: dict[str, Any] = dict(metadata or {})
     report_metadata["include_unresolved_unknowns"] = include_unresolved_unknowns
+    report_metadata["hidden_unresolved_count"] = hidden_unresolved_count
 
     return GitMergeTerminologyReport(
         root=str(Path(root)),
