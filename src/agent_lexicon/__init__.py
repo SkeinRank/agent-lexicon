@@ -141,6 +141,12 @@ from .safety import (
     scan_prompt_injection_text,
 )
 from .scout import (
+    DEFAULT_OOV_TOKENIZER,
+    OovScorerError,
+    OovScoreResult,
+    ProxyOovScorer,
+    TokenizerOovScorer,
+    build_oov_scorer,
     CandidateCluster,
     CandidatePriority,
     CandidateQualityError,
@@ -244,6 +250,12 @@ from .mcp import (
 
 __all__ = [
 
+    "DEFAULT_OOV_TOKENIZER",
+    "OovScorerError",
+    "OovScoreResult",
+    "ProxyOovScorer",
+    "TokenizerOovScorer",
+    "build_oov_scorer",
     "DEFAULT_SCAN_PATHS",
     "code_identifier_variants",
     "normalized_fragment_surface",

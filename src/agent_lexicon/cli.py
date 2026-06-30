@@ -148,6 +148,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     scan_parser.add_argument("--min-score", type=float, default=0.25, help="Minimum candidate score from 0.0 to 1.0.")
     scan_parser.add_argument("--max-candidates", type=int, default=20, help="Maximum number of candidates to save.")
+    scan_parser.add_argument(
+        "--oov-tokenizer",
+        default=None,
+        help="Optional Scout tokenizer for OOV scoring. Use 'auto' for BAAI/bge-small-en-v1.5 or 'proxy' for the dependency-free scorer.",
+    )
     scan_parser.add_argument("--context-lines", type=int, default=1, help="Context lines around each evidence match.")
     scan_parser.add_argument("--max-positive-snippets", type=int, default=3, help="Maximum positive snippets per candidate.")
     scan_parser.add_argument("--max-negative-snippets", type=int, default=3, help="Maximum negative snippets per candidate.")
@@ -304,6 +309,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum number of candidates to print.",
     )
     discover_candidates_parser.add_argument(
+        "--oov-tokenizer",
+        default=None,
+        help="Optional Scout tokenizer for OOV scoring. Use 'auto' for BAAI/bge-small-en-v1.5 or 'proxy' for the dependency-free scorer.",
+    )
+    discover_candidates_parser.add_argument(
         "--max-file-bytes",
         type=int,
         default=1_000_000,
@@ -356,6 +366,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=20,
         help="Maximum number of candidate evidence packs to build.",
+    )
+    build_evidence_parser.add_argument(
+        "--oov-tokenizer",
+        default=None,
+        help="Optional Scout tokenizer for OOV scoring. Use 'auto' for BAAI/bge-small-en-v1.5 or 'proxy' for the dependency-free scorer.",
     )
     build_evidence_parser.add_argument(
         "--context-lines",
@@ -949,6 +964,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum number of candidate evidence packs to store.",
     )
     workspace_sync_parser.add_argument(
+        "--oov-tokenizer",
+        default=None,
+        help="Optional Scout tokenizer for OOV scoring. Use 'auto' for BAAI/bge-small-en-v1.5 or 'proxy' for the dependency-free scorer.",
+    )
+    workspace_sync_parser.add_argument(
         "--context-lines",
         type=int,
         default=1,
@@ -1195,6 +1215,7 @@ def main(argv: list[str] | None = None) -> int:
             lexicon_path=Path(args.lexicon) if args.lexicon else None,
             min_score=args.min_score,
             max_candidates=args.max_candidates,
+            oov_tokenizer=args.oov_tokenizer,
             max_file_bytes=args.max_file_bytes,
             as_json=args.json,
             as_jsonl=args.jsonl,
@@ -1208,6 +1229,7 @@ def main(argv: list[str] | None = None) -> int:
             lexicon_path=Path(args.lexicon) if args.lexicon else None,
             min_score=args.min_score,
             max_candidates=args.max_candidates,
+            oov_tokenizer=args.oov_tokenizer,
             context_lines=args.context_lines,
             max_positive_snippets=args.max_positive_snippets,
             max_negative_snippets=args.max_negative_snippets,
@@ -1331,6 +1353,7 @@ def _simple_scan_command(args: argparse.Namespace) -> int:
             include_globs=args.include,
             min_score=args.min_score,
             max_candidates=args.max_candidates,
+            oov_tokenizer=args.oov_tokenizer,
             context_lines=args.context_lines,
             max_positive_snippets=args.max_positive_snippets,
             max_negative_snippets=args.max_negative_snippets,
@@ -1410,7 +1433,8 @@ def _simple_analyze_command(args: argparse.Namespace) -> int:
             f"[{label}] {item.surface} "
             f"priority={item.priority_score:.3f} "
             f"score={item.score:.3f} "
-            f"oov={item.oov_proxy_score:.3f} "
+            f"oov={item.oov_score:.3f} "
+            f"oov_source={item.oov_source} "
             f"cluster={item.cluster_size} "
             f"status={item.review_status}"
         )
@@ -1770,6 +1794,7 @@ def _discover_candidates_command(
     lexicon_path: Path | None,
     min_score: float,
     max_candidates: int,
+    oov_tokenizer: str | None,
     max_file_bytes: int,
     as_json: bool,
     as_jsonl: bool,
@@ -1805,6 +1830,7 @@ def _discover_candidates_command(
             existing_surfaces=existing_surfaces,
             min_score=min_score,
             max_candidates=max_candidates,
+            oov_tokenizer=oov_tokenizer,
         )
     except ScoutCandidateError as exc:
         print(f"Invalid candidate discovery input: {exc}")
@@ -1847,6 +1873,7 @@ def _build_evidence_command(
     lexicon_path: Path | None,
     min_score: float,
     max_candidates: int,
+    oov_tokenizer: str | None,
     context_lines: int,
     max_positive_snippets: int,
     max_negative_snippets: int,
@@ -1885,6 +1912,7 @@ def _build_evidence_command(
             existing_surfaces=existing_surfaces,
             min_score=min_score,
             max_candidates=max_candidates,
+            oov_tokenizer=oov_tokenizer,
         )
         evidence_report = build_evidence_packs(
             ingest_report.documents,
@@ -2400,6 +2428,7 @@ def _workspace_command(args: argparse.Namespace) -> int:
             lexicon_path=Path(args.lexicon) if args.lexicon else None,
             min_score=args.min_score,
             max_candidates=args.max_candidates,
+            oov_tokenizer=args.oov_tokenizer,
             context_lines=args.context_lines,
             max_positive_snippets=args.max_positive_snippets,
             max_negative_snippets=args.max_negative_snippets,
@@ -2444,6 +2473,7 @@ def _workspace_sync_command(
     lexicon_path: Path | None,
     min_score: float,
     max_candidates: int,
+    oov_tokenizer: str | None,
     context_lines: int,
     max_positive_snippets: int,
     max_negative_snippets: int,
@@ -2489,6 +2519,7 @@ def _workspace_sync_command(
             existing_surfaces=existing_surfaces,
             min_score=min_score,
             max_candidates=max_candidates,
+            oov_tokenizer=oov_tokenizer,
         )
         evidence_report = build_evidence_packs(
             ingest_report.documents,

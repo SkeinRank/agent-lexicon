@@ -11,6 +11,13 @@ reviewable terminology layer before RAG, tool calls, and workflow automation.
 pip install agent-lexicon
 ```
 
+Optional tokenizer-backed OOV scoring for Scout quality ranking can be installed
+when you want to compare candidate surfaces against a real tokenizer:
+
+```bash
+pip install "agent-lexicon[oov]"
+```
+
 ## Quick start
 
 Use the product-facing commands for the common local loop:
@@ -18,6 +25,7 @@ Use the product-facing commands for the common local loop:
 ```bash
 agent-lexicon init
 agent-lexicon scan README.md docs src
+agent-lexicon scan README.md docs src --oov-tokenizer auto
 agent-lexicon analyze --priority important
 agent-lexicon review
 agent-lexicon publish
@@ -108,11 +116,20 @@ Publishes accepted review decisions into a lexicon-compatible local snapshot.
 
 ## Candidate quality
 
-Local Scout now attaches dependency-free quality signals to each discovered
-candidate:
+Local Scout attaches quality signals to each discovered candidate. By default,
+the quality layer is dependency-free. For projects that want a tokenizer-backed
+OOV signal, install `agent-lexicon[oov]` and run `scan` or `discover-candidates`
+with `--oov-tokenizer auto`. `auto` uses `BAAI/bge-small-en-v1.5`; a specific
+Hugging Face tokenizer id can also be passed explicitly. Tokenizer scoring is
+only used during offline Scout analysis, not during runtime resolve or tool
+guard calls.
 
 - `oov_proxy_score` estimates tokenizer pain from code-style shape, separators,
   camel case, acronyms, and digits.
+- `oov_score` is the effective OOV score used for priority ranking. It is the
+  proxy score by default and can include the optional tokenizer signal.
+- `oov_source` shows whether the score came from `proxy`, `tokenizer`, or
+  `proxy_fallback`.
 - `token_fragmentation_score` highlights surfaces that are likely to split into
   many tokens.
 - `surface_risk_score` combines shape, OOV proxy, cluster size, and negative
@@ -126,6 +143,7 @@ that are most likely to matter for agent behavior and retrieval quality.
 
 ```bash
 agent-lexicon scan README.md docs src
+agent-lexicon scan README.md docs src --oov-tokenizer auto
 agent-lexicon analyze --priority important
 ```
 

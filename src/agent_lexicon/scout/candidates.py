@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Iterable, Mapping, Sequence
 
+from agent_lexicon.scout.oov import OovScorer, OovScorerError, build_oov_scorer
 from agent_lexicon.core import Lexicon
 from agent_lexicon.ingest import IngestDocument
 from agent_lexicon.scout.quality import CandidateCluster, CandidateQualityError, cluster_surface_records, compute_candidate_quality
@@ -333,12 +334,15 @@ def discover_scout_candidates(
     min_score: float = 0.25,
     max_candidates: int = 50,
     max_occurrences_per_candidate: int = 5,
+    oov_tokenizer: str | None = None,
+    oov_scorer: OovScorer | None = None,
 ) -> ScoutCandidateReport:
     """Discover terminology candidates from ingested local documents.
 
     The scorer favors internal-looking surfaces such as code identifiers,
     acronyms, backticked names, and domain phrases. It penalizes broad generic
-    surfaces so common project words do not dominate the candidate list.
+    surfaces so common project words do not dominate the candidate list. Optional
+    tokenizer-backed OOV scoring is only used during this offline Scout phase.
     """
     if min_score < 0 or min_score > 1:
         raise ScoutCandidateError("min_score must be between 0 and 1")
@@ -348,6 +352,7 @@ def discover_scout_candidates(
         raise ScoutCandidateError("max_occurrences_per_candidate must be greater than 0")
 
     document_tuple = tuple(documents)
+    scorer = oov_scorer if oov_scorer is not None else build_oov_scorer(oov_tokenizer)
     for document in document_tuple:
         if not isinstance(document, IngestDocument):
             raise ScoutCandidateError("documents must contain IngestDocument objects")
@@ -392,7 +397,7 @@ def discover_scout_candidates(
             candidate.normalized_surface,
         )
     )
-    selected = _annotate_candidate_quality(tuple(candidates[:max_candidates]))
+    selected = _annotate_candidate_quality(tuple(candidates[:max_candidates]), oov_scorer=scorer)
     clusters = _clusters_from_candidates(selected)
     return ScoutCandidateReport(
         candidates=selected,
@@ -403,7 +408,8 @@ def discover_scout_candidates(
             "max_candidates": max_candidates,
             "max_occurrences_per_candidate": max_occurrences_per_candidate,
             "existing_surface_count": len(known_surfaces),
-            "quality_signal_version": "quality-v1",
+            "quality_signal_version": "quality-v2",
+            "oov_tokenizer": oov_tokenizer,
         },
     )
 
@@ -419,7 +425,7 @@ def existing_surfaces_from_lexicon(lexicon: Lexicon) -> tuple[str, ...]:
 
 
 
-def _annotate_candidate_quality(candidates: tuple[ScoutCandidate, ...]) -> tuple[ScoutCandidate, ...]:
+def _annotate_candidate_quality(candidates: tuple[ScoutCandidate, ...], *, oov_scorer: OovScorer) -> tuple[ScoutCandidate, ...]:
     if not candidates:
         return ()
     clusters = _clusters_from_candidates(candidates)
@@ -432,6 +438,7 @@ def _annotate_candidate_quality(candidates: tuple[ScoutCandidate, ...]) -> tuple
     for candidate in candidates:
         cluster = cluster_by_surface.get(candidate.normalized_surface)
         try:
+            oov_result = oov_scorer.score(candidate.surface)
             signals = compute_candidate_quality(
                 surface=candidate.surface,
                 normalized_surface=candidate.normalized_surface,
@@ -442,8 +449,9 @@ def _annotate_candidate_quality(candidates: tuple[ScoutCandidate, ...]) -> tuple
                 occurrence_count=candidate.occurrence_count,
                 document_count=candidate.document_count,
                 cluster_size=cluster.candidate_count if cluster else 1,
+                oov_result=oov_result,
             )
-        except CandidateQualityError as exc:
+        except (CandidateQualityError, OovScorerError) as exc:
             raise ScoutCandidateError(str(exc)) from exc
         metadata = dict(candidate.metadata)
         metadata["quality"] = signals.to_dict()
@@ -453,6 +461,7 @@ def _annotate_candidate_quality(candidates: tuple[ScoutCandidate, ...]) -> tuple
             {
                 "token_fragmentation_score": signals.token_fragmentation_score,
                 "oov_proxy_score": signals.oov_proxy_score,
+                "oov_score": signals.oov_score,
                 "surface_shape_score": signals.surface_shape_score,
                 "surface_risk_score": signals.surface_risk_score,
                 "priority_score": signals.priority_score,

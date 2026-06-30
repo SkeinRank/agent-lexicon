@@ -2,6 +2,14 @@
 
 from __future__ import annotations
 
+from .oov import (
+    DEFAULT_OOV_TOKENIZER,
+    OovScorerError,
+    OovScoreResult,
+    ProxyOovScorer,
+    TokenizerOovScorer,
+    build_oov_scorer,
+)
 from .quality import (
     CandidateCluster,
     CandidatePriority,
@@ -38,6 +46,12 @@ from .evidence import (
 )
 
 __all__ = [
+    "DEFAULT_OOV_TOKENIZER",
+    "OovScorerError",
+    "OovScoreResult",
+    "ProxyOovScorer",
+    "TokenizerOovScorer",
+    "build_oov_scorer",
     "CandidateCluster",
     "CandidatePriority",
     "CandidateQualityError",

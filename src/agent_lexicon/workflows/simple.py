@@ -139,6 +139,9 @@ class SimpleAnalysisItem:
     cluster_key: str | None = None
     cluster_size: int = 1
     oov_proxy_score: float = 0.0
+    oov_score: float = 0.0
+    oov_source: str = "proxy"
+    oov_tokenizer_score: float | None = None
     token_fragmentation_score: float = 0.0
     surface_risk_score: float = 0.0
     recommendation: str | None = None
@@ -160,6 +163,9 @@ class SimpleAnalysisItem:
             "cluster_key": self.cluster_key,
             "cluster_size": self.cluster_size,
             "oov_proxy_score": self.oov_proxy_score,
+            "oov_score": self.oov_score,
+            "oov_source": self.oov_source,
+            "oov_tokenizer_score": self.oov_tokenizer_score,
             "token_fragmentation_score": self.token_fragmentation_score,
             "surface_risk_score": self.surface_risk_score,
             "review_status": self.review_status,
@@ -286,6 +292,7 @@ def run_simple_scan(
     max_positive_snippets: int = 3,
     max_negative_snippets: int = 3,
     max_file_bytes: int = 1_000_000,
+    oov_tokenizer: str | None = None,
 ) -> SimpleScanReport:
     """Run local ingest, safety scan, candidate discovery, evidence, and workspace sync."""
     root_path = Path(root).expanduser().resolve()
@@ -309,6 +316,7 @@ def run_simple_scan(
             existing_surfaces=existing_surfaces,
             min_score=min_score,
             max_candidates=max_candidates,
+            oov_tokenizer=oov_tokenizer,
         )
         evidence = build_evidence_packs(
             ingest.documents,
@@ -339,7 +347,7 @@ def run_simple_scan(
         evidence=evidence,
         workspace=state.summary(),
         lexicon_path=str(resolved_lexicon_path) if resolved_lexicon_path is not None else None,
-        metadata={"root": str(root_path), "paths": [str(path) for path in resolved_paths]},
+        metadata={"root": str(root_path), "paths": [str(path) for path in resolved_paths], "oov_tokenizer": oov_tokenizer},
     )
 
 
@@ -393,6 +401,9 @@ def run_simple_analyze(
                 cluster_key=str(quality.get("cluster_key") or cluster.get("cluster_key") or "") or None,
                 cluster_size=int(cluster.get("candidate_count", quality.get("metadata", {}).get("cluster_size", 1)) or 1),
                 oov_proxy_score=float(quality.get("oov_proxy_score", 0.0) or 0.0),
+                oov_score=float(quality.get("oov_score", quality.get("oov_proxy_score", 0.0)) or 0.0),
+                oov_source=str(quality.get("oov_source", "proxy") or "proxy"),
+                oov_tokenizer_score=_optional_float(quality.get("oov_tokenizer_score")),
                 token_fragmentation_score=float(quality.get("token_fragmentation_score", 0.0) or 0.0),
                 surface_risk_score=float(quality.get("surface_risk_score", 0.0) or 0.0),
                 review_status=review_item.review_decision.decision.value if review_item.review_decision else "unreviewed",
@@ -527,6 +538,15 @@ def _cluster_metadata(review_item: Any) -> Mapping[str, Any]:
             if isinstance(cluster, Mapping):
                 return cluster
     return {}
+
+
+def _optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 __all__ = [

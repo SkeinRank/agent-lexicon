@@ -1,9 +1,10 @@
 """Candidate quality signals for local scout ranking.
 
-The quality layer is dependency-free and focuses on signals that help reviewers
-see the most valuable terminology candidates first: code-like shape, tokenizer
-fragmentation proxy, OOV-like surface risk, lightweight clustering, and inbox
-priority.
+The quality layer is dependency-light by default and focuses on signals that
+help reviewers see the most valuable terminology candidates first: code-like
+shape, OOV/tokenizer fragmentation, lightweight clustering, and inbox priority.
+Optional tokenizer-backed OOV scoring is Scout-only and never sits on the
+runtime resolver/tool-guard path.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Iterable, Mapping, Sequence
 
+from agent_lexicon.scout.oov import OovScoreResult, ProxyOovScorer
 from agent_lexicon.text import surface_fragments
 
 
@@ -40,6 +42,9 @@ class CandidateQualitySignals:
     priority_score: float
     priority: CandidatePriority
     priority_reasons: tuple[str, ...] = ()
+    oov_score: float | None = None
+    oov_source: str = "proxy"
+    oov_tokenizer_score: float | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -47,6 +52,13 @@ class CandidateQualitySignals:
         object.__setattr__(self, "cluster_key", _clean_text(self.cluster_key, field_name="cluster_key"))
         object.__setattr__(self, "token_fragmentation_score", _bounded_float(self.token_fragmentation_score, field_name="token_fragmentation_score"))
         object.__setattr__(self, "oov_proxy_score", _bounded_float(self.oov_proxy_score, field_name="oov_proxy_score"))
+        if self.oov_score is None:
+            object.__setattr__(self, "oov_score", self.oov_proxy_score)
+        else:
+            object.__setattr__(self, "oov_score", _bounded_float(self.oov_score, field_name="oov_score"))
+        if self.oov_tokenizer_score is not None:
+            object.__setattr__(self, "oov_tokenizer_score", _bounded_float(self.oov_tokenizer_score, field_name="oov_tokenizer_score"))
+        object.__setattr__(self, "oov_source", _clean_text(self.oov_source, field_name="oov_source"))
         object.__setattr__(self, "surface_shape_score", _bounded_float(self.surface_shape_score, field_name="surface_shape_score"))
         object.__setattr__(self, "surface_risk_score", _bounded_float(self.surface_risk_score, field_name="surface_risk_score"))
         object.__setattr__(self, "priority_score", _bounded_float(self.priority_score, field_name="priority_score"))
@@ -64,6 +76,9 @@ class CandidateQualitySignals:
             "cluster_key": self.cluster_key,
             "token_fragmentation_score": self.token_fragmentation_score,
             "oov_proxy_score": self.oov_proxy_score,
+            "oov_score": self.oov_score,
+            "oov_source": self.oov_source,
+            "oov_tokenizer_score": self.oov_tokenizer_score,
             "surface_shape_score": self.surface_shape_score,
             "surface_risk_score": self.surface_risk_score,
             "priority_score": self.priority_score,
@@ -127,12 +142,14 @@ def compute_candidate_quality(
     document_count: int,
     negative_count: int = 0,
     cluster_size: int = 1,
+    oov_result: OovScoreResult | None = None,
 ) -> CandidateQualitySignals:
-    """Compute dependency-free quality signals for one candidate.
+    """Compute quality signals for one candidate.
 
-    The OOV proxy is not a real tokenizer signal. It estimates tokenizer pain by
-    looking at separators, camel-case, acronyms, digits, and mixed shape. A real
-    tokenizer can replace this signal later without changing the stored schema.
+    By default this uses the dependency-free proxy OOV signal. When Scout is
+    configured with an optional tokenizer scorer, ``oov_result`` carries the
+    tokenizer-backed score and metadata while the proxy score remains available
+    for compatibility and comparison.
     """
     cleaned_surface = _clean_text(surface, field_name="surface")
     normalized = _clean_text(normalized_surface, field_name="normalized_surface")
@@ -148,15 +165,26 @@ def compute_candidate_quality(
 
     fragments = surface_fragments(cleaned_surface)
     cluster_key = candidate_cluster_key(cleaned_surface)
-    token_fragmentation_score = _token_fragmentation_score(cleaned_surface, fragments)
+    proxy_result = ProxyOovScorer().score(cleaned_surface)
+    token_fragmentation_score = proxy_result.score
     surface_shape_score = _surface_shape_score(cleaned_surface, kind_value)
     oov_proxy_score = round(max(token_fragmentation_score, surface_shape_score * 0.92), 4)
+    effective_oov_score = oov_proxy_score
+    oov_source = "proxy"
+    oov_tokenizer_score: float | None = None
+    oov_metadata: Mapping[str, Any] | None = None
+    if oov_result is not None:
+        effective_oov_score = max(oov_proxy_score, oov_result.score)
+        oov_source = oov_result.source
+        oov_metadata = oov_result.to_dict()
+        if oov_result.source == "tokenizer":
+            oov_tokenizer_score = oov_result.score
     surface_risk_score = round(
         max(
             0.0,
             min(
                 1.0,
-                (0.46 * oov_proxy_score)
+                (0.46 * effective_oov_score)
                 + (0.24 * surface_shape_score)
                 + (0.16 * min(1.0, negative_count / 2.0))
                 + (0.14 * min(1.0, cluster_size / 3.0)),
@@ -172,7 +200,7 @@ def compute_candidate_quality(
                 1.0,
                 (0.30 * _bounded_float(score, field_name="score"))
                 + (0.22 * _bounded_float(jargon_score, field_name="jargon_score"))
-                + (0.18 * oov_proxy_score)
+                + (0.18 * effective_oov_score)
                 + (0.12 * surface_risk_score)
                 + (0.08 * min(1.0, document_count / 3.0))
                 + (0.06 * min(1.0, occurrence_count / 5.0))
@@ -184,7 +212,8 @@ def compute_candidate_quality(
     )
     reasons = _priority_reasons(
         kind=kind_value,
-        oov_proxy_score=oov_proxy_score,
+        oov_score=effective_oov_score,
+        oov_source=oov_source,
         surface_risk_score=surface_risk_score,
         jargon_score=float(jargon_score),
         document_count=document_count,
@@ -192,23 +221,29 @@ def compute_candidate_quality(
         cluster_size=cluster_size,
     )
     priority = CandidatePriority.IMPORTANT if priority_score >= 0.55 else CandidatePriority.LATER
+    metadata: dict[str, Any] = {
+        "fragment_count": len(fragments),
+        "fragments": list(fragments),
+        "negative_count": negative_count,
+        "cluster_size": cluster_size,
+        "signal_version": "quality-v2",
+    }
+    if oov_metadata is not None:
+        metadata["oov"] = dict(oov_metadata)
     return CandidateQualitySignals(
         normalized_surface=normalized,
         cluster_key=cluster_key,
         token_fragmentation_score=token_fragmentation_score,
         oov_proxy_score=oov_proxy_score,
+        oov_score=effective_oov_score,
+        oov_source=oov_source,
+        oov_tokenizer_score=oov_tokenizer_score,
         surface_shape_score=surface_shape_score,
         surface_risk_score=surface_risk_score,
         priority_score=priority_score,
         priority=priority,
         priority_reasons=reasons,
-        metadata={
-            "fragment_count": len(fragments),
-            "fragments": list(fragments),
-            "negative_count": negative_count,
-            "cluster_size": cluster_size,
-            "signal_version": "quality-v1",
-        },
+        metadata=metadata,
     )
 
 
@@ -253,19 +288,6 @@ def cluster_surface_records(records: Iterable[Mapping[str, Any]]) -> tuple[Candi
     return tuple(clusters)
 
 
-def _token_fragmentation_score(surface: str, fragments: Sequence[str]) -> float:
-    if not fragments:
-        return 0.0
-    separator_count = sum(1 for char in surface if not char.isalnum() and not char.isspace())
-    camel_boundary_count = len(re.findall(r"[a-z0-9][A-Z]", surface))
-    digit_count = sum(1 for char in surface if char.isdigit())
-    acronym_bonus = 1 if re.search(r"\b[A-Z0-9]{3,}\b", surface) else 0
-    fragment_component = min(1.0, max(0, len(fragments) - 1) / 4.0)
-    shape_component = min(1.0, (separator_count + camel_boundary_count + acronym_bonus) / 4.0)
-    digit_component = min(1.0, digit_count / 4.0) * 0.35
-    return round(max(0.0, min(1.0, (0.58 * fragment_component) + (0.34 * shape_component) + digit_component)), 4)
-
-
 def _surface_shape_score(surface: str, kind: str) -> float:
     score = 0.0
     if kind in {"identifier", "acronym", "code"}:
@@ -286,7 +308,8 @@ def _surface_shape_score(surface: str, kind: str) -> float:
 def _priority_reasons(
     *,
     kind: str,
-    oov_proxy_score: float,
+    oov_score: float,
+    oov_source: str,
     surface_risk_score: float,
     jargon_score: float,
     document_count: int,
@@ -296,8 +319,12 @@ def _priority_reasons(
     reasons: list[str] = []
     if kind in {"identifier", "acronym", "code"}:
         reasons.append("code_style_surface")
-    if oov_proxy_score >= 0.55:
-        reasons.append("high_oov_proxy")
+    if oov_score >= 0.55:
+        reasons.append("high_oov_signal" if oov_source == "tokenizer" else "high_oov_proxy")
+    if oov_source == "tokenizer":
+        reasons.append("tokenizer_oov_signal")
+    if oov_source == "proxy_fallback":
+        reasons.append("oov_proxy_fallback")
     if surface_risk_score >= 0.55:
         reasons.append("high_surface_risk")
     if jargon_score >= 0.70:
