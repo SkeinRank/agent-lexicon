@@ -2329,6 +2329,7 @@ def _safety_scan_command(
                 f"[{finding.risk.value.upper()}] "
                 f"{finding.source_path}:{finding.line_number} "
                 f"{finding.rule_id} — {finding.message} "
+                f"scope={finding.scan_scope.value} "
                 f"({finding.matched_text!r})"
             )
     else:

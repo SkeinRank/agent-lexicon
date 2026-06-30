@@ -778,11 +778,19 @@ foundation for proposal review and future snapshot publishing.
 ## Prompt safety
 
 Agent Lexicon treats local docs and evidence snippets as untrusted input before
-they are shown to a future LLM reviewer. The prompt-safety scanner detects common
-prompt-injection patterns such as attempts to override instructions, reveal
-system prompts, exfiltrate secrets, or force tool execution. Evidence packs are
-annotated with prompt-safety metadata by default, so review workflows can block
-high-risk snippets before they are sent to an LLM.
+they are shown to a future LLM reviewer. The prompt-safety scanner is a
+deterministic review aid: it flags instruction-like content such as attempts to
+override instructions, reveal system prompts, exfiltrate secrets, or force tool
+execution. It is intentionally not described as a complete prompt-injection
+security boundary; motivated adversarial text can still require human review and
+additional controls.
+
+The scanner checks original lines, Unicode-normalized lines, and a joined
+normalized window. This makes simple zero-width, fullwidth, compatibility-form,
+and line-split evasions visible in review metadata without adding ML
+dependencies. Evidence packs are annotated with prompt-safety metadata by
+default, so review workflows can block high-risk snippets before they are sent to
+an LLM.
 
 Command line usage:
 
@@ -811,6 +819,9 @@ print(safety_report.highest_risk.value, safety_report.action.value)
 The helper `format_evidence_pack_for_llm_review(...)` renders evidence as
 data-only context with explicit untrusted boundaries. This keeps future review
 agents from accidentally following instructions embedded inside project docs.
+Prompt-safety findings include a `scan_scope` field (`line`, `normalized_line`,
+or `joined_window`) so reviewers can see whether a match came from the original
+text, Unicode-normalized text, or a multi-line joined window.
 
 
 ## Local policy modes
