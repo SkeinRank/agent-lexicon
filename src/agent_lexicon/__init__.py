@@ -193,9 +193,14 @@ from .ingest import (
 )
 
 from .text import (
+    UnicodeFindingKind,
+    UnicodeNormalizationResult,
+    UnicodeTextFinding,
     code_identifier_variants,
+    normalize_text_for_matching,
     normalized_fragment_surface,
     surface_fragments as text_surface_fragments,
+    unicode_metadata_for_text,
 )
 
 from .workspace import (
@@ -262,9 +267,14 @@ __all__ = [
     "TokenizerOovScorer",
     "build_oov_scorer",
     "DEFAULT_SCAN_PATHS",
+    "UnicodeFindingKind",
+    "UnicodeNormalizationResult",
+    "UnicodeTextFinding",
     "code_identifier_variants",
+    "normalize_text_for_matching",
     "normalized_fragment_surface",
     "text_surface_fragments",
+    "unicode_metadata_for_text",
     "SimpleAnalyzeReport",
     "SimpleAnalysisItem",
     "SimpleInitReport",

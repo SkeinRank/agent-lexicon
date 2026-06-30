@@ -28,6 +28,7 @@ class ToolGuard:
         tool_name: str,
         scopes: Iterable[str] | None = None,
         include_deprecated: bool | None = None,
+        block_on_unicode_risk: bool = True,
     ) -> ToolGuardDecision:
         """Return a decision for a requested tool call.
 
@@ -41,6 +42,18 @@ class ToolGuard:
             scopes=scopes,
             include_deprecated=effective_include_deprecated,
         )
+        guard_metadata = _guard_unicode_metadata(resolution.metadata, block_on_unicode_risk=block_on_unicode_risk)
+
+        if guard_metadata.get("unicode_blocked"):
+            return ToolGuardDecision(
+                text=text,
+                tool_name=tool_name,
+                status=ToolGuardStatus.BLOCKED,
+                action=ToolGuardAction.BLOCK,
+                resolution=resolution,
+                reason="Unicode bidi-control characters were removed before matching; review the input before calling a tool.",
+                metadata=guard_metadata,
+            )
 
         if resolution.status == ResolutionStatus.UNKNOWN:
             return ToolGuardDecision(
@@ -50,6 +63,7 @@ class ToolGuard:
                 action=ToolGuardAction.PROCEED,
                 resolution=resolution,
                 reason="No known terminology matched the requested tool call text.",
+                metadata=guard_metadata,
             )
 
         matched_term_ids = tuple(candidate.term_id for candidate in resolution.candidates)
@@ -65,6 +79,7 @@ class ToolGuard:
                 reason="Terminology is ambiguous; ask for clarification before calling a tool.",
                 allowed_tool_names=allowed_tool_names,
                 matched_term_ids=matched_term_ids,
+                metadata=guard_metadata,
             )
 
         if not allowed_tool_names:
@@ -77,6 +92,7 @@ class ToolGuard:
                 reason="Resolved terminology has no tool restrictions.",
                 allowed_tool_names=allowed_tool_names,
                 matched_term_ids=matched_term_ids,
+                metadata=guard_metadata,
             )
 
         if tool_name in allowed_tool_names:
@@ -89,6 +105,7 @@ class ToolGuard:
                 reason="Requested tool is allowed for the resolved terminology.",
                 allowed_tool_names=allowed_tool_names,
                 matched_term_ids=matched_term_ids,
+                metadata=guard_metadata,
             )
 
         return ToolGuardDecision(
@@ -100,6 +117,7 @@ class ToolGuard:
             reason="Requested tool is not allowed for the resolved terminology.",
             allowed_tool_names=allowed_tool_names,
             matched_term_ids=matched_term_ids,
+            metadata=guard_metadata,
         )
 
 
@@ -110,6 +128,7 @@ def guard_tool_call(
     tool_name: str,
     scopes: Iterable[str] | None = None,
     include_deprecated: bool = True,
+    block_on_unicode_risk: bool = True,
 ) -> ToolGuardDecision:
     """Convenience helper for checking a tool call against a lexicon."""
     return ToolGuard.from_lexicon(lexicon, include_deprecated=include_deprecated).guard(
@@ -117,7 +136,19 @@ def guard_tool_call(
         tool_name=tool_name,
         scopes=scopes,
         include_deprecated=include_deprecated,
+        block_on_unicode_risk=block_on_unicode_risk,
     )
+
+
+def _guard_unicode_metadata(resolution_metadata, *, block_on_unicode_risk: bool) -> dict[str, object]:
+    if not resolution_metadata:
+        return {}
+    metadata = dict(resolution_metadata)
+    has_bidi_control = bool(metadata.get("unicode_has_bidi_control"))
+    if has_bidi_control and block_on_unicode_risk:
+        metadata["unicode_blocked"] = True
+        metadata["unicode_block_reason"] = "bidi_control"
+    return metadata
 
 
 def _allowed_tools_for_terms(lexicon: Lexicon, term_ids: tuple[str, ...]) -> tuple[str, ...]:

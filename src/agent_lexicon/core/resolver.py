@@ -6,6 +6,8 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Iterable, Mapping
 
+from agent_lexicon.text import normalize_text_for_matching
+
 from .matcher import SurfaceKind, SurfaceMatch, SurfaceMatcher, _select_long_non_overlapping, build_surface_matcher
 from .models import Lexicon, ResolutionAction, ResolutionCandidate, ResolutionDecision, ResolutionMatch, ResolutionStatus, Term
 
@@ -44,6 +46,8 @@ class LexiconResolver:
         if not isinstance(text, str):
             raise TypeError("text must be a string")
 
+        normalization = normalize_text_for_matching(text)
+        metadata = _resolution_metadata(normalization)
         raw_matches = self.matcher.match(
             text,
             scopes=scopes,
@@ -61,6 +65,7 @@ class LexiconResolver:
                 candidates=(),
                 matches=(),
                 message="No known terminology surfaces were found.",
+                metadata=metadata,
             )
 
         candidates = _build_candidates(self.lexicon, selected_matches)
@@ -73,6 +78,7 @@ class LexiconResolver:
                 candidates=candidates,
                 matches=resolution_matches,
                 message=f"Resolved to {term.term_id}.",
+                metadata=metadata,
             )
 
         return ResolutionDecision(
@@ -82,6 +88,7 @@ class LexiconResolver:
             candidates=candidates,
             matches=resolution_matches,
             message=f"Found {len(candidates)} possible canonical terms.",
+            metadata=metadata,
         )
 
 
@@ -103,6 +110,13 @@ def resolve_text(
 def _select_resolution_matches(matches: tuple[SurfaceMatch, ...]) -> tuple[SurfaceMatch, ...]:
     """Keep long non-overlapping spans while preserving same-span ambiguity."""
     return _select_long_non_overlapping(matches, preserve_same_span=True)
+
+
+def _resolution_metadata(normalization) -> dict[str, object]:
+    metadata = normalization.metadata()
+    if not metadata["unicode_normalized"] and not metadata["unicode_findings"]:
+        return {}
+    return metadata
 
 
 def _build_candidates(lexicon: Lexicon, matches: tuple[SurfaceMatch, ...]) -> tuple[ResolutionCandidate, ...]:

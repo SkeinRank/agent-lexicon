@@ -53,6 +53,7 @@ agent-lexicon validate examples/customer_limits/lexicon.yaml
 agent-lexicon match examples/customer_limits/lexicon.yaml "The customer cap and rate limit changed." --longest-only
 agent-lexicon resolve examples/customer_limits/lexicon.yaml "increase the limit"
 agent-lexicon guard examples/customer_limits/lexicon.yaml "increase the limit" --tool api.update_rate_limit
+agent-lexicon guard examples/customer_limits/lexicon.yaml "increase the limit" --tool api.update_rate_limit --allow-risky-unicode
 agent-lexicon validate-queries examples/customer_limits/queries.jsonl
 agent-lexicon check examples/customer_limits/lexicon.yaml examples/customer_limits/queries.jsonl
 agent-lexicon ingest README.md src examples/customer_limits/docs --root .
@@ -285,12 +286,37 @@ print(decision.primary_term_id)  # auth.access_token
 ```
 
 The matcher supports scope filtering, case-sensitive aliases, deprecated surface
-filtering, generated code-identifier variants, and longest non-overlapping
-output for downstream resolver logic. A lexicon surface such as `access token`
-can also match common code forms such as `accessToken`, `access_token`, and
-`ACCESS_TOKEN` without adding those aliases manually. Explicit aliases remain
-reserved, so case-sensitive surfaces such as `API_KEY` keep their intended
-behavior.
+filtering, generated code-identifier variants, Unicode-normalized input, and
+longest non-overlapping output for downstream resolver logic. A lexicon surface
+such as `access token` can also match common code forms such as `accessToken`,
+`access_token`, and `ACCESS_TOKEN` without adding those aliases manually.
+Explicit aliases remain reserved, so case-sensitive surfaces such as `API_KEY`
+keep their intended behavior.
+
+## Unicode normalization policy
+
+Runtime matching normalizes common Unicode forms before resolver and guard
+checks. This handles text copied from chats, PDFs, web pages, and tool output
+without putting a tokenizer or model on the hot path.
+
+The policy is conservative:
+
+- fullwidth and compatibility forms are normalized with per-character NFKC;
+- non-ASCII spaces and zero-width separators are treated as plain spaces;
+- bidi-control characters are removed and reported as high-risk findings;
+- accents and real letters are not folded to ASCII.
+
+Resolution decisions include `unicode_*` metadata when input normalization
+changed the text. Tool guard blocks by default when bidi-control characters are
+found, because visually reordered text can make the guard apply rules to a
+different surface than the user sees. Use `--allow-risky-unicode` only when the
+caller has already accepted that input risk.
+
+```bash
+agent-lexicon resolve examples/customer_limits/lexicon.yaml $'increase the customer\u00a0cap'
+agent-lexicon guard examples/customer_limits/lexicon.yaml $'increase the customer\u202ecap' --tool billing.update_credit_limit
+agent-lexicon guard examples/customer_limits/lexicon.yaml $'increase the customer\u202ecap' --tool billing.update_credit_limit --allow-risky-unicode
+```
 
 
 ## Runtime resolution
@@ -361,11 +387,13 @@ Command line usage:
 ```bash
 agent-lexicon guard examples/customer_limits/lexicon.yaml "increase the limit" --tool api.update_rate_limit
 agent-lexicon guard examples/customer_limits/lexicon.yaml "increase the limit" --tool billing.update_credit_limit --scope billing
+agent-lexicon guard examples/customer_limits/lexicon.yaml $'increase the customer\u202ecap' --tool billing.update_credit_limit
 ```
 
 The `guard` command returns `0` for allowed or no-match decisions and `2` when
-the tool call is blocked or needs clarification. This makes it usable in local
-agent wrappers and future CI checks.
+the tool call is blocked or needs clarification. Bidi-control Unicode findings
+are blocked by default and can be inspected in the printed metadata summary.
+This makes the guard usable in local agent wrappers and future CI checks.
 
 
 

@@ -1153,6 +1153,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Ignore deprecated aliases or deprecated terms.",
     )
+    guard_parser.add_argument(
+        "--allow-risky-unicode",
+        action="store_true",
+        help="Do not block tool calls when bidi-control Unicode characters are found after normalization.",
+    )
     return parser
 
 
@@ -1311,6 +1316,7 @@ def main(argv: list[str] | None = None) -> int:
             tool_name=args.tool,
             scopes=args.scope,
             include_deprecated=not args.exclude_deprecated,
+            block_on_unicode_risk=not args.allow_risky_unicode,
         )
 
     print(about())
@@ -2759,6 +2765,11 @@ def _resolve_command(
     print(f"Action: {decision.action.value}")
     if decision.message:
         print(f"Message: {decision.message}")
+    if decision.metadata.get("unicode_findings"):
+        print("Unicode findings:")
+        for finding in decision.metadata.get("unicode_findings", []):
+            if isinstance(finding, dict):
+                print(f"- {finding.get('kind')} at {finding.get('start')} ({finding.get('name')})")
 
     if decision.status == ResolutionStatus.UNKNOWN:
         return 0
@@ -2786,6 +2797,7 @@ def _guard_command(
     tool_name: str,
     scopes: list[str] | None,
     include_deprecated: bool,
+    block_on_unicode_risk: bool,
 ) -> int:
     try:
         lexicon = load_lexicon(path)
@@ -2799,12 +2811,18 @@ def _guard_command(
         tool_name=tool_name,
         scopes=scopes,
         include_deprecated=include_deprecated,
+        block_on_unicode_risk=block_on_unicode_risk,
     )
     print(f"Status: {decision.status.value}")
     print(f"Action: {decision.action.value}")
     print(f"Allowed: {'yes' if decision.is_allowed else 'no'}")
     print(f"Reason: {decision.reason}")
     print(f"Resolution: {decision.resolution.status.value}")
+    if decision.metadata.get("unicode_findings"):
+        print("Unicode findings:")
+        for finding in decision.metadata.get("unicode_findings", []):
+            if isinstance(finding, dict):
+                print(f"- {finding.get('kind')} at {finding.get('start')} ({finding.get('name')})")
 
     if decision.matched_term_ids:
         print("Matched terms:")
