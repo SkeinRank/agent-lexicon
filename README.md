@@ -391,6 +391,44 @@ This gives agents a local way to stop before unsafe assumptions: if the same
 surface can mean multiple canonical terms, the recommended action is
 `ask_clarification`.
 
+## Near-miss review hints
+
+When a code-style identifier is unknown, the resolver can attach deterministic
+near-miss metadata for review. This does not change the runtime decision from
+`unknown`; it only helps reviewers decide whether the unknown surface should
+be proposed as a new alias for an existing canonical term.
+
+```python
+from agent_lexicon import Lexicon, Term, resolve_text
+
+lexicon = Lexicon(
+    terms=(Term(id="auth.access_token", canonical="access token"),)
+)
+
+decision = resolve_text(lexicon, "rotate authToken")
+print(decision.status.value)  # unknown
+print(decision.metadata["near_miss_suggestions"][0]["suggestions"][0]["target_term_id"])
+# auth.access_token
+```
+
+Near-miss scoring is dependency-free and uses fragments, edit similarity,
+identifier shape, shared suffixes or prefixes, and a small deterministic set of
+related domain fragments. It is designed for merge and review workflows where
+agent-generated branches may introduce surfaces such as `authToken` or
+`sessionKey` that look close to known terms but should still require a human
+review decision.
+
+The lower-level API is also available when a workflow already has a candidate
+surface:
+
+```python
+from agent_lexicon import suggest_near_misses
+
+report = suggest_near_misses(lexicon, "authToken", max_suggestions=3)
+for suggestion in report.suggestions:
+    print(suggestion.target_term_id, suggestion.confidence, suggestion.reasons)
+```
+
 
 ## Tool-call safety
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from typing import Mapping
 
 from . import __version__, about
 from .dictionary import (
@@ -2865,6 +2866,7 @@ def _resolve_command(
         for finding in decision.metadata.get("unicode_findings", []):
             if isinstance(finding, dict):
                 print(f"- {finding.get('kind')} at {finding.get('start')} ({finding.get('name')})")
+    _print_near_miss_suggestions(decision.metadata)
 
     if decision.status == ResolutionStatus.UNKNOWN:
         return 0
@@ -2883,6 +2885,38 @@ def _resolve_command(
         )
     return 0
 
+
+
+def _print_near_miss_suggestions(metadata: Mapping[str, object]) -> None:
+    suggestions = metadata.get("near_miss_suggestions") if metadata else None
+    if not isinstance(suggestions, list) or not suggestions:
+        return
+    print("Near-miss suggestions:")
+    for report in suggestions:
+        if not isinstance(report, dict):
+            continue
+        surface = report.get("surface")
+        items = report.get("suggestions")
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            target_term_id = item.get("target_term_id")
+            target_canonical = item.get("target_canonical")
+            confidence = item.get("confidence")
+            matched_surface = item.get("matched_surface")
+            reasons = item.get("reasons")
+            reason_label = ",".join(str(reason) for reason in reasons) if isinstance(reasons, list) else "shape"
+            try:
+                confidence_label = f"{float(confidence):.3f}"
+            except (TypeError, ValueError):
+                confidence_label = "n/a"
+            print(
+                f"- {surface!r} -> {target_term_id} "
+                f"({target_canonical}) confidence={confidence_label} "
+                f"via {matched_surface!r} reasons={reason_label}"
+            )
 
 
 def _guard_command(
@@ -2918,6 +2952,7 @@ def _guard_command(
         for finding in decision.metadata.get("unicode_findings", []):
             if isinstance(finding, dict):
                 print(f"- {finding.get('kind')} at {finding.get('start')} ({finding.get('name')})")
+    _print_near_miss_suggestions(decision.metadata)
 
     if decision.matched_term_ids:
         print("Matched terms:")

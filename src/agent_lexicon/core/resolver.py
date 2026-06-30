@@ -36,6 +36,9 @@ class LexiconResolver:
         *,
         scopes: Iterable[str] | None = None,
         include_deprecated: bool = True,
+        include_near_misses: bool = True,
+        near_miss_max_suggestions: int = 3,
+        near_miss_min_confidence: float = 0.42,
     ) -> ResolutionDecision:
         """Resolve terminology in text and classify the result.
 
@@ -58,6 +61,17 @@ class LexiconResolver:
         resolution_matches = tuple(_to_resolution_match(match) for match in selected_matches)
 
         if not selected_matches:
+            if include_near_misses:
+                metadata.update(
+                    _near_miss_metadata(
+                        self.lexicon,
+                        text,
+                        scopes=scopes,
+                        include_deprecated=include_deprecated,
+                        max_suggestions_per_surface=near_miss_max_suggestions,
+                        min_confidence=near_miss_min_confidence,
+                    )
+                )
             return ResolutionDecision(
                 text=text,
                 status=ResolutionStatus.UNKNOWN,
@@ -98,13 +112,51 @@ def resolve_text(
     *,
     scopes: Iterable[str] | None = None,
     include_deprecated: bool = True,
+    include_near_misses: bool = True,
+    near_miss_max_suggestions: int = 3,
+    near_miss_min_confidence: float = 0.42,
 ) -> ResolutionDecision:
     """Convenience helper that builds a resolver and resolves text."""
     return LexiconResolver.from_lexicon(lexicon, include_deprecated=include_deprecated).resolve(
         text,
         scopes=scopes,
         include_deprecated=include_deprecated,
+        include_near_misses=include_near_misses,
+        near_miss_max_suggestions=near_miss_max_suggestions,
+        near_miss_min_confidence=near_miss_min_confidence,
     )
+
+
+
+def _near_miss_metadata(
+    lexicon: Lexicon,
+    text: str,
+    *,
+    scopes: Iterable[str] | None,
+    include_deprecated: bool,
+    max_suggestions_per_surface: int,
+    min_confidence: float,
+) -> dict[str, object]:
+    from agent_lexicon.scout.near_miss import (
+        discover_unknown_identifier_surfaces,
+        suggest_near_misses_for_text,
+    )
+
+    unknown_surfaces = discover_unknown_identifier_surfaces(text)
+    if not unknown_surfaces:
+        return {}
+    reports = suggest_near_misses_for_text(
+        lexicon,
+        text,
+        scopes=scopes,
+        include_deprecated=include_deprecated,
+        max_suggestions_per_surface=max_suggestions_per_surface,
+        min_confidence=min_confidence,
+    )
+    metadata: dict[str, object] = {"unknown_identifier_surfaces": list(unknown_surfaces)}
+    if reports:
+        metadata["near_miss_suggestions"] = [report.to_dict() for report in reports]
+    return metadata
 
 
 def _select_resolution_matches(matches: tuple[SurfaceMatch, ...]) -> tuple[SurfaceMatch, ...]:

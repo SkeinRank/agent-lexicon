@@ -10,6 +10,17 @@ from .oov import (
     TokenizerOovScorer,
     build_oov_scorer,
 )
+
+from .near_miss import (
+    NearMissError,
+    NearMissReason,
+    NearMissReport,
+    NearMissSuggestion,
+    discover_unknown_identifier_surfaces,
+    suggest_near_misses,
+    suggest_near_misses_for_text,
+)
+
 from .quality import (
     CandidateCluster,
     CandidatePriority,
@@ -59,6 +70,13 @@ __all__ = [
     "ProxyOovScorer",
     "TokenizerOovScorer",
     "build_oov_scorer",
+    "NearMissError",
+    "NearMissReason",
+    "NearMissReport",
+    "NearMissSuggestion",
+    "discover_unknown_identifier_surfaces",
+    "suggest_near_misses",
+    "suggest_near_misses_for_text",
     "CandidateCluster",
     "CandidatePriority",
     "CandidateQualityError",
