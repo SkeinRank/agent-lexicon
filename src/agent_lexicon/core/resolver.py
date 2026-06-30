@@ -115,9 +115,21 @@ def resolve_text(
     include_near_misses: bool = True,
     near_miss_max_suggestions: int = 3,
     near_miss_min_confidence: float = 0.42,
+    use_cache: bool = True,
 ) -> ResolutionDecision:
-    """Convenience helper that builds a resolver and resolves text."""
-    return LexiconResolver.from_lexicon(lexicon, include_deprecated=include_deprecated).resolve(
+    """Convenience helper that resolves text against a lexicon.
+
+    By default the helper reuses a process-wide compiled resolver cache. Direct
+    ``LexiconResolver.from_lexicon(...)`` construction remains available when a
+    caller wants an isolated resolver instance.
+    """
+    if use_cache:
+        from .cache import get_cached_resolver
+
+        resolver = get_cached_resolver(lexicon, include_deprecated=include_deprecated)
+    else:
+        resolver = LexiconResolver.from_lexicon(lexicon, include_deprecated=include_deprecated)
+    return resolver.resolve(
         text,
         scopes=scopes,
         include_deprecated=include_deprecated,

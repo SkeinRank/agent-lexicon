@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TextIO
 
-from agent_lexicon.core import AgentLexiconLoadError, guard_tool_call, load_lexicon, resolve_text
+from agent_lexicon.core import AgentLexiconLoadError, guard_tool_call, load_cached_lexicon, resolve_text
 from agent_lexicon.policy import (
     LocalPolicyError,
     PolicyAction,
@@ -471,7 +471,7 @@ def _load_configured_lexicon(config: McpServerConfig, args: Mapping[str, Any]) -
     else:
         lexicon_path = _default_lexicon_path(config.root)
     try:
-        return load_lexicon(lexicon_path), lexicon_path
+        return load_cached_lexicon(lexicon_path), lexicon_path
     except AgentLexiconLoadError as exc:
         raise McpServerError(f"invalid lexicon for MCP tool: {exc}") from exc
 

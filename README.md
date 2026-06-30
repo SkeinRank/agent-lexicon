@@ -393,6 +393,41 @@ This gives agents a local way to stop before unsafe assumptions: if the same
 surface can mean multiple canonical terms, the recommended action is
 `ask_clarification`.
 
+
+## Runtime cache and scale behavior
+
+Long-running agent processes can reuse compiled runtime objects instead of
+rebuilding the matcher for every request. The default helpers keep a small
+thread-safe in-process cache keyed by a stable lexicon fingerprint and the
+`include_deprecated` option. This is most useful for MCP servers, local web
+review processes, and agent runners that resolve many texts against the same
+lexicon snapshot.
+
+```python
+from agent_lexicon import (
+    clear_runtime_cache,
+    fingerprint_lexicon,
+    get_cached_resolver,
+    load_cached_lexicon,
+    runtime_cache_stats,
+)
+
+lexicon = load_cached_lexicon("lexicon/lexicon.yaml")
+print(fingerprint_lexicon(lexicon).value)
+
+resolver = get_cached_resolver(lexicon)
+print(resolver.resolve("increase the customer cap").primary_term_id)
+
+print(runtime_cache_stats().to_dict())
+clear_runtime_cache()
+```
+
+`resolve_text(...)` and `guard_tool_call(...)` use the process-wide cache by
+default. Direct constructors such as `LexiconResolver.from_lexicon(...)` remain
+available when a caller wants an isolated resolver instance. File-based cache
+entries include path, size, and modification time, so `load_cached_lexicon(...)`
+reloads after the lexicon file changes.
+
 ## Near-miss review hints
 
 When a code-style identifier is unknown, the resolver can attach deterministic
@@ -1234,5 +1269,7 @@ The local MCP server exposes these tools:
 - `get_snapshot` — return published local snapshot metadata.
 
 For local clients, point the MCP command at your repository root and lexicon file.
-Sensitive write actions use the same RBAC-lite policy layer as the workspace and
-review commands.
+The server reuses loaded lexicons and compiled resolvers through the in-process
+runtime cache, which keeps repeated local tool calls predictable on larger
+lexicons. Sensitive write actions use the same RBAC-lite policy layer as the
+workspace and review commands.

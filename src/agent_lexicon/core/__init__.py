@@ -2,6 +2,20 @@
 
 from __future__ import annotations
 
+from .cache import (
+    DEFAULT_RUNTIME_CACHE_SIZE,
+    LexiconFingerprint,
+    LexiconRuntimeCache,
+    RuntimeCacheStats,
+    clear_runtime_cache,
+    default_runtime_cache,
+    fingerprint_lexicon,
+    get_cached_resolver,
+    get_cached_surface_matcher,
+    get_cached_tool_guard,
+    load_cached_lexicon,
+    runtime_cache_stats,
+)
 from .loader import AgentLexiconLoadError, lexicon_from_dict, load_lexicon, loads_lexicon
 from .linter import (
     LexiconLintCode,
@@ -45,6 +59,18 @@ from .tool_guard import ToolGuard, guard_tool_call
 
 __all__ = [
     "AgentLexiconLoadError",
+    "DEFAULT_RUNTIME_CACHE_SIZE",
+    "LexiconFingerprint",
+    "LexiconRuntimeCache",
+    "RuntimeCacheStats",
+    "clear_runtime_cache",
+    "default_runtime_cache",
+    "fingerprint_lexicon",
+    "get_cached_resolver",
+    "get_cached_surface_matcher",
+    "get_cached_tool_guard",
+    "load_cached_lexicon",
+    "runtime_cache_stats",
     "AgentLexiconModelError",
     "Alias",
     "EvidenceKind",

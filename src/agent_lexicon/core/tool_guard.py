@@ -11,10 +11,16 @@ from .resolver import LexiconResolver, resolve_text
 class ToolGuard:
     """Check whether an agent tool call is safe for the resolved terminology."""
 
-    def __init__(self, lexicon: Lexicon, *, include_deprecated: bool = True) -> None:
+    def __init__(
+        self,
+        lexicon: Lexicon,
+        *,
+        include_deprecated: bool = True,
+        resolver: LexiconResolver | None = None,
+    ) -> None:
         self._lexicon = lexicon
         self._include_deprecated = include_deprecated
-        self._resolver = LexiconResolver.from_lexicon(lexicon, include_deprecated=include_deprecated)
+        self._resolver = resolver or LexiconResolver.from_lexicon(lexicon, include_deprecated=include_deprecated)
 
     @classmethod
     def from_lexicon(cls, lexicon: Lexicon, *, include_deprecated: bool = True) -> "ToolGuard":
@@ -129,9 +135,16 @@ def guard_tool_call(
     scopes: Iterable[str] | None = None,
     include_deprecated: bool = True,
     block_on_unicode_risk: bool = True,
+    use_cache: bool = True,
 ) -> ToolGuardDecision:
     """Convenience helper for checking a tool call against a lexicon."""
-    return ToolGuard.from_lexicon(lexicon, include_deprecated=include_deprecated).guard(
+    if use_cache:
+        from .cache import get_cached_tool_guard
+
+        guard = get_cached_tool_guard(lexicon, include_deprecated=include_deprecated)
+    else:
+        guard = ToolGuard.from_lexicon(lexicon, include_deprecated=include_deprecated)
+    return guard.guard(
         text,
         tool_name=tool_name,
         scopes=scopes,
