@@ -23,6 +23,7 @@ from agent_lexicon.scout.near_miss import (
     discover_unknown_identifier_surfaces,
     suggest_near_misses,
 )
+from agent_lexicon.scout.semantic import SemanticNearMissBackend
 
 
 class GitMergeCheckError(RuntimeError):
@@ -306,6 +307,7 @@ def check_git_merge_terminology(
     max_suggestions_per_identifier: int = 3,
     min_confidence: float = 0.42,
     include_unresolved_unknowns: bool = False,
+    semantic_backend: SemanticNearMissBackend | None = None,
     git_executable: str = "git",
 ) -> GitMergeTerminologyReport:
     """Run a terminology check over added lines between two git refs.
@@ -334,6 +336,7 @@ def check_git_merge_terminology(
         max_suggestions_per_identifier=max_suggestions_per_identifier,
         min_confidence=min_confidence,
         include_unresolved_unknowns=include_unresolved_unknowns,
+        semantic_backend=semantic_backend,
         metadata={"source": "git_diff"},
     )
 
@@ -352,6 +355,7 @@ def build_git_merge_terminology_report(
     max_suggestions_per_identifier: int = 3,
     min_confidence: float = 0.42,
     include_unresolved_unknowns: bool = False,
+    semantic_backend: SemanticNearMissBackend | None = None,
     metadata: Mapping[str, Any] | None = None,
 ) -> GitMergeTerminologyReport:
     """Build a terminology report from already parsed added git diff lines."""
@@ -408,6 +412,7 @@ def build_git_merge_terminology_report(
                     include_deprecated=include_deprecated,
                     max_suggestions=max_suggestions_per_identifier,
                     min_confidence=min_confidence,
+                    semantic_backend=semantic_backend,
                 )
                 suggestions = near_miss_report.suggestions
             except NearMissError:
@@ -485,12 +490,21 @@ def parse_git_added_lines(diff_text: str, *, include_globs: Sequence[str] | None
 
 
 def _semantic_escalation_label(metadata: Mapping[str, Any]) -> str:
+    labels: list[str] = []
+    if metadata.get("semantic_applied") is True:
+        backend = metadata.get("semantic_backend") or metadata.get("semantic_model") or "semantic"
+        score = metadata.get("semantic_score")
+        try:
+            labels.append(f"semantic_score={float(score):.3f}")
+        except (TypeError, ValueError):
+            labels.append("semantic_score=n/a")
+        labels.append(f"semantic_backend={backend}")
     semantic = metadata.get("semantic_escalation")
-    if not isinstance(semantic, Mapping) or semantic.get("recommended") is not True:
-        return ""
-    reasons = semantic.get("reasons")
-    reason_label = ",".join(str(reason) for reason in reasons) if isinstance(reasons, list) else "recommended"
-    return f" semantic_escalation={reason_label}"
+    if isinstance(semantic, Mapping) and semantic.get("recommended") is True:
+        reasons = semantic.get("reasons")
+        reason_label = ",".join(str(reason) for reason in reasons) if isinstance(reasons, list) else "recommended"
+        labels.append(f"semantic_escalation={reason_label}")
+    return " " + " ".join(labels) if labels else ""
 
 def _run_git_diff(root: Path, *, diff_ref: str, git_executable: str) -> str:
     command = [

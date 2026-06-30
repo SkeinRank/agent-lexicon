@@ -62,6 +62,11 @@ from .scout import (
     build_evidence_packs,
     build_scout_quality_report,
     ScoutQualityReportError,
+    BgeSemanticNearMissBackend,
+    DEFAULT_BGE_BASE_MODEL,
+    DEFAULT_BGE_SEMANTIC_THRESHOLD,
+    SemanticNearMissBackend,
+    SemanticNearMissError,
     GitMergeCheckError,
     check_git_merge_terminology,
     discover_canonical_migration_candidates,
@@ -330,6 +335,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--include-unresolved-unknowns",
         action="store_true",
         help="Also include unknown identifiers that did not receive near-miss suggestions.",
+    )
+    check_merge_parser.add_argument(
+        "--semantic-near-miss",
+        action="store_true",
+        help="Use the optional BGE semantic reranker for gray-zone near-miss suggestions.",
+    )
+    check_merge_parser.add_argument(
+        "--semantic-model",
+        default=DEFAULT_BGE_BASE_MODEL,
+        help="Semantic near-miss model name used with --semantic-near-miss.",
+    )
+    check_merge_parser.add_argument(
+        "--semantic-threshold",
+        type=float,
+        default=DEFAULT_BGE_SEMANTIC_THRESHOLD,
+        help="Minimum semantic similarity used with --semantic-near-miss.",
     )
     check_merge_parser.add_argument(
         "--json",
@@ -1234,6 +1255,22 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Ignore deprecated aliases or deprecated terms.",
     )
+    resolve_parser.add_argument(
+        "--semantic-near-miss",
+        action="store_true",
+        help="Use the optional BGE semantic reranker for gray-zone near-miss suggestions.",
+    )
+    resolve_parser.add_argument(
+        "--semantic-model",
+        default=DEFAULT_BGE_BASE_MODEL,
+        help="Semantic near-miss model name used with --semantic-near-miss.",
+    )
+    resolve_parser.add_argument(
+        "--semantic-threshold",
+        type=float,
+        default=DEFAULT_BGE_SEMANTIC_THRESHOLD,
+        help="Minimum semantic similarity used with --semantic-near-miss.",
+    )
 
     guard_parser = subparsers.add_parser(
         "guard",
@@ -1342,6 +1379,9 @@ def main(argv: list[str] | None = None) -> int:
             max_suggestions=args.max_suggestions,
             fail_on_review=args.fail_on_review,
             include_unresolved_unknowns=args.include_unresolved_unknowns,
+            semantic_near_miss=args.semantic_near_miss,
+            semantic_model=args.semantic_model,
+            semantic_threshold=args.semantic_threshold,
             as_json=args.json,
         )
 
@@ -1440,6 +1480,9 @@ def main(argv: list[str] | None = None) -> int:
             text=args.text,
             scopes=args.scope,
             include_deprecated=not args.exclude_deprecated,
+            semantic_near_miss=args.semantic_near_miss,
+            semantic_model=args.semantic_model,
+            semantic_threshold=args.semantic_threshold,
         )
 
     if args.command == "guard":
@@ -1918,6 +1961,20 @@ def _check_command(
     return 0 if report.passed else 1
 
 
+def _semantic_backend_from_cli(
+    *,
+    enabled: bool,
+    model_name: str,
+    min_semantic_score: float,
+) -> SemanticNearMissBackend | None:
+    if not enabled:
+        return None
+    return BgeSemanticNearMissBackend(
+        model_name=model_name,
+        min_semantic_score=min_semantic_score,
+    )
+
+
 def _check_merge_command(
     *,
     root: Path,
@@ -1931,6 +1988,9 @@ def _check_merge_command(
     max_suggestions: int,
     fail_on_review: bool,
     include_unresolved_unknowns: bool,
+    semantic_near_miss: bool,
+    semantic_model: str,
+    semantic_threshold: float,
     as_json: bool,
 ) -> int:
     root_path = root.resolve()
@@ -1941,6 +2001,16 @@ def _check_merge_command(
         lexicon = load_lexicon(resolved_lexicon_path)
     except AgentLexiconLoadError as exc:
         print(f"Invalid lexicon: {exc}")
+        return 1
+
+    try:
+        semantic_backend = _semantic_backend_from_cli(
+            enabled=semantic_near_miss,
+            model_name=semantic_model,
+            min_semantic_score=semantic_threshold,
+        )
+    except SemanticNearMissError as exc:
+        print(f"Invalid semantic near-miss input: {exc}")
         return 1
 
     try:
@@ -1956,9 +2026,13 @@ def _check_merge_command(
             max_suggestions_per_identifier=max_suggestions,
             min_confidence=min_confidence,
             include_unresolved_unknowns=include_unresolved_unknowns,
+            semantic_backend=semantic_backend,
         )
     except GitMergeCheckError as exc:
         print(f"Invalid merge check input: {exc}")
+        return 1
+    except SemanticNearMissError as exc:
+        print(f"Invalid semantic near-miss input: {exc}")
         return 1
 
     if as_json:
@@ -2969,6 +3043,9 @@ def _resolve_command(
     text: str,
     scopes: list[str] | None,
     include_deprecated: bool,
+    semantic_near_miss: bool,
+    semantic_model: str,
+    semantic_threshold: float,
 ) -> int:
     try:
         lexicon = load_lexicon(path)
@@ -2976,12 +3053,27 @@ def _resolve_command(
         print(f"Invalid lexicon: {exc}")
         return 1
 
-    decision = resolve_text(
-        lexicon,
-        text,
-        scopes=scopes,
-        include_deprecated=include_deprecated,
-    )
+    try:
+        semantic_backend = _semantic_backend_from_cli(
+            enabled=semantic_near_miss,
+            model_name=semantic_model,
+            min_semantic_score=semantic_threshold,
+        )
+    except SemanticNearMissError as exc:
+        print(f"Invalid semantic near-miss input: {exc}")
+        return 1
+
+    try:
+        decision = resolve_text(
+            lexicon,
+            text,
+            scopes=scopes,
+            include_deprecated=include_deprecated,
+            near_miss_semantic_backend=semantic_backend,
+        )
+    except SemanticNearMissError as exc:
+        print(f"Invalid semantic near-miss input: {exc}")
+        return 1
     print(f"Status: {decision.status.value}")
     print(f"Action: {decision.action.value}")
     if decision.message:
@@ -3049,12 +3141,21 @@ def _print_near_miss_suggestions(metadata: Mapping[str, object]) -> None:
 def _semantic_escalation_label(metadata: object) -> str:
     if not isinstance(metadata, Mapping):
         return ""
+    labels: list[str] = []
+    if metadata.get("semantic_applied") is True:
+        backend = metadata.get("semantic_backend") or metadata.get("semantic_model") or "semantic"
+        score = metadata.get("semantic_score")
+        try:
+            labels.append(f"semantic_score={float(score):.3f}")
+        except (TypeError, ValueError):
+            labels.append("semantic_score=n/a")
+        labels.append(f"semantic_backend={backend}")
     semantic = metadata.get("semantic_escalation")
-    if not isinstance(semantic, Mapping) or semantic.get("recommended") is not True:
-        return ""
-    reasons = semantic.get("reasons")
-    reason_label = ",".join(str(reason) for reason in reasons) if isinstance(reasons, list) else "recommended"
-    return f" semantic_escalation={reason_label}"
+    if isinstance(semantic, Mapping) and semantic.get("recommended") is True:
+        reasons = semantic.get("reasons")
+        reason_label = ",".join(str(reason) for reason in reasons) if isinstance(reasons, list) else "recommended"
+        labels.append(f"semantic_escalation={reason_label}")
+    return " " + " ".join(labels) if labels else ""
 
 def _guard_command(
     *,

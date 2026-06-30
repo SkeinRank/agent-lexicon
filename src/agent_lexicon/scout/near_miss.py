@@ -20,6 +20,7 @@ from agent_lexicon.scout.semantic import (
     SemanticNearMissBackend,
     SemanticNearMissCandidate,
     SemanticNearMissRequest,
+    SemanticNearMissResult,
     SemanticSuggestionSource,
     semantic_escalation_hint,
 )
@@ -320,6 +321,7 @@ def suggest_near_misses(
         query_fragments=query_fragments,
         suggestions=suggestions,
     )
+    suggestions = _apply_semantic_result(suggestions, semantic_result, max_suggestions=max_suggestions)
     return NearMissReport(
         surface=cleaned_surface,
         suggestions=suggestions,
@@ -522,14 +524,64 @@ def _suggestion_metadata(
 
 
 def _semantic_candidate_from_suggestion(suggestion: NearMissSuggestion) -> SemanticNearMissCandidate:
+    metadata = dict(suggestion.metadata)
+    metadata.setdefault("query_fragments", list(suggestion.query_fragments))
+    metadata.setdefault("target_fragments", list(suggestion.target_fragments))
+    metadata.setdefault("shared_fragments", list(suggestion.shared_fragments))
     return SemanticNearMissCandidate(
         target_term_id=suggestion.target_term_id,
         target_canonical=suggestion.target_canonical,
         matched_surface=suggestion.matched_surface,
         confidence=suggestion.confidence,
         reasons=tuple(reason.value for reason in suggestion.reasons),
-        metadata=suggestion.metadata,
+        metadata=metadata,
     )
+
+
+
+def _apply_semantic_result(
+    suggestions: tuple[NearMissSuggestion, ...],
+    semantic_result: SemanticNearMissResult,
+    *,
+    max_suggestions: int,
+) -> tuple[NearMissSuggestion, ...]:
+    if not semantic_result.applied:
+        return suggestions
+    by_key = {(suggestion.target_term_id, suggestion.matched_surface): suggestion for suggestion in suggestions}
+    reranked: list[NearMissSuggestion] = []
+    for candidate in semantic_result.candidates:
+        suggestion = by_key.get((candidate.target_term_id, candidate.matched_surface))
+        if suggestion is None:
+            continue
+        merged_metadata = dict(suggestion.metadata)
+        merged_metadata.update(candidate.metadata)
+        merged_metadata["semantic_backend"] = semantic_result.backend_name
+        if candidate.metadata.get("semantic_skipped") is True:
+            merged_metadata["suggestion_source"] = SemanticSuggestionSource.HEURISTIC.value
+            merged_metadata["semantic_applied"] = False
+        else:
+            merged_metadata["suggestion_source"] = semantic_result.source.value
+            merged_metadata["semantic_applied"] = True
+        reranked.append(
+            NearMissSuggestion(
+                surface=suggestion.surface,
+                normalized_surface=suggestion.normalized_surface,
+                target_term_id=suggestion.target_term_id,
+                target_canonical=suggestion.target_canonical,
+                matched_surface=suggestion.matched_surface,
+                confidence=suggestion.confidence,
+                reasons=suggestion.reasons,
+                shared_fragments=suggestion.shared_fragments,
+                query_fragments=suggestion.query_fragments,
+                target_fragments=suggestion.target_fragments,
+                scopes=suggestion.scopes,
+                deprecated=suggestion.deprecated,
+                metadata=merged_metadata,
+            )
+        )
+    if not reranked:
+        return ()
+    return tuple(reranked[:max_suggestions])
 
 
 def _run_semantic_backend(

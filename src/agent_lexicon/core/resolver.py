@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Iterable, Mapping
+from typing import TYPE_CHECKING, Iterable, Mapping
+
+if TYPE_CHECKING:
+    from agent_lexicon.scout.semantic import SemanticNearMissBackend
 
 from agent_lexicon.text import normalize_text_for_matching
 
@@ -39,6 +42,7 @@ class LexiconResolver:
         include_near_misses: bool = True,
         near_miss_max_suggestions: int = 3,
         near_miss_min_confidence: float = 0.42,
+        near_miss_semantic_backend: SemanticNearMissBackend | None = None,
     ) -> ResolutionDecision:
         """Resolve terminology in text and classify the result.
 
@@ -70,6 +74,7 @@ class LexiconResolver:
                         include_deprecated=include_deprecated,
                         max_suggestions_per_surface=near_miss_max_suggestions,
                         min_confidence=near_miss_min_confidence,
+                        semantic_backend=near_miss_semantic_backend,
                     )
                 )
             return ResolutionDecision(
@@ -115,6 +120,7 @@ def resolve_text(
     include_near_misses: bool = True,
     near_miss_max_suggestions: int = 3,
     near_miss_min_confidence: float = 0.42,
+    near_miss_semantic_backend: SemanticNearMissBackend | None = None,
     use_cache: bool = True,
 ) -> ResolutionDecision:
     """Convenience helper that resolves text against a lexicon.
@@ -136,6 +142,7 @@ def resolve_text(
         include_near_misses=include_near_misses,
         near_miss_max_suggestions=near_miss_max_suggestions,
         near_miss_min_confidence=near_miss_min_confidence,
+        near_miss_semantic_backend=near_miss_semantic_backend,
     )
 
 
@@ -148,6 +155,7 @@ def _near_miss_metadata(
     include_deprecated: bool,
     max_suggestions_per_surface: int,
     min_confidence: float,
+    semantic_backend: SemanticNearMissBackend | None = None,
 ) -> dict[str, object]:
     from agent_lexicon.scout.near_miss import (
         discover_unknown_identifier_surfaces,
@@ -164,6 +172,7 @@ def _near_miss_metadata(
         include_deprecated=include_deprecated,
         max_suggestions_per_surface=max_suggestions_per_surface,
         min_confidence=min_confidence,
+        semantic_backend=semantic_backend,
     )
     metadata: dict[str, object] = {"unknown_identifier_surfaces": list(unknown_surfaces)}
     if reports:

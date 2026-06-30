@@ -509,9 +509,61 @@ print(suggestion.metadata["semantic_escalation"]["recommended"])
 
 Use this metadata when a review pipeline wants to route only uncertain
 near-miss items to a heavier semantic scorer. The default package does not ship
-a semantic model and does not call external services. Future semantic backends
-can implement the `SemanticNearMissBackend` protocol and keep their output
-clearly labeled as `semantic`, separate from the deterministic heuristic source.
+a semantic model and does not call external services. Semantic backends implement
+the `SemanticNearMissBackend` protocol and keep their output clearly labeled as
+`semantic`, separate from the deterministic heuristic source.
+
+## Optional BGE semantic near-miss
+
+Scout workflows can opt into a BGE reranker for the gray zone where lexical
+near-miss signals are useful but not decisive. This is an offline review aid:
+`resolve` still returns `unknown`, guard decisions remain unchanged, and the
+default package stays dependency-free.
+
+Install `sentence-transformers` in the environment where semantic review runs:
+
+```bash
+pip install "sentence-transformers>=2.6,<4.0"
+```
+
+Command line usage:
+
+```bash
+agent-lexicon resolve lexicon/lexicon.yaml "rotate authToken" --semantic-near-miss
+agent-lexicon check-merge --root . --base main --head HEAD --semantic-near-miss
+agent-lexicon check-merge --root . --base main --head HEAD --semantic-near-miss --semantic-threshold 0.45
+```
+
+The default model is `BAAI/bge-base-en-v1.5`. Use `--semantic-model` when a
+local cache or another compatible Sentence Transformers model should be used.
+The backend calls the model only for near-miss candidates already marked by the
+cheap deterministic gate, then reranks or filters those review hints. Suggestions
+that pass through this mode include audit metadata such as:
+
+```text
+suggestion_source=semantic
+semantic_backend=bge-base
+semantic_score=0.812
+```
+
+Python usage:
+
+```python
+from agent_lexicon import BgeSemanticNearMissBackend, Lexicon, Term, suggest_near_misses
+
+lexicon = Lexicon(terms=(Term(id="auth.access_token", canonical="access token"),))
+backend = BgeSemanticNearMissBackend()
+
+report = suggest_near_misses(
+    lexicon,
+    "authToken",
+    semantic_backend=backend,
+)
+```
+
+Keep this mode out of hot-path guard enforcement. It is best used in Scout,
+merge review, and proposal preparation where semantic quality is worth the
+extra model cost and the output is reviewed by a person or policy workflow.
 
 ## Git merge terminology check
 
@@ -525,6 +577,7 @@ agent-lexicon check-merge --root . --base main --head HEAD
 agent-lexicon check-merge --root . --base main --head HEAD --include 'src/**'
 agent-lexicon check-merge --root . --base main --head HEAD --json
 agent-lexicon check-merge --root . --base main --head HEAD --include-unresolved-unknowns
+agent-lexicon check-merge --root . --base main --head HEAD --semantic-near-miss
 agent-lexicon check-merge --root . --base main --head HEAD --fail-on-review
 ```
 

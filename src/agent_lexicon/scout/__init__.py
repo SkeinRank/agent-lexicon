@@ -23,6 +23,13 @@ from .near_miss import (
 
 
 
+
+from .semantic_bge import (
+    BgeSemanticNearMissBackend,
+    DEFAULT_BGE_BASE_MODEL,
+    DEFAULT_BGE_SEMANTIC_THRESHOLD,
+)
+
 from .semantic import (
     NoopSemanticNearMissBackend,
     SemanticEscalationHint,
@@ -104,6 +111,9 @@ __all__ = [
     "discover_unknown_identifier_surfaces",
     "suggest_near_misses",
     "suggest_near_misses_for_text",
+    "BgeSemanticNearMissBackend",
+    "DEFAULT_BGE_BASE_MODEL",
+    "DEFAULT_BGE_SEMANTIC_THRESHOLD",
     "NoopSemanticNearMissBackend",
     "SemanticEscalationHint",
     "SemanticEscalationReason",
