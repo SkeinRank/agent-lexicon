@@ -27,6 +27,7 @@ from .core import (
     find_surface_matches,
     guard_tool_call,
     load_lexicon,
+    lint_lexicon_file,
     resolve_text,
 )
 from .evals import EvalDatasetError, load_eval_queries, run_behavior_eval
@@ -220,6 +221,39 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Override lexicon format detection.",
     )
+    validate_parser.add_argument(
+        "--lint",
+        action="store_true",
+        help="Also print lexicon quality warnings.",
+    )
+    validate_parser.add_argument(
+        "--strict-lint",
+        action="store_true",
+        help="Return exit code 1 when lint warnings are found.",
+    )
+
+    lint_parser = subparsers.add_parser(
+        "lint",
+        help="Report lexicon quality warnings for broad or risky surfaces.",
+    )
+    lint_parser.add_argument("path", help="Path to a lexicon .json, .yaml, or .yml file.")
+    lint_parser.add_argument(
+        "--format",
+        choices=("json", "yaml", "yml"),
+        default=None,
+        help="Override lexicon format detection.",
+    )
+    lint_parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Return exit code 1 when lint warnings are found.",
+    )
+    lint_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the lint report as JSON.",
+    )
+
     validate_queries_parser = subparsers.add_parser(
         "validate-queries",
         help="Validate a JSONL eval query dataset.",
@@ -807,6 +841,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print layout status as JSON.",
     )
+    dictionary_validate_parser.add_argument(
+        "--lint",
+        action="store_true",
+        help="Also print lexicon quality warnings for the layout lexicon.",
+    )
+    dictionary_validate_parser.add_argument(
+        "--strict-lint",
+        action="store_true",
+        help="Return exit code 1 when lint warnings are found.",
+    )
 
 
     dictionary_diff_parser = dictionary_subparsers.add_parser(
@@ -1199,7 +1243,20 @@ def main(argv: list[str] | None = None) -> int:
         return _simple_publish_command(args)
 
     if args.command == "validate":
-        return _validate_command(path=Path(args.path), document_format=args.format)
+        return _validate_command(
+            path=Path(args.path),
+            document_format=args.format,
+            include_lint=args.lint,
+            strict_lint=args.strict_lint,
+        )
+
+    if args.command == "lint":
+        return _lint_command(
+            path=Path(args.path),
+            document_format=args.format,
+            strict=args.strict,
+            as_json=args.json,
+        )
 
     if args.command == "validate-queries":
         return _validate_queries_command(path=Path(args.path))
@@ -1679,7 +1736,13 @@ def _mcp_command(args: argparse.Namespace) -> int:
 
 
 
-def _validate_command(*, path: Path, document_format: str | None) -> int:
+def _validate_command(
+    *,
+    path: Path,
+    document_format: str | None,
+    include_lint: bool = False,
+    strict_lint: bool = False,
+) -> int:
     try:
         lexicon = load_lexicon(path, document_format=document_format)
     except AgentLexiconLoadError as exc:
@@ -1692,7 +1755,29 @@ def _validate_command(*, path: Path, document_format: str | None) -> int:
         f"{len(lexicon.terms)} terms, "
         f"{len(lexicon.proposals)} proposals"
     )
-    return 0
+    if not include_lint:
+        return 0
+    lint_exit = _lint_command(path=path, document_format=document_format, strict=strict_lint, as_json=False)
+    return lint_exit if strict_lint else 0
+
+
+def _lint_command(
+    *,
+    path: Path,
+    document_format: str | None,
+    strict: bool,
+    as_json: bool,
+) -> int:
+    try:
+        report = lint_lexicon_file(path, document_format=document_format)
+    except AgentLexiconLoadError as exc:
+        print(f"Invalid lexicon: {exc}")
+        return 1
+    if as_json:
+        print(report.to_json())
+    else:
+        print(report.to_text())
+    return 1 if strict and report.findings else 0
 
 
 def _validate_queries_command(*, path: Path) -> int:
@@ -2218,19 +2303,29 @@ def _dictionary_command(args: argparse.Namespace) -> int:
     if args.dictionary_command == "validate":
         try:
             summary = validate_dictionary_layout(Path(args.root), layout_dir=args.layout_dir)
+            lint_report = (
+                lint_lexicon_file(Path(summary.layout.lexicon_path))
+                if args.lint or args.strict_lint
+                else None
+            )
             if args.manifest:
                 write_dictionary_manifest(summary, Path(args.manifest))
-        except DictionaryLayoutError as exc:
+        except (DictionaryLayoutError, AgentLexiconLoadError) as exc:
             print(f"Invalid dictionary layout: {exc}")
             return 1
         if args.json:
-            print(json.dumps(summary.to_dict(), indent=2, sort_keys=True))
-            return 0
+            payload = summary.to_dict()
+            if lint_report is not None:
+                payload["lint"] = lint_report.to_dict()
+            print(json.dumps(payload, indent=2, sort_keys=True))
+            return 1 if args.strict_lint and lint_report is not None and lint_report.findings else 0
         print(f"Valid dictionary layout: {summary.layout.layout_path}")
         _print_dictionary_summary(summary)
+        if lint_report is not None:
+            print(lint_report.to_text())
         if args.manifest:
             print(f"Manifest written: {args.manifest}")
-        return 0
+        return 1 if args.strict_lint and lint_report is not None and lint_report.findings else 0
 
     if args.dictionary_command == "diff":
         return _dictionary_diff_command(

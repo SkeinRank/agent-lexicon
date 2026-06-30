@@ -50,6 +50,8 @@ agent-lexicon scan examples/customer_limits/docs --root examples/customer_limits
 agent-lexicon analyze --root examples/customer_limits
 agent-lexicon publish --root examples/customer_limits
 agent-lexicon validate examples/customer_limits/lexicon.yaml
+agent-lexicon lint examples/customer_limits/lexicon.yaml
+agent-lexicon validate examples/customer_limits/lexicon.yaml --lint
 agent-lexicon match examples/customer_limits/lexicon.yaml "The customer cap and rate limit changed." --longest-only
 agent-lexicon resolve examples/customer_limits/lexicon.yaml "increase the limit"
 agent-lexicon guard examples/customer_limits/lexicon.yaml "increase the limit" --tool api.update_rate_limit
@@ -69,6 +71,7 @@ agent-lexicon workspace export-review-events --root examples/customer_limits
 agent-lexicon discover-migrations examples/customer_limits/lexicon.yaml
 agent-lexicon dictionary init --root .
 agent-lexicon dictionary validate --root .
+agent-lexicon dictionary validate --root . --lint
 agent-lexicon dictionary diff lexicon/lexicon.yaml lexicon-next.yaml
 agent-lexicon dictionary merge lexicon-base.yaml lexicon-ours.yaml lexicon-theirs.yaml --output lexicon-merged.json
 agent-lexicon dictionary pr-check --root .
@@ -224,6 +227,8 @@ Validate a document from the command line:
 
 ```bash
 agent-lexicon validate examples/customer_limits/lexicon.yaml
+agent-lexicon lint examples/customer_limits/lexicon.yaml
+agent-lexicon validate examples/customer_limits/lexicon.yaml --lint
 agent-lexicon match examples/customer_limits/lexicon.yaml "The customer cap and rate limit changed." --longest-only
 agent-lexicon resolve examples/customer_limits/lexicon.yaml "increase the limit"
 agent-lexicon guard examples/customer_limits/lexicon.yaml "increase the limit" --tool api.update_rate_limit
@@ -242,6 +247,34 @@ lexicon_again = Lexicon.from_file("examples/customer_limits/lexicon.json")
 
 The loader validates duplicate ids, unknown scope references, alias collisions,
 and proposal references before returning a `Lexicon` object.
+
+## Lexicon linting
+
+Structural validation answers whether a document can be loaded. Lexicon linting
+answers whether a valid document is likely to behave well in team usage, guard
+routing, and agent-generated code reviews. It reports warnings for surfaces that
+are technically valid but risky in real project text.
+
+```bash
+agent-lexicon lint examples/customer_limits/lexicon.yaml
+agent-lexicon lint examples/customer_limits/lexicon.yaml --strict
+agent-lexicon validate examples/customer_limits/lexicon.yaml --lint
+agent-lexicon dictionary validate --root . --lint
+```
+
+The linter checks for:
+
+- missing explicit `version: 1` in the source document,
+- broad one-word surfaces such as `token`, `key`, `id`, `url`, `api`, `data`,
+  `system`, `error`, and `limit`,
+- broad deprecated aliases that can keep matching active terminology,
+- broad surfaces on terms that route tools through `ToolGuard`,
+- runtime-normalized surface collisions after Unicode normalization and
+  generated code-style variants.
+
+By default lint warnings do not fail the command, which makes the linter useful
+for local review. Use `--strict` or `--strict-lint` when warnings should fail CI.
+For automation, add `--json` to `agent-lexicon lint`.
 
 
 ## Surface matching

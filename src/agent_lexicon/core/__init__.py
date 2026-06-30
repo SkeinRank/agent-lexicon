@@ -3,6 +3,14 @@
 from __future__ import annotations
 
 from .loader import AgentLexiconLoadError, lexicon_from_dict, load_lexicon, loads_lexicon
+from .linter import (
+    LexiconLintCode,
+    LexiconLintFinding,
+    LexiconLintReport,
+    LexiconLintSeverity,
+    lint_lexicon,
+    lint_lexicon_file,
+)
 from .matcher import (
     SurfaceEntry,
     SurfaceKind,
@@ -42,6 +50,10 @@ __all__ = [
     "EvidenceKind",
     "EvidenceSpan",
     "Lexicon",
+    "LexiconLintCode",
+    "LexiconLintFinding",
+    "LexiconLintReport",
+    "LexiconLintSeverity",
     "LexiconResolver",
     "ProposalCandidate",
     "ProposalKind",
@@ -65,6 +77,8 @@ __all__ = [
     "guard_tool_call",
     "lexicon_from_dict",
     "load_lexicon",
+    "lint_lexicon",
+    "lint_lexicon_file",
     "build_surface_matcher",
     "find_surface_matches",
     "loads_lexicon",
