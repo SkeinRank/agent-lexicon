@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from agent_lexicon import LexiconResolver, ResolutionAction, ResolutionStatus, resolve_text, load_lexicon
+from agent_lexicon import Lexicon, LexiconResolver, ResolutionAction, ResolutionStatus, Term, resolve_text, load_lexicon
 
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples" / "customer_limits"
@@ -79,3 +79,31 @@ def test_resolution_decision_serializes_to_dict() -> None:
     assert payload["primary_term_id"] == "billing.credit_limit"
     assert payload["candidates"][0]["term_id"] == "billing.credit_limit"
     assert payload["matches"][0]["matched_text"] == "customer cap"
+
+
+def test_resolver_resolves_code_identifier_variants() -> None:
+    lexicon = Lexicon(
+        terms=(
+            Term(id="auth.access_token", canonical="access token", scopes=("auth",)),
+        )
+    )
+
+    decision = resolve_text(lexicon, "rotate self.access_token before using accessToken", scopes=("auth",))
+
+    assert decision.status == ResolutionStatus.RESOLVED
+    assert decision.primary_term_id == "auth.access_token"
+    assert {match.matched_text for match in decision.matches} == {"access_token", "accessToken"}
+
+
+def test_resolver_preserves_same_span_ambiguity_with_fast_overlap_selection() -> None:
+    lexicon = Lexicon(
+        terms=(
+            Term(id="billing.credit_limit", canonical="limit", scopes=("billing",)),
+            Term(id="api.rate_limit", canonical="limit", scopes=("api",)),
+        )
+    )
+
+    decision = resolve_text(lexicon, "increase limit")
+
+    assert decision.status == ResolutionStatus.AMBIGUOUS
+    assert sorted(match.term_id for match in decision.matches) == ["api.rate_limit", "billing.credit_limit"]

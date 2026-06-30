@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Iterable
 
+from agent_lexicon.text import code_identifier_variants
+
 from .models import Alias, Lexicon, Term
 
 
@@ -32,11 +34,18 @@ class SurfaceEntry:
     scopes: tuple[str, ...] = ()
     case_sensitive: bool = False
     deprecated: bool = False
+    match_surface: str | None = None
 
     @property
     def search_surface(self) -> str:
         """Return the surface value used by the trie."""
-        return self.surface if self.case_sensitive else self.surface.casefold()
+        surface = self.match_surface or self.surface
+        return surface if self.case_sensitive else surface.casefold()
+
+    @property
+    def is_code_variant(self) -> bool:
+        """Return whether this entry searches a generated code identifier variant."""
+        return self.match_surface is not None and self.match_surface != self.surface
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,18 +109,19 @@ class SurfaceMatcher:
         """Build a matcher from canonical terms and aliases in a lexicon."""
         entries: list[SurfaceEntry] = []
         for term in lexicon.terms:
-            entries.append(
-                SurfaceEntry(
+            entries.extend(
+                _entries_for_surface(
                     surface=term.canonical,
                     term_id=term.id,
                     kind=SurfaceKind.CANONICAL,
                     scopes=term.scopes,
                     deprecated=term.deprecated,
+                    excluded_search_surfaces=_alias_search_surfaces(term.aliases),
                 )
             )
             for alias in term.aliases:
                 if include_deprecated or not alias.deprecated:
-                    entries.append(_entry_from_alias(alias, fallback_scopes=term.scopes))
+                    entries.extend(_entries_from_alias(alias, fallback_scopes=term.scopes))
         return cls(entries)
 
     def match(
@@ -183,8 +193,8 @@ def find_surface_matches(
     )
 
 
-def _entry_from_alias(alias: Alias, *, fallback_scopes: tuple[str, ...]) -> SurfaceEntry:
-    return SurfaceEntry(
+def _entries_from_alias(alias: Alias, *, fallback_scopes: tuple[str, ...]) -> tuple[SurfaceEntry, ...]:
+    return _entries_for_surface(
         surface=alias.surface,
         term_id=alias.term_id,
         kind=SurfaceKind.ALIAS,
@@ -192,6 +202,52 @@ def _entry_from_alias(alias: Alias, *, fallback_scopes: tuple[str, ...]) -> Surf
         case_sensitive=alias.case_sensitive,
         deprecated=alias.deprecated,
     )
+
+
+def _entries_for_surface(
+    *,
+    surface: str,
+    term_id: str,
+    kind: SurfaceKind,
+    scopes: tuple[str, ...],
+    case_sensitive: bool = False,
+    deprecated: bool = False,
+    excluded_search_surfaces: frozenset[str] | None = None,
+) -> tuple[SurfaceEntry, ...]:
+    entries = [
+        SurfaceEntry(
+            surface=surface,
+            term_id=term_id,
+            kind=kind,
+            scopes=scopes,
+            case_sensitive=case_sensitive,
+            deprecated=deprecated,
+        )
+    ]
+    if not case_sensitive:
+        reserved = excluded_search_surfaces or frozenset()
+        entries.extend(
+            SurfaceEntry(
+                surface=surface,
+                term_id=term_id,
+                kind=kind,
+                scopes=scopes,
+                case_sensitive=False,
+                deprecated=deprecated,
+                match_surface=variant,
+            )
+            for variant in code_identifier_variants(surface)
+            if variant.casefold() not in reserved
+        )
+    return tuple(entries)
+
+
+def _alias_search_surfaces(aliases: tuple[Alias, ...]) -> frozenset[str]:
+    surfaces: set[str] = set()
+    for alias in aliases:
+        surfaces.add(alias.surface)
+        surfaces.add(alias.surface.casefold())
+    return frozenset(surfaces)
 
 
 def _dedupe_entries(entries: Iterable[SurfaceEntry]) -> tuple[SurfaceEntry, ...]:
@@ -321,14 +377,35 @@ def _is_word_char(char: str) -> bool:
 
 
 def _longest_non_overlapping(matches: tuple[SurfaceMatch, ...]) -> tuple[SurfaceMatch, ...]:
+    return _select_long_non_overlapping(matches, preserve_same_span=False)
+
+
+def _select_long_non_overlapping(
+    matches: tuple[SurfaceMatch, ...],
+    *,
+    preserve_same_span: bool,
+) -> tuple[SurfaceMatch, ...]:
+    """Keep longest non-overlapping spans without quadratic overlap checks."""
+    if not matches:
+        return ()
+
     candidates = sorted(matches, key=lambda match: (-match.length, match.start, match.term_id, match.surface))
     accepted: list[SurfaceMatch] = []
-    occupied: list[tuple[int, int]] = []
+    accepted_spans: set[tuple[int, int]] = set()
+    max_end = max(match.end for match in candidates)
+    occupied = bytearray(max_end)
+
     for match in candidates:
-        if any(not (match.end <= start or match.start >= end) for start, end in occupied):
+        span = (match.start, match.end)
+        if preserve_same_span and span in accepted_spans:
+            accepted.append(match)
+            continue
+        if occupied.find(1, match.start, match.end) != -1:
             continue
         accepted.append(match)
-        occupied.append((match.start, match.end))
+        accepted_spans.add(span)
+        occupied[match.start:match.end] = b"\x01" * match.length
+
     return tuple(sorted(accepted, key=lambda match: (match.start, -match.length, match.term_id, match.surface)))
 
 

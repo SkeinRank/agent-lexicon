@@ -245,15 +245,37 @@ Command line usage:
 agent-lexicon match examples/customer_limits/lexicon.yaml "The customer cap and rate limit changed."
 ```
 
+For code-heavy projects, natural surfaces also cover common identifier shapes:
+
+```python
+from agent_lexicon import Lexicon, Term, resolve_text
+
+lexicon = Lexicon(
+    terms=(Term(id="auth.access_token", canonical="access token"),)
+)
+
+decision = resolve_text(lexicon, "rotate self.access_token before using accessToken")
+print(decision.primary_term_id)  # auth.access_token
+```
+
 The matcher supports scope filtering, case-sensitive aliases, deprecated surface
-filtering, and longest non-overlapping output for downstream resolver logic.
+filtering, generated code-identifier variants, and longest non-overlapping
+output for downstream resolver logic. A lexicon surface such as `access token`
+can also match common code forms such as `accessToken`, `access_token`, and
+`ACCESS_TOKEN` without adding those aliases manually. Explicit aliases remain
+reserved, so case-sensitive surfaces such as `API_KEY` keep their intended
+behavior.
 
 
 ## Runtime resolution
 
 The resolver turns surface matches into a deterministic runtime decision. It
-prefers longer non-overlapping surfaces, preserves same-span ambiguity, and
-returns one of three statuses: `resolved`, `ambiguous`, or `unknown`.
+prefers longer non-overlapping surfaces, preserves same-span ambiguity, handles
+code identifiers such as `accessToken` and `partition_key`, and returns one of
+three statuses: `resolved`, `ambiguous`, or `unknown`. The overlap selector uses
+a bitmap-backed linear pass over matched spans instead of repeatedly scanning
+all accepted intervals, keeping large-file resolution predictable for local
+agent workflows.
 
 ```python
 from agent_lexicon import load_lexicon, resolve_text

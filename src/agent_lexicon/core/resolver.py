@@ -6,7 +6,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Iterable, Mapping
 
-from .matcher import SurfaceKind, SurfaceMatch, SurfaceMatcher, build_surface_matcher
+from .matcher import SurfaceKind, SurfaceMatch, SurfaceMatcher, _select_long_non_overlapping, build_surface_matcher
 from .models import Lexicon, ResolutionAction, ResolutionCandidate, ResolutionDecision, ResolutionMatch, ResolutionStatus, Term
 
 
@@ -102,23 +102,7 @@ def resolve_text(
 
 def _select_resolution_matches(matches: tuple[SurfaceMatch, ...]) -> tuple[SurfaceMatch, ...]:
     """Keep long non-overlapping spans while preserving same-span ambiguity."""
-    candidates = sorted(matches, key=lambda match: (-match.length, match.start, match.term_id, match.surface))
-    accepted: list[SurfaceMatch] = []
-    occupied: list[tuple[int, int]] = []
-    accepted_spans: set[tuple[int, int]] = set()
-
-    for match in candidates:
-        span = (match.start, match.end)
-        if span in accepted_spans:
-            accepted.append(match)
-            continue
-        if any(not (match.end <= start or match.start >= end) for start, end in occupied):
-            continue
-        accepted.append(match)
-        occupied.append(span)
-        accepted_spans.add(span)
-
-    return tuple(sorted(accepted, key=lambda match: (match.start, -match.length, match.term_id, match.surface)))
+    return _select_long_non_overlapping(matches, preserve_same_span=True)
 
 
 def _build_candidates(lexicon: Lexicon, matches: tuple[SurfaceMatch, ...]) -> tuple[ResolutionCandidate, ...]:

@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Iterable, Mapping, Sequence
 
+from agent_lexicon.text import surface_fragments
+
 
 class CandidateQualityError(ValueError):
     """Raised when candidate quality scoring receives invalid input."""
@@ -218,16 +220,6 @@ def candidate_cluster_key(surface: str) -> str:
     canonical = [_singularize_token(fragment) for fragment in fragments if fragment]
     return " ".join(canonical) or _normalize_surface(surface)
 
-
-def surface_fragments(surface: str) -> tuple[str, ...]:
-    """Split a natural or code-style surface into normalized fragments."""
-    cleaned = str(surface).strip()
-    if not cleaned:
-        return ()
-    camel_split = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", cleaned)
-    acronym_split = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", camel_split)
-    raw = re.split(r"[^A-Za-z0-9]+", acronym_split)
-    return tuple(token.casefold() for token in raw if token)
 
 
 def cluster_surface_records(records: Iterable[Mapping[str, Any]]) -> tuple[CandidateCluster, ...]:

@@ -180,6 +180,13 @@ from .ingest import (
     ingest_local_paths,
     read_local_document,
 )
+
+from .text import (
+    code_identifier_variants,
+    normalized_fragment_surface,
+    surface_fragments as text_surface_fragments,
+)
+
 from .workspace import (
     DEFAULT_DATABASE_NAME,
     DEFAULT_WORKSPACE_DIR,
@@ -238,6 +245,9 @@ from .mcp import (
 __all__ = [
 
     "DEFAULT_SCAN_PATHS",
+    "code_identifier_variants",
+    "normalized_fragment_surface",
+    "text_surface_fragments",
     "SimpleAnalyzeReport",
     "SimpleAnalysisItem",
     "SimpleInitReport",
