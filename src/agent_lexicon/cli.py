@@ -62,6 +62,8 @@ from .scout import (
     build_evidence_packs,
     build_scout_quality_report,
     ScoutQualityReportError,
+    GitMergeCheckError,
+    check_git_merge_terminology,
     discover_canonical_migration_candidates,
     discover_scout_candidates,
     existing_surfaces_from_lexicon,
@@ -276,6 +278,63 @@ def build_parser() -> argparse.ArgumentParser:
         "--json",
         action="store_true",
         help="Print the full eval report as JSON.",
+    )
+
+    check_merge_parser = subparsers.add_parser(
+        "check-merge",
+        help="Review terminology drift in added lines between git refs.",
+    )
+    check_merge_parser.add_argument("--root", default=".", help="Git repository root.")
+    check_merge_parser.add_argument(
+        "--lexicon",
+        default=None,
+        help="Lexicon file. Defaults to lexicon/lexicon.yaml under --root.",
+    )
+    check_merge_parser.add_argument("--base", default="main", help="Base git ref for the merge comparison.")
+    check_merge_parser.add_argument("--head", default="HEAD", help="Head git ref for the merge comparison.")
+    check_merge_parser.add_argument(
+        "--scope",
+        action="append",
+        default=None,
+        help="Limit terminology checks to a scope. Can be provided multiple times.",
+    )
+    check_merge_parser.add_argument(
+        "--include",
+        action="append",
+        default=None,
+        help="Limit checked paths with a git-style glob such as 'src/**'. Can be provided multiple times.",
+    )
+    check_merge_parser.add_argument(
+        "--exclude-deprecated",
+        action="store_true",
+        help="Ignore deprecated aliases or deprecated terms.",
+    )
+    check_merge_parser.add_argument(
+        "--min-confidence",
+        type=float,
+        default=0.42,
+        help="Minimum confidence for near-miss review suggestions.",
+    )
+    check_merge_parser.add_argument(
+        "--max-suggestions",
+        type=int,
+        default=3,
+        help="Maximum near-miss suggestions per unknown identifier.",
+    )
+    check_merge_parser.add_argument(
+        "--fail-on-review",
+        action="store_true",
+        help="Return exit code 1 when reviewable unknown identifiers are found.",
+    )
+    check_merge_parser.add_argument(
+        "--include-unresolved-unknowns",
+        action="store_true",
+        help="Also include unknown identifiers that did not receive near-miss suggestions.",
+    )
+    check_merge_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the merge terminology report as JSON.",
     )
 
     ingest_parser = subparsers.add_parser(
@@ -1270,6 +1329,22 @@ def main(argv: list[str] | None = None) -> int:
             as_json=args.json,
         )
 
+    if args.command == "check-merge":
+        return _check_merge_command(
+            root=Path(args.root),
+            lexicon_path=Path(args.lexicon) if args.lexicon else None,
+            base=args.base,
+            head=args.head,
+            scopes=args.scope,
+            include_globs=args.include,
+            include_deprecated=not args.exclude_deprecated,
+            min_confidence=args.min_confidence,
+            max_suggestions=args.max_suggestions,
+            fail_on_review=args.fail_on_review,
+            include_unresolved_unknowns=args.include_unresolved_unknowns,
+            as_json=args.json,
+        )
+
     if args.command == "ingest":
         return _ingest_command(
             paths=[Path(path) for path in args.paths],
@@ -1841,6 +1916,56 @@ def _check_command(
         for result in failed:
             print(f"- {result.query.id}: {result.query.text}")
     return 0 if report.passed else 1
+
+
+def _check_merge_command(
+    *,
+    root: Path,
+    lexicon_path: Path | None,
+    base: str,
+    head: str,
+    scopes: list[str] | None,
+    include_globs: list[str] | None,
+    include_deprecated: bool,
+    min_confidence: float,
+    max_suggestions: int,
+    fail_on_review: bool,
+    include_unresolved_unknowns: bool,
+    as_json: bool,
+) -> int:
+    root_path = root.resolve()
+    resolved_lexicon_path = lexicon_path or (root_path / "lexicon" / "lexicon.yaml")
+    if not resolved_lexicon_path.is_absolute():
+        resolved_lexicon_path = root_path / resolved_lexicon_path
+    try:
+        lexicon = load_lexicon(resolved_lexicon_path)
+    except AgentLexiconLoadError as exc:
+        print(f"Invalid lexicon: {exc}")
+        return 1
+
+    try:
+        report = check_git_merge_terminology(
+            lexicon,
+            root=root_path,
+            lexicon_path=resolved_lexicon_path,
+            base=base,
+            head=head,
+            scopes=scopes,
+            include_deprecated=include_deprecated,
+            include_globs=include_globs,
+            max_suggestions_per_identifier=max_suggestions,
+            min_confidence=min_confidence,
+            include_unresolved_unknowns=include_unresolved_unknowns,
+        )
+    except GitMergeCheckError as exc:
+        print(f"Invalid merge check input: {exc}")
+        return 1
+
+    if as_json:
+        print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+    else:
+        print(report.to_text())
+    return 1 if fail_on_review and report.has_review_items else 0
 
 
 def _print_metric(label: str, value: float | None) -> None:

@@ -21,6 +21,18 @@ from .near_miss import (
     suggest_near_misses_for_text,
 )
 
+
+from .git_merge import (
+    GitDiffAddedLine,
+    GitMergeCheckError,
+    GitMergeKnownOccurrence,
+    GitMergeTerminologyReport,
+    GitMergeUnknownIdentifier,
+    build_git_merge_terminology_report,
+    check_git_merge_terminology,
+    parse_git_added_lines,
+)
+
 from .quality import (
     CandidateCluster,
     CandidatePriority,
@@ -77,6 +89,14 @@ __all__ = [
     "discover_unknown_identifier_surfaces",
     "suggest_near_misses",
     "suggest_near_misses_for_text",
+    "GitDiffAddedLine",
+    "GitMergeCheckError",
+    "GitMergeKnownOccurrence",
+    "GitMergeTerminologyReport",
+    "GitMergeUnknownIdentifier",
+    "build_git_merge_terminology_report",
+    "check_git_merge_terminology",
+    "parse_git_added_lines",
     "CandidateCluster",
     "CandidatePriority",
     "CandidateQualityError",

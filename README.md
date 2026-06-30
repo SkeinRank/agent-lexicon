@@ -74,6 +74,8 @@ agent-lexicon dictionary validate --root .
 agent-lexicon dictionary validate --root . --lint
 agent-lexicon dictionary diff lexicon/lexicon.yaml lexicon-next.yaml
 agent-lexicon dictionary merge lexicon-base.yaml lexicon-ours.yaml lexicon-theirs.yaml --output lexicon-merged.json
+agent-lexicon check-merge --root . --base main --head HEAD
+agent-lexicon check-merge --root . --base main --head HEAD --fail-on-review
 agent-lexicon dictionary pr-check --root .
 agent-lexicon review-agent assess --root examples/customer_limits
 agent-lexicon review-agent consensus --root examples/customer_limits
@@ -429,6 +431,65 @@ for suggestion in report.suggestions:
     print(suggestion.target_term_id, suggestion.confidence, suggestion.reasons)
 ```
 
+
+
+## Git merge terminology check
+
+Agent-generated branches often introduce new code identifiers before reviewers
+notice the terminology drift. The merge terminology check scans added git diff
+lines between two refs, reports known terminology as safe, and separates unknown
+code-style identifiers that may need reviewer attention.
+
+```bash
+agent-lexicon check-merge --root . --base main --head HEAD
+agent-lexicon check-merge --root . --base main --head HEAD --include 'src/**'
+agent-lexicon check-merge --root . --base main --head HEAD --json
+agent-lexicon check-merge --root . --base main --head HEAD --include-unresolved-unknowns
+agent-lexicon check-merge --root . --base main --head HEAD --fail-on-review
+```
+
+The command defaults to `lexicon/lexicon.yaml` under `--root`. Use `--lexicon`
+when the dictionary lives elsewhere. The comparison uses the pull-request style
+`base...head` git range, so the result focuses on what the branch adds relative
+to the merge base.
+
+Example output:
+
+```text
+Git merge terminology check: 1 files, 2 added lines
+Range: main...HEAD
+Summary: known=1, needs_review=1, unresolved_unknown=0
+Known terminology:
+- src/auth.py:12 'accessToken' -> auth.access_token (access token)
+Needs review:
+- src/auth.py:13 'authToken' unknown; near miss: auth.access_token (access token) confidence=0.599 via 'AccessToken'
+```
+
+Known occurrences are useful for confirming that different branch naming styles
+still resolve to the same canonical term. Review items keep the unknown status
+unchanged and attach deterministic near-miss hints, so a reviewer can decide
+whether the surface should become a new alias or a new term. Identifiers without
+near-miss suggestions are omitted by default to keep the merge output focused;
+use `--include-unresolved-unknowns` when a workflow needs the full unknown
+identifier list. Use `--fail-on-review` in CI when near-miss review items should
+block the workflow.
+
+Python usage:
+
+```python
+from agent_lexicon import check_git_merge_terminology, load_lexicon
+
+lexicon = load_lexicon("lexicon/lexicon.yaml")
+report = check_git_merge_terminology(
+    lexicon,
+    root=".",
+    base="main",
+    head="HEAD",
+)
+
+for item in report.needs_review:
+    print(item.surface, item.suggestions[0].target_term_id)
+```
 
 ## Tool-call safety
 
