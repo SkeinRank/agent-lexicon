@@ -2,7 +2,30 @@
 
 from __future__ import annotations
 
+from .cache import (
+    DEFAULT_RUNTIME_CACHE_SIZE,
+    LexiconFingerprint,
+    LexiconRuntimeCache,
+    RuntimeCacheStats,
+    clear_runtime_cache,
+    default_runtime_cache,
+    fingerprint_lexicon,
+    get_cached_resolver,
+    get_cached_surface_matcher,
+    get_cached_tool_guard,
+    load_cached_lexicon,
+    runtime_cache_stats,
+)
 from .loader import AgentLexiconLoadError, lexicon_from_dict, load_lexicon, loads_lexicon
+from .files import atomic_write_text
+from .linter import (
+    LexiconLintCode,
+    LexiconLintFinding,
+    LexiconLintReport,
+    LexiconLintSeverity,
+    lint_lexicon,
+    lint_lexicon_file,
+)
 from .matcher import (
     SurfaceEntry,
     SurfaceKind,
@@ -37,11 +60,28 @@ from .tool_guard import ToolGuard, guard_tool_call
 
 __all__ = [
     "AgentLexiconLoadError",
+    "DEFAULT_RUNTIME_CACHE_SIZE",
+    "LexiconFingerprint",
+    "LexiconRuntimeCache",
+    "RuntimeCacheStats",
+    "clear_runtime_cache",
+    "default_runtime_cache",
+    "fingerprint_lexicon",
+    "get_cached_resolver",
+    "get_cached_surface_matcher",
+    "get_cached_tool_guard",
+    "load_cached_lexicon",
+    "runtime_cache_stats",
     "AgentLexiconModelError",
+    "atomic_write_text",
     "Alias",
     "EvidenceKind",
     "EvidenceSpan",
     "Lexicon",
+    "LexiconLintCode",
+    "LexiconLintFinding",
+    "LexiconLintReport",
+    "LexiconLintSeverity",
     "LexiconResolver",
     "ProposalCandidate",
     "ProposalKind",
@@ -65,6 +105,8 @@ __all__ = [
     "guard_tool_call",
     "lexicon_from_dict",
     "load_lexicon",
+    "lint_lexicon",
+    "lint_lexicon_file",
     "build_surface_matcher",
     "find_surface_matches",
     "loads_lexicon",

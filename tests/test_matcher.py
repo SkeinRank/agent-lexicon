@@ -131,3 +131,30 @@ def test_surface_match_serializes_to_dict() -> None:
     assert payload["kind"] == "alias"
     assert payload["start"] == 0
     assert payload["end"] == 12
+
+
+def test_matcher_finds_code_identifier_variants_for_natural_surfaces() -> None:
+    lexicon = Lexicon(
+        terms=(
+            Term(id="auth.access_token", canonical="access token"),
+            Term(id="storage.partition_key", canonical="partition key"),
+        )
+    )
+    matcher = build_surface_matcher(lexicon)
+
+    matches = matcher.match("self.access_token = accessToken; row.partitionKey = partition_key", longest_only=True)
+
+    assert [(match.term_id, match.surface, match.matched_text) for match in matches] == [
+        ("auth.access_token", "access token", "access_token"),
+        ("auth.access_token", "access token", "accessToken"),
+        ("storage.partition_key", "partition key", "partitionKey"),
+        ("storage.partition_key", "partition key", "partition_key"),
+    ]
+
+
+def test_matcher_keeps_identifier_boundaries() -> None:
+    lexicon = Lexicon(terms=(Term(id="auth.access_token", canonical="access token"),))
+    matcher = build_surface_matcher(lexicon)
+
+    assert matcher.match("accessTokenValue should not match", longest_only=True) == ()
+    assert matcher.match("accessToken should match", longest_only=True)[0].matched_text == "accessToken"

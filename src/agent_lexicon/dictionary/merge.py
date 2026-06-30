@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from agent_lexicon.core import AgentLexiconLoadError, Lexicon, lexicon_from_dict, load_lexicon
+from agent_lexicon.core.files import atomic_write_text
 
 from .diff import SemanticDiffSummary, SemanticObjectKind, diff_lexicons
 
@@ -28,6 +29,43 @@ class SemanticMergeStatus(str, Enum):
 
     CLEAN = "clean"
     CONFLICT = "conflict"
+
+
+class SemanticMergeWarningKind(str, Enum):
+    """Reviewable semantic merge signal that does not block a clean merge."""
+
+    CANONICAL_RENAME_WITH_PARALLEL_TERM_CHANGE = "canonical_rename_with_parallel_term_change"
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticMergeWarning:
+    """One reviewable semantic signal discovered during a clean merge."""
+
+    kind: SemanticMergeWarningKind
+    object_kind: SemanticObjectKind
+    object_id: str
+    path: str
+    reason: str
+    base: Any = None
+    ours: Any = None
+    theirs: Any = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-serializable warning payload."""
+        return {
+            "kind": self.kind.value,
+            "object_kind": self.object_kind.value,
+            "object_id": self.object_id,
+            "path": self.path,
+            "reason": self.reason,
+            "base": _json_ready(self.base),
+            "ours": _json_ready(self.ours),
+            "theirs": _json_ready(self.theirs),
+        }
+
+    def to_text(self) -> str:
+        """Return a compact human-readable warning line."""
+        return f"~ {self.object_kind.value} {self.object_id}: {self.reason} ({self.path})"
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +106,7 @@ class SemanticMergeReport:
     theirs_label: str
     status: SemanticMergeStatus
     conflicts: tuple[SemanticMergeConflict, ...] = ()
+    warnings: tuple[SemanticMergeWarning, ...] = ()
     merged_lexicon: Lexicon | None = None
     ours_diff_summary: SemanticDiffSummary = field(default_factory=SemanticDiffSummary)
     theirs_diff_summary: SemanticDiffSummary = field(default_factory=SemanticDiffSummary)
@@ -83,6 +122,16 @@ class SemanticMergeReport:
         """Return the number of semantic conflicts."""
         return len(self.conflicts)
 
+    @property
+    def has_warnings(self) -> bool:
+        """Return whether the merge has reviewable non-blocking warnings."""
+        return bool(self.warnings)
+
+    @property
+    def warning_count(self) -> int:
+        """Return the number of reviewable non-blocking warnings."""
+        return len(self.warnings)
+
     def to_dict(self, *, include_merged_lexicon: bool = False) -> dict[str, Any]:
         """Return a JSON-serializable merge report."""
         payload: dict[str, Any] = {
@@ -92,10 +141,13 @@ class SemanticMergeReport:
             "status": self.status.value,
             "has_conflicts": self.has_conflicts,
             "conflict_count": self.conflict_count,
+            "has_warnings": self.has_warnings,
+            "warning_count": self.warning_count,
             "ours_diff_summary": self.ours_diff_summary.to_dict(),
             "theirs_diff_summary": self.theirs_diff_summary.to_dict(),
             "merged_diff_summary": self.merged_diff_summary.to_dict(),
             "conflicts": [conflict.to_dict() for conflict in self.conflicts],
+            "warnings": [warning.to_dict() for warning in self.warnings],
         }
         if include_merged_lexicon and self.merged_lexicon is not None:
             payload["merged_lexicon"] = self.merged_lexicon.to_dict()
@@ -148,6 +200,7 @@ def merge_lexicons(
     base_payload = base.to_dict()
     ours_payload = ours.to_dict()
     theirs_payload = theirs.to_dict()
+    warnings = tuple(_collect_merge_warnings(base_payload, ours_payload, theirs_payload))
 
     merged_payload: dict[str, Any] = {"version": "1"}
     merged_payload["metadata"] = _merge_mapping(
@@ -197,6 +250,7 @@ def merge_lexicons(
             theirs_label=theirs_label,
             status=SemanticMergeStatus.CONFLICT,
             conflicts=tuple(_sort_conflicts(conflicts)),
+            warnings=warnings,
             merged_lexicon=None,
             ours_diff_summary=ours_diff.summary,
             theirs_diff_summary=theirs_diff.summary,
@@ -220,6 +274,7 @@ def merge_lexicons(
             theirs_label=theirs_label,
             status=SemanticMergeStatus.CONFLICT,
             conflicts=(validation_conflict,),
+            warnings=warnings,
             merged_lexicon=None,
             ours_diff_summary=ours_diff.summary,
             theirs_diff_summary=theirs_diff.summary,
@@ -232,6 +287,7 @@ def merge_lexicons(
         theirs_label=theirs_label,
         status=SemanticMergeStatus.CLEAN,
         conflicts=(),
+        warnings=warnings,
         merged_lexicon=merged_lexicon,
         ours_diff_summary=ours_diff.summary,
         theirs_diff_summary=theirs_diff.summary,
@@ -244,10 +300,9 @@ def write_merged_lexicon_json(report: SemanticMergeReport, output_path: str | Pa
     if report.merged_lexicon is None or report.has_conflicts:
         raise SemanticMergeError("cannot write merged lexicon while semantic conflicts are present")
     output = Path(output_path)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(
+    atomic_write_text(
+        output,
         json.dumps(report.merged_lexicon.to_dict(), indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
     )
     return output
 
@@ -618,6 +673,103 @@ def _ordered_mapping_keys(*mappings: Mapping[str, Any]) -> list[str]:
     return result
 
 
+def _collect_merge_warnings(
+    base_payload: Mapping[str, Any],
+    ours_payload: Mapping[str, Any],
+    theirs_payload: Mapping[str, Any],
+) -> list[SemanticMergeWarning]:
+    """Return non-blocking semantic review signals for a three-way merge."""
+    warnings: list[SemanticMergeWarning] = []
+    base_terms = _index_terms(base_payload)
+    ours_terms = _index_terms(ours_payload)
+    theirs_terms = _index_terms(theirs_payload)
+    for term_id in _ordered_term_ids(base_payload, ours_payload, theirs_payload):
+        base = base_terms.get(term_id)
+        ours = ours_terms.get(term_id)
+        theirs = theirs_terms.get(term_id)
+        if base is None or ours is None or theirs is None:
+            continue
+        if _should_warn_for_parallel_canonical_rename(base, ours, theirs):
+            warnings.append(
+                SemanticMergeWarning(
+                    kind=SemanticMergeWarningKind.CANONICAL_RENAME_WITH_PARALLEL_TERM_CHANGE,
+                    object_kind=SemanticObjectKind.TERM,
+                    object_id=term_id,
+                    path=f"terms[{term_id}].canonical",
+                    reason=(
+                        "canonical name changed while the same term also received parallel changes; "
+                        "review whether both branches still describe the same concept"
+                    ),
+                    base=_term_warning_payload(base),
+                    ours=_term_warning_payload(ours),
+                    theirs=_term_warning_payload(theirs),
+                )
+            )
+    return _sort_warnings(warnings)
+
+
+def _should_warn_for_parallel_canonical_rename(
+    base: Mapping[str, Any],
+    ours: Mapping[str, Any],
+    theirs: Mapping[str, Any],
+) -> bool:
+    base_canonical = base.get("canonical")
+    ours_canonical = ours.get("canonical")
+    theirs_canonical = theirs.get("canonical")
+    ours_changed = not _same(ours, base)
+    theirs_changed = not _same(theirs, base)
+    if not ours_changed or not theirs_changed:
+        return False
+    ours_canonical_changed = ours_canonical != base_canonical
+    theirs_canonical_changed = theirs_canonical != base_canonical
+    if not ours_canonical_changed and not theirs_canonical_changed:
+        return False
+    if ours_canonical_changed and theirs_canonical_changed and ours_canonical != theirs_canonical:
+        return False
+    if ours_canonical_changed and theirs_canonical_changed and _same(ours, theirs):
+        return False
+    non_canonical_ours_changed = _term_payload_without_canonical(ours) != _term_payload_without_canonical(base)
+    non_canonical_theirs_changed = _term_payload_without_canonical(theirs) != _term_payload_without_canonical(base)
+    if ours_canonical_changed and not theirs_canonical_changed:
+        return non_canonical_theirs_changed
+    if theirs_canonical_changed and not ours_canonical_changed:
+        return non_canonical_ours_changed
+    return non_canonical_ours_changed or non_canonical_theirs_changed
+
+
+def _index_terms(payload: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
+    return {str(term["id"]): term for term in payload.get("terms", [])}
+
+
+def _ordered_term_ids(*payloads: Mapping[str, Any]) -> list[str]:
+    result: list[str] = []
+    for payload in payloads:
+        for term in payload.get("terms", []):
+            term_id = str(term.get("id"))
+            if term_id not in result:
+                result.append(term_id)
+    return result
+
+
+def _term_payload_without_canonical(term: Mapping[str, Any]) -> dict[str, Any]:
+    payload = dict(term)
+    payload.pop("canonical", None)
+    return _json_ready(payload)
+
+
+def _term_warning_payload(term: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "id": term.get("id"),
+        "canonical": term.get("canonical"),
+        "aliases": _json_ready(term.get("aliases", [])),
+        "scopes": _json_ready(term.get("scopes", [])),
+        "tags": _json_ready(term.get("tags", [])),
+        "tools": _json_ready(term.get("tools", [])),
+        "deprecated": term.get("deprecated", False),
+    }
+
+
+
 def _evidence_key(evidence: Mapping[str, Any]) -> str:
     return "|".join(
         str(evidence.get(name) or "")
@@ -660,6 +812,14 @@ def _sort_conflicts(conflicts: Iterable[SemanticMergeConflict]) -> list[Semantic
     )
 
 
+def _sort_warnings(warnings: Iterable[SemanticMergeWarning]) -> list[SemanticMergeWarning]:
+    object_order = {item.value: index for index, item in enumerate(SemanticObjectKind)}
+    return sorted(
+        warnings,
+        key=lambda item: (object_order[item.object_kind.value], item.object_id, item.path, item.kind.value),
+    )
+
+
 def _json_ready(value: Any) -> Any:
     if isinstance(value, Enum):
         return value.value
@@ -677,6 +837,8 @@ __all__ = [
     "SemanticMergeError",
     "SemanticMergeReport",
     "SemanticMergeStatus",
+    "SemanticMergeWarning",
+    "SemanticMergeWarningKind",
     "merge_lexicon_files",
     "merge_lexicons",
     "write_merged_lexicon_json",

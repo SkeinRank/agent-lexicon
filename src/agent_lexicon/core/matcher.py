@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Iterable
 
+from agent_lexicon.text import code_identifier_variants, normalize_text_for_matching
+
 from .models import Alias, Lexicon, Term
 
 
@@ -32,11 +34,20 @@ class SurfaceEntry:
     scopes: tuple[str, ...] = ()
     case_sensitive: bool = False
     deprecated: bool = False
+    match_surface: str | None = None
+    search_surface_value: str | None = None
 
     @property
     def search_surface(self) -> str:
-        """Return the surface value used by the trie."""
-        return self.surface if self.case_sensitive else self.surface.casefold()
+        """Return the normalized surface value used by the trie."""
+        if self.search_surface_value is not None:
+            return self.search_surface_value
+        return _search_surface_for(self.match_surface or self.surface, case_sensitive=self.case_sensitive)
+
+    @property
+    def is_code_variant(self) -> bool:
+        """Return whether this entry searches a generated code identifier variant."""
+        return self.match_surface is not None and self.match_surface != self.surface
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,18 +111,19 @@ class SurfaceMatcher:
         """Build a matcher from canonical terms and aliases in a lexicon."""
         entries: list[SurfaceEntry] = []
         for term in lexicon.terms:
-            entries.append(
-                SurfaceEntry(
+            entries.extend(
+                _entries_for_surface(
                     surface=term.canonical,
                     term_id=term.id,
                     kind=SurfaceKind.CANONICAL,
                     scopes=term.scopes,
                     deprecated=term.deprecated,
+                    excluded_search_surfaces=_alias_search_surfaces(term.aliases),
                 )
             )
             for alias in term.aliases:
                 if include_deprecated or not alias.deprecated:
-                    entries.append(_entry_from_alias(alias, fallback_scopes=term.scopes))
+                    entries.extend(_entries_from_alias(alias, fallback_scopes=term.scopes))
         return cls(entries)
 
     def match(
@@ -130,13 +142,17 @@ class SurfaceMatcher:
         if not isinstance(text, str):
             raise TypeError("text must be a string")
         requested_scopes = _normalize_scopes(scopes)
+        normalized_input = normalize_text_for_matching(text)
+        normalized_text = normalized_input.normalized_text
 
         matches: list[SurfaceMatch] = []
         if self._case_insensitive_entries:
             matches.extend(
                 _scan(
                     original_text=text,
-                    search_text=text.casefold(),
+                    normalized_text=normalized_text,
+                    search_text=normalized_text.lower(),
+                    normalization=normalized_input,
                     nodes=self._case_insensitive_nodes,
                     entries=self._case_insensitive_entries,
                     requested_scopes=requested_scopes,
@@ -147,7 +163,9 @@ class SurfaceMatcher:
             matches.extend(
                 _scan(
                     original_text=text,
-                    search_text=text,
+                    normalized_text=normalized_text,
+                    search_text=normalized_text,
+                    normalization=normalized_input,
                     nodes=self._case_sensitive_nodes,
                     entries=self._case_sensitive_entries,
                     requested_scopes=requested_scopes,
@@ -183,8 +201,8 @@ def find_surface_matches(
     )
 
 
-def _entry_from_alias(alias: Alias, *, fallback_scopes: tuple[str, ...]) -> SurfaceEntry:
-    return SurfaceEntry(
+def _entries_from_alias(alias: Alias, *, fallback_scopes: tuple[str, ...]) -> tuple[SurfaceEntry, ...]:
+    return _entries_for_surface(
         surface=alias.surface,
         term_id=alias.term_id,
         kind=SurfaceKind.ALIAS,
@@ -192,6 +210,59 @@ def _entry_from_alias(alias: Alias, *, fallback_scopes: tuple[str, ...]) -> Surf
         case_sensitive=alias.case_sensitive,
         deprecated=alias.deprecated,
     )
+
+
+def _entries_for_surface(
+    *,
+    surface: str,
+    term_id: str,
+    kind: SurfaceKind,
+    scopes: tuple[str, ...],
+    case_sensitive: bool = False,
+    deprecated: bool = False,
+    excluded_search_surfaces: frozenset[str] | None = None,
+) -> tuple[SurfaceEntry, ...]:
+    entries = [
+        SurfaceEntry(
+            surface=surface,
+            term_id=term_id,
+            kind=kind,
+            scopes=scopes,
+            case_sensitive=case_sensitive,
+            deprecated=deprecated,
+            search_surface_value=_search_surface_for(surface, case_sensitive=case_sensitive),
+        )
+    ]
+    if not case_sensitive:
+        reserved = excluded_search_surfaces or frozenset()
+        entries.extend(
+            SurfaceEntry(
+                surface=surface,
+                term_id=term_id,
+                kind=kind,
+                scopes=scopes,
+                case_sensitive=False,
+                deprecated=deprecated,
+                match_surface=variant,
+                search_surface_value=_search_surface_for(variant, case_sensitive=False),
+            )
+            for variant in code_identifier_variants(surface)
+            if variant.lower() not in reserved
+        )
+    return tuple(entries)
+
+
+def _search_surface_for(surface: str, *, case_sensitive: bool) -> str:
+    normalized = normalize_text_for_matching(surface).normalized_text
+    return normalized if case_sensitive else normalized.lower()
+
+
+def _alias_search_surfaces(aliases: tuple[Alias, ...]) -> frozenset[str]:
+    surfaces: set[str] = set()
+    for alias in aliases:
+        surfaces.add(alias.surface)
+        surfaces.add(alias.surface.lower())
+    return frozenset(surfaces)
 
 
 def _dedupe_entries(entries: Iterable[SurfaceEntry]) -> tuple[SurfaceEntry, ...]:
@@ -247,7 +318,9 @@ def _build_automaton(entries: tuple[SurfaceEntry, ...]) -> list[_TrieNode]:
 def _scan(
     *,
     original_text: str,
+    normalized_text: str,
     search_text: str,
+    normalization,
     nodes: list[_TrieNode],
     entries: tuple[SurfaceEntry, ...],
     requested_scopes: frozenset[str] | None,
@@ -265,13 +338,14 @@ def _scan(
                 continue
             if not _scope_matches(entry.scopes, requested_scopes):
                 continue
-            start = index - len(entry.search_surface) + 1
-            end = index + 1
-            if start < 0 or end > len(original_text):
+            normalized_start = index - len(entry.search_surface) + 1
+            normalized_end = index + 1
+            if normalized_start < 0 or normalized_end > len(normalized_text):
                 continue
+            if not _has_token_boundaries(normalized_text, start=normalized_start, end=normalized_end):
+                continue
+            start, end = normalization.original_span(normalized_start, normalized_end)
             matched_text = original_text[start:end]
-            if not _has_token_boundaries(original_text, start=start, end=end):
-                continue
             matches.append(
                 SurfaceMatch(
                     term_id=entry.term_id,
@@ -321,14 +395,35 @@ def _is_word_char(char: str) -> bool:
 
 
 def _longest_non_overlapping(matches: tuple[SurfaceMatch, ...]) -> tuple[SurfaceMatch, ...]:
+    return _select_long_non_overlapping(matches, preserve_same_span=False)
+
+
+def _select_long_non_overlapping(
+    matches: tuple[SurfaceMatch, ...],
+    *,
+    preserve_same_span: bool,
+) -> tuple[SurfaceMatch, ...]:
+    """Keep longest non-overlapping spans without quadratic overlap checks."""
+    if not matches:
+        return ()
+
     candidates = sorted(matches, key=lambda match: (-match.length, match.start, match.term_id, match.surface))
     accepted: list[SurfaceMatch] = []
-    occupied: list[tuple[int, int]] = []
+    accepted_spans: set[tuple[int, int]] = set()
+    max_end = max(match.end for match in candidates)
+    occupied = bytearray(max_end)
+
     for match in candidates:
-        if any(not (match.end <= start or match.start >= end) for start, end in occupied):
+        span = (match.start, match.end)
+        if preserve_same_span and span in accepted_spans:
+            accepted.append(match)
+            continue
+        if occupied.find(1, match.start, match.end) != -1:
             continue
         accepted.append(match)
-        occupied.append((match.start, match.end))
+        accepted_spans.add(span)
+        occupied[match.start:match.end] = b"\x01" * match.length
+
     return tuple(sorted(accepted, key=lambda match: (match.start, -match.length, match.term_id, match.surface)))
 
 

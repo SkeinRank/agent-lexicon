@@ -11,19 +11,55 @@ reviewable terminology layer before RAG, tool calls, and workflow automation.
 pip install agent-lexicon
 ```
 
+Optional tokenizer-backed OOV scoring for Scout quality ranking can be installed
+when you want to compare candidate surfaces against a real tokenizer:
+
+```bash
+pip install "agent-lexicon[oov]"
+```
+
+## Quick start
+
+Use the product-facing commands for the common local loop:
+
+```bash
+agent-lexicon init
+agent-lexicon scan README.md docs src
+agent-lexicon scan README.md docs src --quality-report
+agent-lexicon scan README.md docs src --oov-tokenizer auto
+agent-lexicon analyze --priority important --quality-report
+agent-lexicon review
+agent-lexicon publish
+agent-lexicon mcp serve --root . --lexicon lexicon/lexicon.yaml
+```
+
+`scan` reads local project files, runs prompt-safety checks, discovers candidate
+terms, builds evidence packs, computes candidate-quality signals, and saves the
+result to `.agent-lexicon/`. `--quality-report` shows how many candidates were
+classified as Important/Later, how much evidence coverage exists, and which
+signals drove the prioritization. `analyze` summarizes the highest-priority
+candidates so reviewers can start with the important terminology first.
+
 ## Quick check
 
 ```bash
 agent-lexicon --version
 python -m agent_lexicon --version
+agent-lexicon init --root /tmp/agent-lexicon-demo
+agent-lexicon scan examples/customer_limits/docs --root examples/customer_limits --max-candidates 5
+agent-lexicon analyze --root examples/customer_limits
+agent-lexicon publish --root examples/customer_limits
 agent-lexicon validate examples/customer_limits/lexicon.yaml
+agent-lexicon lint examples/customer_limits/lexicon.yaml
+agent-lexicon validate examples/customer_limits/lexicon.yaml --lint
 agent-lexicon match examples/customer_limits/lexicon.yaml "The customer cap and rate limit changed." --longest-only
 agent-lexicon resolve examples/customer_limits/lexicon.yaml "increase the limit"
 agent-lexicon guard examples/customer_limits/lexicon.yaml "increase the limit" --tool api.update_rate_limit
+agent-lexicon guard examples/customer_limits/lexicon.yaml "increase the limit" --tool api.update_rate_limit --allow-risky-unicode
 agent-lexicon validate-queries examples/customer_limits/queries.jsonl
 agent-lexicon check examples/customer_limits/lexicon.yaml examples/customer_limits/queries.jsonl
 agent-lexicon ingest README.md src examples/customer_limits/docs --root .
-agent-lexicon discover-candidates examples/customer_limits/docs --root examples/customer_limits
+agent-lexicon discover-candidates examples/customer_limits/docs --root examples/customer_limits --quality-report
 agent-lexicon build-evidence examples/customer_limits/docs --root examples/customer_limits
 agent-lexicon safety scan examples/customer_limits/docs --root examples/customer_limits
 agent-lexicon policy status --root examples/customer_limits
@@ -35,11 +71,94 @@ agent-lexicon workspace export-review-events --root examples/customer_limits
 agent-lexicon discover-migrations examples/customer_limits/lexicon.yaml
 agent-lexicon dictionary init --root .
 agent-lexicon dictionary validate --root .
+agent-lexicon dictionary validate --root . --lint
 agent-lexicon dictionary diff lexicon/lexicon.yaml lexicon-next.yaml
 agent-lexicon dictionary merge lexicon-base.yaml lexicon-ours.yaml lexicon-theirs.yaml --output lexicon-merged.json
+agent-lexicon check-merge --root . --base main --head HEAD
+agent-lexicon check-merge --root . --base main --head HEAD --fail-on-review
 agent-lexicon dictionary pr-check --root .
+agent-lexicon review-agent assess --root examples/customer_limits
+agent-lexicon review-agent consensus --root examples/customer_limits
+agent-lexicon review-agent prompt --root examples/customer_limits
+agent-lexicon review-agent dataset --root examples/customer_limits
 agent-lexicon mcp tools
 agent-lexicon mcp serve --root . --lexicon lexicon/lexicon.yaml
+```
+
+## Simple local workflow
+
+The short commands are wrappers around the lower-level SDK and CLI surfaces.
+They keep the first-run workflow small without hiding the underlying building
+blocks.
+
+```bash
+agent-lexicon init
+```
+
+Creates the git-tracked `lexicon/` layout, the local SQLite workspace under
+`.agent-lexicon/`, and a local policy file.
+
+```bash
+agent-lexicon scan README.md docs src
+```
+
+Reads local docs and source files, filters existing lexicon surfaces, scores
+terminology candidates, builds positive/negative evidence, runs prompt-safety
+checks, adds OOV-proxy and clustering metadata, and stores the result in the
+local workspace. Add `--quality-report` to see candidate reduction, clusters,
+OOV/code-style counts, evidence coverage, and top priority reasons.
+
+```bash
+agent-lexicon analyze --review-agent --consensus
+```
+
+Shows important candidates first and can include deterministic Review Agent
+recommendations for quick triage. Use `--consensus` to show the consensus and
+abstention wrapper used for safer auto-triage decisions. Use `--priority
+important` to focus the inbox on surfaces that look risky, internal, clustered,
+or likely to affect agent behavior. Add `--quality-report` to print the same
+Scout metrics from the stored workspace.
+
+```bash
+agent-lexicon publish
+```
+
+Publishes accepted review decisions into a lexicon-compatible local snapshot.
+
+## Candidate quality
+
+Local Scout attaches quality signals to each discovered candidate. By default,
+the quality layer is dependency-free. For projects that want a tokenizer-backed
+OOV signal, install `agent-lexicon[oov]` and run `scan` or `discover-candidates`
+with `--oov-tokenizer auto`. `auto` uses `BAAI/bge-small-en-v1.5`; a specific
+Hugging Face tokenizer id can also be passed explicitly. Tokenizer scoring is
+only used during offline Scout analysis, not during runtime resolve or tool
+guard calls.
+
+- `oov_proxy_score` estimates tokenizer pain from code-style shape, separators,
+  camel case, acronyms, and digits.
+- `oov_score` is the effective OOV score used for priority ranking. It is the
+  proxy score by default and can include the optional tokenizer signal.
+- `oov_source` shows whether the score came from `proxy`, `tokenizer`, or
+  `proxy_fallback`.
+- `token_fragmentation_score` highlights surfaces that are likely to split into
+  many tokens.
+- `surface_risk_score` combines shape, OOV proxy, cluster size, and negative
+  evidence signals.
+- `cluster_key` groups variants such as `PaymentCore`, `payment-core`, and
+  `payments_core` before review.
+- `priority` separates candidates into `important` and `later` review buckets.
+
+This keeps the web inbox and `agent-lexicon analyze` focused on the candidates
+that are most likely to matter for agent behavior and retrieval quality. The
+quality report makes this visible as product metrics: Important/Later counts,
+review reduction, cluster coverage, high-OOV candidates, code-style candidates,
+negative-evidence coverage, and top priority reasons.
+
+```bash
+agent-lexicon scan README.md docs src --quality-report
+agent-lexicon scan README.md docs src --oov-tokenizer auto --quality-report
+agent-lexicon analyze --priority important --quality-report
 ```
 
 ## Core schema
@@ -110,6 +229,8 @@ Validate a document from the command line:
 
 ```bash
 agent-lexicon validate examples/customer_limits/lexicon.yaml
+agent-lexicon lint examples/customer_limits/lexicon.yaml
+agent-lexicon validate examples/customer_limits/lexicon.yaml --lint
 agent-lexicon match examples/customer_limits/lexicon.yaml "The customer cap and rate limit changed." --longest-only
 agent-lexicon resolve examples/customer_limits/lexicon.yaml "increase the limit"
 agent-lexicon guard examples/customer_limits/lexicon.yaml "increase the limit" --tool api.update_rate_limit
@@ -128,6 +249,34 @@ lexicon_again = Lexicon.from_file("examples/customer_limits/lexicon.json")
 
 The loader validates duplicate ids, unknown scope references, alias collisions,
 and proposal references before returning a `Lexicon` object.
+
+## Lexicon linting
+
+Structural validation answers whether a document can be loaded. Lexicon linting
+answers whether a valid document is likely to behave well in team usage, guard
+routing, and agent-generated code reviews. It reports warnings for surfaces that
+are technically valid but risky in real project text.
+
+```bash
+agent-lexicon lint examples/customer_limits/lexicon.yaml
+agent-lexicon lint examples/customer_limits/lexicon.yaml --strict
+agent-lexicon validate examples/customer_limits/lexicon.yaml --lint
+agent-lexicon dictionary validate --root . --lint
+```
+
+The linter checks for:
+
+- missing explicit `version: 1` in the source document,
+- broad one-word surfaces such as `token`, `key`, `id`, `url`, `api`, `data`,
+  `system`, `error`, and `limit`,
+- broad deprecated aliases that can keep matching active terminology,
+- broad surfaces on terms that route tools through `ToolGuard`,
+- runtime-normalized surface collisions after Unicode normalization and
+  generated code-style variants.
+
+By default lint warnings do not fail the command, which makes the linter useful
+for local review. Use `--strict` or `--strict-lint` when warnings should fail CI.
+For automation, add `--json` to `agent-lexicon lint`.
 
 
 ## Surface matching
@@ -158,15 +307,62 @@ Command line usage:
 agent-lexicon match examples/customer_limits/lexicon.yaml "The customer cap and rate limit changed."
 ```
 
+For code-heavy projects, natural surfaces also cover common identifier shapes:
+
+```python
+from agent_lexicon import Lexicon, Term, resolve_text
+
+lexicon = Lexicon(
+    terms=(Term(id="auth.access_token", canonical="access token"),)
+)
+
+decision = resolve_text(lexicon, "rotate self.access_token before using accessToken")
+print(decision.primary_term_id)  # auth.access_token
+```
+
 The matcher supports scope filtering, case-sensitive aliases, deprecated surface
-filtering, and longest non-overlapping output for downstream resolver logic.
+filtering, generated code-identifier variants, Unicode-normalized input, and
+longest non-overlapping output for downstream resolver logic. A lexicon surface
+such as `access token` can also match common code forms such as `accessToken`,
+`access_token`, and `ACCESS_TOKEN` without adding those aliases manually.
+Explicit aliases remain reserved, so case-sensitive surfaces such as `API_KEY`
+keep their intended behavior.
+
+## Unicode normalization policy
+
+Runtime matching normalizes common Unicode forms before resolver and guard
+checks. This handles text copied from chats, PDFs, web pages, and tool output
+without putting a tokenizer or model on the hot path.
+
+The policy is conservative:
+
+- fullwidth and compatibility forms are normalized with per-character NFKC;
+- non-ASCII spaces and zero-width separators are treated as plain spaces;
+- bidi-control characters are removed and reported as high-risk findings;
+- accents and real letters are not folded to ASCII.
+
+Resolution decisions include `unicode_*` metadata when input normalization
+changed the text. Tool guard blocks by default when bidi-control characters are
+found, because visually reordered text can make the guard apply rules to a
+different surface than the user sees. Use `--allow-risky-unicode` only when the
+caller has already accepted that input risk.
+
+```bash
+agent-lexicon resolve examples/customer_limits/lexicon.yaml $'increase the customer\u00a0cap'
+agent-lexicon guard examples/customer_limits/lexicon.yaml $'increase the customer\u202ecap' --tool billing.update_credit_limit
+agent-lexicon guard examples/customer_limits/lexicon.yaml $'increase the customer\u202ecap' --tool billing.update_credit_limit --allow-risky-unicode
+```
 
 
 ## Runtime resolution
 
 The resolver turns surface matches into a deterministic runtime decision. It
-prefers longer non-overlapping surfaces, preserves same-span ambiguity, and
-returns one of three statuses: `resolved`, `ambiguous`, or `unknown`.
+prefers longer non-overlapping surfaces, preserves same-span ambiguity, handles
+code identifiers such as `accessToken` and `partition_key`, and returns one of
+three statuses: `resolved`, `ambiguous`, or `unknown`. The overlap selector uses
+a bitmap-backed linear pass over matched spans instead of repeatedly scanning
+all accepted intervals, keeping large-file resolution predictable for local
+agent workflows.
 
 ```python
 from agent_lexicon import load_lexicon, resolve_text
@@ -198,6 +394,253 @@ surface can mean multiple canonical terms, the recommended action is
 `ask_clarification`.
 
 
+## Runtime cache and scale behavior
+
+Long-running agent processes can reuse compiled runtime objects instead of
+rebuilding the matcher for every request. The default helpers keep a small
+thread-safe in-process cache keyed by a stable lexicon fingerprint and the
+`include_deprecated` option. This is most useful for MCP servers, local web
+review processes, and agent runners that resolve many texts against the same
+lexicon snapshot.
+
+```python
+from agent_lexicon import (
+    clear_runtime_cache,
+    fingerprint_lexicon,
+    get_cached_resolver,
+    load_cached_lexicon,
+    runtime_cache_stats,
+)
+
+lexicon = load_cached_lexicon("lexicon/lexicon.yaml")
+print(fingerprint_lexicon(lexicon).value)
+
+resolver = get_cached_resolver(lexicon)
+print(resolver.resolve("increase the customer cap").primary_term_id)
+
+print(runtime_cache_stats().to_dict())
+clear_runtime_cache()
+```
+
+`resolve_text(...)` and `guard_tool_call(...)` use the process-wide cache by
+default. Direct constructors such as `LexiconResolver.from_lexicon(...)` remain
+available when a caller wants an isolated resolver instance. File-based cache
+entries include path, size, and modification time, so `load_cached_lexicon(...)`
+reloads after the lexicon file changes.
+
+## Near-miss review hints
+
+When a code-style identifier is unknown, the resolver can attach deterministic
+near-miss metadata for review. This does not change the runtime decision from
+`unknown`; it only helps reviewers decide whether the unknown surface should
+be proposed as a new alias for an existing canonical term.
+
+```python
+from agent_lexicon import Lexicon, Term, resolve_text
+
+lexicon = Lexicon(
+    terms=(Term(id="auth.access_token", canonical="access token"),)
+)
+
+decision = resolve_text(lexicon, "rotate authToken")
+print(decision.status.value)  # unknown
+print(decision.metadata["near_miss_suggestions"][0]["suggestions"][0]["target_term_id"])
+# auth.access_token
+```
+
+Near-miss scoring is dependency-free and uses fragments, edit similarity,
+identifier shape, shared suffixes or prefixes, and a small deterministic set of
+related domain fragments. It is designed for merge and review workflows where
+agent-generated branches may introduce surfaces such as `authToken` or
+`sessionKey` that look close to known terms but should still require a human
+review decision.
+
+The scorer is intentionally conservative with weak single-fragment bridges.
+Broad fragments such as `key`, `id`, `token`, or `access` are not enough on
+their own when the rest of the identifier is not a close typo and no related
+fragment bridge exists. This keeps review output focused: `authToken` can still
+point to `access token` through the deterministic `auth` → `access` relation,
+while unrelated surfaces such as `sessionKey` are not pulled toward
+`partition key` just because both share `key`. Precision dampening is recorded
+in suggestion metadata for audit-friendly review.
+
+The lower-level API is also available when a workflow already has a candidate
+surface:
+
+```python
+from agent_lexicon import suggest_near_misses
+
+report = suggest_near_misses(lexicon, "authToken", max_suggestions=3)
+for suggestion in report.suggestions:
+    print(suggestion.target_term_id, suggestion.confidence, suggestion.reasons)
+```
+
+
+
+## Semantic escalation interface
+
+Near-miss hints stay deterministic by default. Each heuristic suggestion now
+records `metadata["suggestion_source"] == "heuristic"` and a
+`metadata["semantic_escalation"]` object that marks whether the item is a good
+candidate for an optional semantic reranker. The built-in backend is a no-op,
+so no model weights are loaded and runtime `resolve` / `guard` decisions remain
+unchanged.
+
+This gives Scout workflows a cheap-first cascade:
+
+1. deterministic fragments, edit distance, and code-shape scoring run first;
+2. confident items can be reviewed directly;
+3. gray-zone or weak-bridge items are marked for an optional semantic backend.
+
+```python
+from agent_lexicon import Lexicon, Term, suggest_near_misses
+
+lexicon = Lexicon(
+    terms=(Term(id="auth.access_token", canonical="access token"),)
+)
+
+report = suggest_near_misses(lexicon, "authToken")
+suggestion = report.suggestions[0]
+print(suggestion.metadata["suggestion_source"])
+# heuristic
+print(suggestion.metadata["semantic_escalation"]["recommended"])
+# True
+```
+
+Use this metadata when a review pipeline wants to route only uncertain
+near-miss items to a heavier semantic scorer. The default package does not ship
+a semantic model and does not call external services. Semantic backends implement
+the `SemanticNearMissBackend` protocol and keep their output clearly labeled as
+`semantic`, separate from the deterministic heuristic source.
+
+## Optional BGE semantic near-miss
+
+Scout workflows can opt into a BGE reranker for the gray zone where lexical
+near-miss signals are useful but not decisive. This is an offline review aid:
+`resolve` still returns `unknown`, guard decisions remain unchanged, and the
+default package stays dependency-free.
+
+Install the semantic extra in the environment where semantic review runs:
+
+```bash
+pip install "agent-lexicon[semantic]"
+```
+
+For local repository development with Poetry:
+
+```bash
+poetry install -E semantic
+```
+
+Command line usage:
+
+```bash
+agent-lexicon resolve lexicon/lexicon.yaml "rotate authToken" --semantic-near-miss
+agent-lexicon check-merge --root . --base main --head HEAD --semantic-near-miss
+agent-lexicon check-merge --root . --base main --head HEAD --semantic-near-miss --semantic-threshold 0.45
+```
+
+The default model is `BAAI/bge-base-en-v1.5`. Use `--semantic-model` when a
+local cache or another compatible Sentence Transformers model should be used.
+The backend calls the model only for near-miss candidates already marked by the
+cheap deterministic gate, then reranks or filters those review hints. Suggestions
+that pass through this mode include audit metadata such as:
+
+```text
+suggestion_source=semantic
+semantic_backend=bge-base
+semantic_score=0.812
+```
+
+Python usage:
+
+```python
+from agent_lexicon import BgeSemanticNearMissBackend, Lexicon, Term, suggest_near_misses
+
+lexicon = Lexicon(terms=(Term(id="auth.access_token", canonical="access token"),))
+backend = BgeSemanticNearMissBackend()
+
+report = suggest_near_misses(
+    lexicon,
+    "authToken",
+    semantic_backend=backend,
+)
+```
+
+Keep this mode out of hot-path guard enforcement. It is best used in Scout,
+merge review, and proposal preparation where semantic quality is worth the
+extra model cost and the output is reviewed by a person or policy workflow.
+
+## Git merge terminology check
+
+Agent-generated branches often introduce new code identifiers before reviewers
+notice the terminology drift. The merge terminology check scans added git diff
+lines between two refs, reports known terminology as safe, and separates unknown
+code-style identifiers that may need reviewer attention.
+
+```bash
+agent-lexicon check-merge --root . --base main --head HEAD
+agent-lexicon check-merge --root . --base main --head HEAD --include 'src/**'
+agent-lexicon check-merge --root . --base main --head HEAD --json
+agent-lexicon check-merge --root . --base main --head HEAD --include-unresolved-unknowns
+agent-lexicon check-merge --root . --base main --head HEAD --semantic-near-miss
+agent-lexicon check-merge --root . --base main --head HEAD --fail-on-review
+```
+
+The command defaults to `lexicon/lexicon.yaml` under `--root`. Use `--lexicon`
+when the dictionary lives elsewhere. The comparison uses the pull-request style
+`base...head` git range, so the result focuses on what the branch adds relative
+to the merge base.
+
+Example output:
+
+```text
+Git merge terminology check: 1 files, 4 added lines
+Range: main...HEAD
+Summary: known=1, likely_alias=1, likely_new_term=1, unresolved_unknown=0, hidden_unresolved=1
+Known terminology:
+- src/auth.py:12 'accessToken' -> auth.access_token (access token)
+Needs review:
+Likely aliases:
+- src/auth.py:13 'authToken' unknown; near miss: auth.access_token (access token) confidence=0.623 via 'AccessToken' semantic_escalation=related_fragment_bridge
+New terminology candidates:
+- src/auth.py:14 'credentialBlob' unknown; possible new term
+Hidden unresolved identifiers: 1. Use --include-unresolved-unknowns to inspect low-signal identifiers.
+```
+
+Known occurrences are useful for confirming that different branch naming styles
+still resolve to the same canonical term. Unknown identifiers are now separated
+into two review classes. `likely_alias` items have deterministic near-miss hints
+that point to an existing canonical term. `likely_new_term` items have no strong
+canonical neighbor, but still look terminology-relevant enough to review as a
+possible new lexicon term. Both classes keep the runtime decision unchanged: the
+identifier remains unknown until a reviewer adds an alias or a new term.
+
+Low-signal local identifiers such as helper function names, one-letter suffixes,
+and temporary variables stay out of the default report. The default output still
+shows `hidden_unresolved` and a short note when those items were suppressed, so a
+quiet report does not hide that a full-audit basket exists. Use
+`--include-unresolved-unknowns` when a workflow needs the full unknown identifier
+list, including low-signal items. Use `--fail-on-review` in CI when alias or
+new-term review items should block the workflow.
+
+Python usage:
+
+```python
+from agent_lexicon import check_git_merge_terminology, load_lexicon
+
+lexicon = load_lexicon("lexicon/lexicon.yaml")
+report = check_git_merge_terminology(
+    lexicon,
+    root=".",
+    base="main",
+    head="HEAD",
+)
+
+for item in report.needs_review:
+    print(item.surface, item.suggestions[0].target_term_id)
+```
+
 ## Tool-call safety
 
 Agent Lexicon can check a requested tool call before the agent executes it. If
@@ -226,11 +669,13 @@ Command line usage:
 ```bash
 agent-lexicon guard examples/customer_limits/lexicon.yaml "increase the limit" --tool api.update_rate_limit
 agent-lexicon guard examples/customer_limits/lexicon.yaml "increase the limit" --tool billing.update_credit_limit --scope billing
+agent-lexicon guard examples/customer_limits/lexicon.yaml $'increase the customer\u202ecap' --tool billing.update_credit_limit
 ```
 
 The `guard` command returns `0` for allowed or no-match decisions and `2` when
-the tool call is blocked or needs clarification. This makes it usable in local
-agent wrappers and future CI checks.
+the tool call is blocked or needs clarification. Bidi-control Unicode findings
+are blocked by default and can be inspected in the printed metadata summary.
+This makes the guard usable in local agent wrappers and future CI checks.
 
 
 
@@ -246,7 +691,7 @@ Command line usage:
 
 ```bash
 agent-lexicon ingest README.md src examples/customer_limits/docs --root .
-agent-lexicon discover-candidates examples/customer_limits/docs --root examples/customer_limits
+agent-lexicon discover-candidates examples/customer_limits/docs --root examples/customer_limits --quality-report
 agent-lexicon build-evidence examples/customer_limits/docs --root examples/customer_limits
 agent-lexicon ingest examples/customer_limits/docs --root examples/customer_limits --jsonl
 ```
@@ -276,7 +721,7 @@ dominate the candidate list. This step is local-first and dependency-free.
 Command line usage:
 
 ```bash
-agent-lexicon discover-candidates examples/customer_limits/docs --root examples/customer_limits
+agent-lexicon discover-candidates examples/customer_limits/docs --root examples/customer_limits --quality-report
 agent-lexicon discover-candidates examples/customer_limits/docs --root examples/customer_limits --lexicon examples/customer_limits/lexicon.yaml --json
 ```
 
@@ -333,11 +778,19 @@ foundation for proposal review and future snapshot publishing.
 ## Prompt safety
 
 Agent Lexicon treats local docs and evidence snippets as untrusted input before
-they are shown to a future LLM reviewer. The prompt-safety scanner detects common
-prompt-injection patterns such as attempts to override instructions, reveal
-system prompts, exfiltrate secrets, or force tool execution. Evidence packs are
-annotated with prompt-safety metadata by default, so review workflows can block
-high-risk snippets before they are sent to an LLM.
+they are shown to a future LLM reviewer. The prompt-safety scanner is a
+deterministic review aid: it flags instruction-like content such as attempts to
+override instructions, reveal system prompts, exfiltrate secrets, or force tool
+execution. It is intentionally not described as a complete prompt-injection
+security boundary; motivated adversarial text can still require human review and
+additional controls.
+
+The scanner checks original lines, Unicode-normalized lines, and a joined
+normalized window. This makes simple zero-width, fullwidth, compatibility-form,
+and line-split evasions visible in review metadata without adding ML
+dependencies. Evidence packs are annotated with prompt-safety metadata by
+default, so review workflows can block high-risk snippets before they are sent to
+an LLM.
 
 Command line usage:
 
@@ -366,6 +819,9 @@ print(safety_report.highest_risk.value, safety_report.action.value)
 The helper `format_evidence_pack_for_llm_review(...)` renders evidence as
 data-only context with explicit untrusted boundaries. This keeps future review
 agents from accidentally following instructions embedded inside project docs.
+Prompt-safety findings include a `scan_scope` field (`line`, `normalized_line`,
+or `joined_window`) so reviewers can see whether a match came from the original
+text, Unicode-normalized text, or a multi-line joined window.
 
 
 ## Local policy modes
@@ -452,7 +908,11 @@ print(summary.document_count, summary.db_path)
 
 The workspace stores documents, candidate payloads, evidence pack payloads,
 local review decisions, and append-only review events. The database is designed
-for local review workflows without requiring a service backend.
+for local review workflows without requiring a service backend. SQLite connections
+use WAL mode with a 30-second busy timeout and `synchronous=NORMAL`, so parallel
+readers and short-lived writer bursts from local agents or CI jobs do not fail
+with transient lock errors. Writes are still serialized by SQLite, preserving
+transaction order while allowing readers to observe consistent snapshots.
 
 ## Local web proposal inbox
 
@@ -621,7 +1081,11 @@ print(snapshot.snapshot_id, snapshot.generated_term_count)
 
 Only `accepted` review decisions are promoted. Rejected, ambiguous, and
 needs-split candidates remain in the workspace review history and can still be
-exported through the review events JSONL workflow.
+exported through the review events JSONL workflow. Snapshot files are written
+atomically: Agent Lexicon writes the new JSON to a temporary file in the same
+directory, flushes it, and then promotes it with an atomic replace. Readers see
+either the previous complete snapshot or the new complete snapshot, not a
+partially written file.
 
 ## Dictionary-as-code layout
 
@@ -728,9 +1192,20 @@ else:
 ```
 
 Use semantic merge when multiple branches update terminology at the same time.
+Merged lexicon output is written atomically using the same local artifact write
+path as published snapshots. This keeps CI jobs and agent processes from reading
+a partially written merge result while another process is publishing it.
 It can combine independent additions such as new aliases, tools, metadata, or
 evidence while blocking ambiguous edits such as two different canonical names for
 the same term.
+
+Clean merges can still include semantic warnings. These warnings do not block
+writing the merged lexicon, but they flag cases that deserve reviewer attention.
+For example, if one branch renames a term's canonical surface while another
+branch adds aliases, tools, or evidence to the same term, Agent Lexicon reports a
+`canonical_rename_with_parallel_term_change` warning. This keeps terminology
+review aware that both branches may no longer be describing the same concept,
+even though the field-level merge is mechanically clean.
 
 ## CI and pull request validation
 
@@ -814,7 +1289,7 @@ Validate a dataset from the command line:
 agent-lexicon validate-queries examples/customer_limits/queries.jsonl
 agent-lexicon check examples/customer_limits/lexicon.yaml examples/customer_limits/queries.jsonl
 agent-lexicon ingest README.md src examples/customer_limits/docs --root .
-agent-lexicon discover-candidates examples/customer_limits/docs --root examples/customer_limits
+agent-lexicon discover-candidates examples/customer_limits/docs --root examples/customer_limits --quality-report
 agent-lexicon build-evidence examples/customer_limits/docs --root examples/customer_limits
 agent-lexicon workspace sync examples/customer_limits/docs --root examples/customer_limits --max-candidates 5
 ```
@@ -833,6 +1308,89 @@ expected resolver actions, tool guard statuses, tool guard actions, and primary
 term references before returning typed query objects.
 
 
+
+
+## Review Agent
+
+Agent Lexicon can produce a local pre-review recommendation for one workspace
+candidate. The review agent prepares a safe data-only prompt for optional LLM
+review, validates structured LLM responses, and falls back to a deterministic
+local assessment when no model response is provided.
+
+```bash
+agent-lexicon workspace sync examples/customer_limits/docs --root examples/customer_limits --max-candidates 5
+agent-lexicon review-agent prompt --root examples/customer_limits --surface billing.update_credit_limit
+agent-lexicon review-agent assess --root examples/customer_limits --surface billing.update_credit_limit
+agent-lexicon review-agent consensus --root examples/customer_limits --surface billing.update_credit_limit
+agent-lexicon review-agent consensus --root examples/customer_limits --surface billing.update_credit_limit --json
+agent-lexicon review-agent assess --root examples/customer_limits --surface billing.update_credit_limit --json
+```
+
+The prompt command marks project evidence as untrusted data and uses the prompt
+safety layer before content is sent to an external LLM. The assess command
+returns one of `accept`, `reject`, `needs_split`, or `needs_more_evidence` and
+includes the matching workspace review status for downstream tools. The
+consensus command aggregates multiple structured review samples when supplied and
+abstains when agreement or confidence is too low.
+
+Python usage:
+
+```python
+from agent_lexicon import open_workspace, run_review_agent, run_review_agent_consensus
+
+state = open_workspace("examples/customer_limits")
+item = state.get_review_item("billing.update_credit_limit")
+assert item is not None
+decision = run_review_agent(item)
+consensus = run_review_agent_consensus(item)
+print(decision.recommendation.value, consensus.status.value)
+```
+
+Structured model responses can be passed through `run_review_agent(...,
+llm_response=...)` or the CLI `--llm-response` option. High-risk prompt-safety
+findings block LLM review and return a safer `needs_more_evidence` decision.
+
+Consensus mode accepts one or more `--llm-response` files. If samples disagree or
+the top decision is below the confidence threshold, Agent Lexicon returns an
+abstention instead of a silent low-confidence proposal.
+
+```bash
+agent-lexicon review-agent consensus --root examples/customer_limits --surface billing.update_credit_limit --llm-response sample-a.json --llm-response sample-b.json
+```
+
+
+## Review dataset quality loop
+
+Local review decisions can be exported as quality-labeled JSONL examples for
+future evals, regression tests, and optional model improvement workflows. The
+dataset export keeps human decisions separate from Review Agent suggestions so
+the examples remain auditable.
+
+```bash
+agent-lexicon review-agent dataset --root examples/customer_limits
+agent-lexicon review-agent dataset --root examples/customer_limits --json
+agent-lexicon review-agent dataset --root examples/customer_limits --quality usable --output review-dataset.jsonl
+agent-lexicon review-agent dataset --root examples/customer_limits --include-review-agent --json
+```
+
+Each exported row includes the candidate snapshot, evidence snapshot, human
+decision, reviewer note, quality label, quality flags, and optional Review Agent
+recommendation. Quality labels are `usable`, `incomplete`, `conflicting`,
+`unsafe`, and `low_signal`.
+
+Python usage:
+
+```python
+from agent_lexicon import build_review_dataset, open_workspace
+
+state = open_workspace("examples/customer_limits")
+report = build_review_dataset(state, include_review_agent=True)
+print(report.usable_count)
+```
+
+This layer is intentionally local and dependency-free. It prepares portable
+examples that can later be evaluated, filtered, or imported into a larger
+governance system without sending private evidence to external services.
 
 ## MCP server
 
@@ -856,5 +1414,7 @@ The local MCP server exposes these tools:
 - `get_snapshot` — return published local snapshot metadata.
 
 For local clients, point the MCP command at your repository root and lexicon file.
-Sensitive write actions use the same RBAC-lite policy layer as the workspace and
-review commands.
+The server reuses loaded lexicons and compiled resolvers through the in-process
+runtime cache, which keeps repeated local tool calls predictable on larger
+lexicons. Sensitive write actions use the same RBAC-lite policy layer as the
+workspace and review commands.

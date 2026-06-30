@@ -83,3 +83,5 @@ examples/platform_ops_demo/reports/
 # Local Agent Lexicon exports
 review-events.jsonl
 *.review-events.jsonl
+review-dataset.jsonl
+*.review-dataset.jsonl

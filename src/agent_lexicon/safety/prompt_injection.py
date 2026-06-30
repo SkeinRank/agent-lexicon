@@ -16,6 +16,7 @@ from enum import Enum
 from typing import Any, Iterable, Mapping
 
 from agent_lexicon.ingest import IngestDocument
+from agent_lexicon.text import normalize_text_for_matching
 
 
 class PromptSafetyError(ValueError):
@@ -37,6 +38,14 @@ class PromptSafetyAction(str, Enum):
     ALLOW = "allow"
     REVIEW = "review"
     BLOCK_LLM_REVIEW = "block_llm_review"
+
+
+class PromptSafetyScanScope(str, Enum):
+    """Text view that produced a prompt-safety finding."""
+
+    LINE = "line"
+    NORMALIZED_LINE = "normalized_line"
+    JOINED_WINDOW = "joined_window"
 
 
 _RISK_ORDER: dict[PromptInjectionRisk, int] = {
@@ -74,6 +83,7 @@ class PromptSafetyFinding:
     source_path: str
     line_number: int
     matched_text: str
+    scan_scope: PromptSafetyScanScope = PromptSafetyScanScope.LINE
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "rule_id", _clean_text(self.rule_id, field_name="rule_id"))
@@ -83,6 +93,11 @@ class PromptSafetyFinding:
         if self.line_number < 1:
             raise PromptSafetyError("line_number must be greater than 0")
         object.__setattr__(self, "matched_text", _clean_text(self.matched_text, field_name="matched_text"))
+        object.__setattr__(
+            self,
+            "scan_scope",
+            PromptSafetyScanScope(self.scan_scope.value if isinstance(self.scan_scope, PromptSafetyScanScope) else str(self.scan_scope)),
+        )
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable finding representation."""
@@ -93,6 +108,7 @@ class PromptSafetyFinding:
             "source_path": self.source_path,
             "line_number": self.line_number,
             "matched_text": self.matched_text,
+            "scan_scope": self.scan_scope.value,
         }
 
 
@@ -231,7 +247,14 @@ def scan_prompt_injection_text(
     source_path: str = "<text>",
     start_line: int = 1,
 ) -> PromptSafetyReport:
-    """Scan one untrusted text block for prompt-injection indicators."""
+    """Scan one untrusted text block for instruction-like prompt content.
+
+    The scanner is deterministic and dependency-free. It is intended to flag
+    suspicious untrusted content for review, not to prove that adversarial text is
+    safe. The scan checks the original lines, Unicode-normalized lines, and a
+    joined normalized window so simple zero-width/fullwidth and line-split
+    evasions become visible to reviewers.
+    """
     if not isinstance(text, str):
         raise PromptSafetyError("text must be a string")
     source_path = _clean_text(source_path, field_name="source_path")
@@ -239,30 +262,59 @@ def scan_prompt_injection_text(
         raise PromptSafetyError("start_line must be greater than 0")
 
     lines = text.splitlines() or [""]
+    normalized_lines: list[str] = []
+    unicode_finding_count = 0
+    for line in lines:
+        normalized = normalize_text_for_matching(line)
+        normalized_lines.append(normalized.normalized_text)
+        unicode_finding_count += len(normalized.findings)
+
     findings: list[PromptSafetyFinding] = []
+    seen: set[tuple[str, int, str]] = set()
+
     for offset, line in enumerate(lines):
         line_number = start_line + offset
-        for rule in _RULES:
-            match = rule.pattern.search(line)
-            if match is None:
-                continue
-            findings.append(
-                PromptSafetyFinding(
-                    rule_id=rule.id,
-                    risk=rule.risk,
-                    message=rule.message,
-                    source_path=source_path,
-                    line_number=line_number,
-                    matched_text=_compact_match(match.group(0)),
-                )
+        _scan_prompt_safety_view(
+            line,
+            source_path=source_path,
+            line_number=line_number,
+            scope=PromptSafetyScanScope.LINE,
+            findings=findings,
+            seen=seen,
+        )
+        normalized_line = normalized_lines[offset]
+        if normalized_line != line:
+            _scan_prompt_safety_view(
+                normalized_line,
+                source_path=source_path,
+                line_number=line_number,
+                scope=PromptSafetyScanScope.NORMALIZED_LINE,
+                findings=findings,
+                seen=seen,
             )
+
+    joined_text, joined_line_numbers = _join_prompt_safety_lines(normalized_lines, start_line=start_line)
+    _scan_prompt_safety_view(
+        joined_text,
+        source_path=source_path,
+        line_number=start_line,
+        scope=PromptSafetyScanScope.JOINED_WINDOW,
+        findings=findings,
+        seen=seen,
+        joined_line_numbers=joined_line_numbers,
+    )
+
     return PromptSafetyReport(
         findings=tuple(findings),
         source_count=1,
         line_count=len(lines),
-        metadata={"scanner": "prompt_injection_rules_v1"},
+        metadata={
+            "scanner": "prompt_injection_review_flags_v2",
+            "unicode_normalized_scan": True,
+            "joined_window_scan": True,
+            "unicode_finding_count": unicode_finding_count,
+        },
     )
-
 
 def scan_documents_for_prompt_injection(documents: Iterable[IngestDocument]) -> PromptSafetyReport:
     """Scan ingested local documents for prompt-injection indicators."""
@@ -273,17 +325,90 @@ def scan_documents_for_prompt_injection(documents: Iterable[IngestDocument]) -> 
 
     findings: list[PromptSafetyFinding] = []
     line_count = 0
+    document_reports: list[PromptSafetyReport] = []
     for document in document_tuple:
         report = scan_prompt_injection_text(document.text, source_path=document.relative_path)
+        document_reports.append(report)
         findings.extend(report.findings)
         line_count += report.line_count
     return PromptSafetyReport(
         findings=tuple(findings),
         source_count=len(document_tuple),
         line_count=line_count,
-        metadata={"scanner": "prompt_injection_rules_v1", "input": "documents"},
+        metadata={
+            "scanner": "prompt_injection_review_flags_v2",
+            "input": "documents",
+            "unicode_normalized_scan": True,
+            "joined_window_scan": True,
+            "unicode_finding_count": sum(int(report.metadata.get("unicode_finding_count", 0)) for report in document_reports),
+        },
     )
 
+
+
+def _scan_prompt_safety_view(
+    view_text: str,
+    *,
+    source_path: str,
+    line_number: int,
+    scope: PromptSafetyScanScope,
+    findings: list[PromptSafetyFinding],
+    seen: set[tuple[str, int, str]],
+    joined_line_numbers: tuple[int, ...] | None = None,
+) -> None:
+    if not view_text:
+        return
+    for rule in _RULES:
+        for match in rule.pattern.finditer(view_text):
+            match_line_number = _line_number_for_match(
+                match.start(),
+                line_number=line_number,
+                joined_line_numbers=joined_line_numbers,
+            )
+            matched_text = _compact_match(match.group(0))
+            dedupe_key = (rule.id, match_line_number, matched_text.casefold())
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            findings.append(
+                PromptSafetyFinding(
+                    rule_id=rule.id,
+                    risk=rule.risk,
+                    message=rule.message,
+                    source_path=source_path,
+                    line_number=match_line_number,
+                    matched_text=matched_text,
+                    scan_scope=scope,
+                )
+            )
+
+
+def _join_prompt_safety_lines(lines: list[str], *, start_line: int) -> tuple[str, tuple[int, ...]]:
+    joined_chars: list[str] = []
+    joined_line_numbers: list[int] = []
+    for offset, line in enumerate(lines):
+        if offset > 0:
+            joined_chars.append(" ")
+            joined_line_numbers.append(start_line + offset)
+        for char in line:
+            joined_chars.append(char)
+            joined_line_numbers.append(start_line + offset)
+    return "".join(joined_chars), tuple(joined_line_numbers)
+
+
+def _line_number_for_match(
+    match_start: int,
+    *,
+    line_number: int,
+    joined_line_numbers: tuple[int, ...] | None,
+) -> int:
+    if joined_line_numbers is None or not joined_line_numbers:
+        return line_number
+    if match_start < 0:
+        return joined_line_numbers[0]
+    if match_start >= len(joined_line_numbers):
+        return joined_line_numbers[-1]
+    return joined_line_numbers[match_start]
 
 def sanitize_text_for_llm_review(text: str, *, max_chars: int | None = None) -> str:
     """Return text escaped for data-only LLM review prompts."""
@@ -365,6 +490,7 @@ def _clean_text(value: str, *, field_name: str) -> str:
 __all__ = [
     "PromptInjectionRisk",
     "PromptSafetyAction",
+    "PromptSafetyScanScope",
     "PromptSafetyError",
     "PromptSafetyFinding",
     "PromptSafetyReport",

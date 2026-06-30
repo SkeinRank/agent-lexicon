@@ -4,9 +4,14 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Iterable, Mapping
+from typing import TYPE_CHECKING, Iterable, Mapping
 
-from .matcher import SurfaceKind, SurfaceMatch, SurfaceMatcher, build_surface_matcher
+if TYPE_CHECKING:
+    from agent_lexicon.scout.semantic import SemanticNearMissBackend
+
+from agent_lexicon.text import normalize_text_for_matching
+
+from .matcher import SurfaceKind, SurfaceMatch, SurfaceMatcher, _select_long_non_overlapping, build_surface_matcher
 from .models import Lexicon, ResolutionAction, ResolutionCandidate, ResolutionDecision, ResolutionMatch, ResolutionStatus, Term
 
 
@@ -34,6 +39,10 @@ class LexiconResolver:
         *,
         scopes: Iterable[str] | None = None,
         include_deprecated: bool = True,
+        include_near_misses: bool = True,
+        near_miss_max_suggestions: int = 3,
+        near_miss_min_confidence: float = 0.42,
+        near_miss_semantic_backend: SemanticNearMissBackend | None = None,
     ) -> ResolutionDecision:
         """Resolve terminology in text and classify the result.
 
@@ -44,6 +53,8 @@ class LexiconResolver:
         if not isinstance(text, str):
             raise TypeError("text must be a string")
 
+        normalization = normalize_text_for_matching(text)
+        metadata = _resolution_metadata(normalization)
         raw_matches = self.matcher.match(
             text,
             scopes=scopes,
@@ -54,6 +65,18 @@ class LexiconResolver:
         resolution_matches = tuple(_to_resolution_match(match) for match in selected_matches)
 
         if not selected_matches:
+            if include_near_misses:
+                metadata.update(
+                    _near_miss_metadata(
+                        self.lexicon,
+                        text,
+                        scopes=scopes,
+                        include_deprecated=include_deprecated,
+                        max_suggestions_per_surface=near_miss_max_suggestions,
+                        min_confidence=near_miss_min_confidence,
+                        semantic_backend=near_miss_semantic_backend,
+                    )
+                )
             return ResolutionDecision(
                 text=text,
                 status=ResolutionStatus.UNKNOWN,
@@ -61,6 +84,7 @@ class LexiconResolver:
                 candidates=(),
                 matches=(),
                 message="No known terminology surfaces were found.",
+                metadata=metadata,
             )
 
         candidates = _build_candidates(self.lexicon, selected_matches)
@@ -73,6 +97,7 @@ class LexiconResolver:
                 candidates=candidates,
                 matches=resolution_matches,
                 message=f"Resolved to {term.term_id}.",
+                metadata=metadata,
             )
 
         return ResolutionDecision(
@@ -82,6 +107,7 @@ class LexiconResolver:
             candidates=candidates,
             matches=resolution_matches,
             message=f"Found {len(candidates)} possible canonical terms.",
+            metadata=metadata,
         )
 
 
@@ -91,34 +117,79 @@ def resolve_text(
     *,
     scopes: Iterable[str] | None = None,
     include_deprecated: bool = True,
+    include_near_misses: bool = True,
+    near_miss_max_suggestions: int = 3,
+    near_miss_min_confidence: float = 0.42,
+    near_miss_semantic_backend: SemanticNearMissBackend | None = None,
+    use_cache: bool = True,
 ) -> ResolutionDecision:
-    """Convenience helper that builds a resolver and resolves text."""
-    return LexiconResolver.from_lexicon(lexicon, include_deprecated=include_deprecated).resolve(
+    """Convenience helper that resolves text against a lexicon.
+
+    By default the helper reuses a process-wide compiled resolver cache. Direct
+    ``LexiconResolver.from_lexicon(...)`` construction remains available when a
+    caller wants an isolated resolver instance.
+    """
+    if use_cache:
+        from .cache import get_cached_resolver
+
+        resolver = get_cached_resolver(lexicon, include_deprecated=include_deprecated)
+    else:
+        resolver = LexiconResolver.from_lexicon(lexicon, include_deprecated=include_deprecated)
+    return resolver.resolve(
         text,
         scopes=scopes,
         include_deprecated=include_deprecated,
+        include_near_misses=include_near_misses,
+        near_miss_max_suggestions=near_miss_max_suggestions,
+        near_miss_min_confidence=near_miss_min_confidence,
+        near_miss_semantic_backend=near_miss_semantic_backend,
     )
+
+
+
+def _near_miss_metadata(
+    lexicon: Lexicon,
+    text: str,
+    *,
+    scopes: Iterable[str] | None,
+    include_deprecated: bool,
+    max_suggestions_per_surface: int,
+    min_confidence: float,
+    semantic_backend: SemanticNearMissBackend | None = None,
+) -> dict[str, object]:
+    from agent_lexicon.scout.near_miss import (
+        discover_unknown_identifier_surfaces,
+        suggest_near_misses_for_text,
+    )
+
+    unknown_surfaces = discover_unknown_identifier_surfaces(text)
+    if not unknown_surfaces:
+        return {}
+    reports = suggest_near_misses_for_text(
+        lexicon,
+        text,
+        scopes=scopes,
+        include_deprecated=include_deprecated,
+        max_suggestions_per_surface=max_suggestions_per_surface,
+        min_confidence=min_confidence,
+        semantic_backend=semantic_backend,
+    )
+    metadata: dict[str, object] = {"unknown_identifier_surfaces": list(unknown_surfaces)}
+    if reports:
+        metadata["near_miss_suggestions"] = [report.to_dict() for report in reports]
+    return metadata
 
 
 def _select_resolution_matches(matches: tuple[SurfaceMatch, ...]) -> tuple[SurfaceMatch, ...]:
     """Keep long non-overlapping spans while preserving same-span ambiguity."""
-    candidates = sorted(matches, key=lambda match: (-match.length, match.start, match.term_id, match.surface))
-    accepted: list[SurfaceMatch] = []
-    occupied: list[tuple[int, int]] = []
-    accepted_spans: set[tuple[int, int]] = set()
+    return _select_long_non_overlapping(matches, preserve_same_span=True)
 
-    for match in candidates:
-        span = (match.start, match.end)
-        if span in accepted_spans:
-            accepted.append(match)
-            continue
-        if any(not (match.end <= start or match.start >= end) for start, end in occupied):
-            continue
-        accepted.append(match)
-        occupied.append(span)
-        accepted_spans.add(span)
 
-    return tuple(sorted(accepted, key=lambda match: (match.start, -match.length, match.term_id, match.surface)))
+def _resolution_metadata(normalization) -> dict[str, object]:
+    metadata = normalization.metadata()
+    if not metadata["unicode_normalized"] and not metadata["unicode_findings"]:
+        return {}
+    return metadata
 
 
 def _build_candidates(lexicon: Lexicon, matches: tuple[SurfaceMatch, ...]) -> tuple[ResolutionCandidate, ...]:

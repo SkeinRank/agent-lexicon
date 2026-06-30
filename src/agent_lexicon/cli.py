@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from typing import Mapping
 
 from . import __version__, about
 from .dictionary import (
@@ -27,11 +28,22 @@ from .core import (
     find_surface_matches,
     guard_tool_call,
     load_lexicon,
+    lint_lexicon_file,
     resolve_text,
 )
 from .evals import EvalDatasetError, load_eval_queries, run_behavior_eval
 from .ingest import LocalIngestError, ingest_local_paths
 from .mcp import McpServerError, mcp_tool_definitions, run_mcp_stdio_server
+from .review_agent import (
+    ReviewAgentError,
+    ReviewDatasetError,
+    ReviewDatasetQuality,
+    build_review_agent_prompt,
+    build_review_dataset,
+    export_review_dataset_jsonl,
+    run_review_agent,
+    run_review_agent_consensus,
+)
 from .policy import (
     LocalPolicyError,
     LocalPolicyMode,
@@ -48,11 +60,28 @@ from .scout import (
     EvidencePackError,
     ScoutCandidateError,
     build_evidence_packs,
+    build_scout_quality_report,
+    ScoutQualityReportError,
+    BgeSemanticNearMissBackend,
+    DEFAULT_BGE_BASE_MODEL,
+    DEFAULT_BGE_SEMANTIC_THRESHOLD,
+    SemanticNearMissBackend,
+    SemanticNearMissError,
+    GitMergeCheckError,
+    check_git_merge_terminology,
     discover_canonical_migration_candidates,
     discover_scout_candidates,
     existing_surfaces_from_lexicon,
 )
 from .web import ReviewInboxError, run_review_inbox
+from .workflows import (
+    DEFAULT_SCAN_PATHS,
+    SimpleWorkflowError,
+    run_simple_analyze,
+    run_simple_init,
+    run_simple_publish,
+    run_simple_scan,
+)
 from .workspace import (
     ReviewDecisionStatus,
     SnapshotPublishError,
@@ -75,6 +104,120 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     subparsers = parser.add_subparsers(dest="command")
+    init_parser = subparsers.add_parser(
+        "init",
+        help="Initialize a local Agent Lexicon project.",
+    )
+    init_parser.add_argument("--root", default=".", help="Project root for lexicon/ and .agent-lexicon/.")
+    init_parser.add_argument(
+        "--layout-dir",
+        default="lexicon",
+        help="Dictionary layout directory relative to the project root.",
+    )
+    init_parser.add_argument(
+        "--policy-mode",
+        choices=tuple(mode.value for mode in LocalPolicyMode),
+        default=LocalPolicyMode.SOLO.value,
+        help="Local policy mode to initialize.",
+    )
+    init_parser.add_argument("--actor", default="local", help="Actor to store in the local policy.")
+    init_parser.add_argument(
+        "--role",
+        choices=tuple(role.value for role in LocalPolicyRole),
+        default=LocalPolicyRole.OWNER.value,
+        help="Role assigned to --actor in the local policy.",
+    )
+    init_parser.add_argument("--force", action="store_true", help="Overwrite generated starter files and policy.")
+    init_parser.add_argument("--reset-workspace", action="store_true", help="Recreate the local workspace database.")
+    init_parser.add_argument("--json", action="store_true", help="Print the init report as JSON.")
+
+    scan_parser = subparsers.add_parser(
+        "scan",
+        help="Scan local project files and save candidates plus evidence to the workspace.",
+    )
+    scan_parser.add_argument(
+        "paths",
+        nargs="*",
+        help="Files or directories to scan. Defaults to README.md, docs, and src when present.",
+    )
+    scan_parser.add_argument("--root", default=".", help="Project root for lexicon/ and .agent-lexicon/.")
+    scan_parser.add_argument(
+        "--layout-dir",
+        default="lexicon",
+        help="Dictionary layout directory relative to the project root.",
+    )
+    scan_parser.add_argument(
+        "--lexicon",
+        default=None,
+        help="Optional lexicon document whose existing surfaces should be ignored.",
+    )
+    scan_parser.add_argument(
+        "--include",
+        action="append",
+        default=None,
+        help="Glob to include when scanning directories. Can be provided multiple times.",
+    )
+    scan_parser.add_argument("--min-score", type=float, default=0.25, help="Minimum candidate score from 0.0 to 1.0.")
+    scan_parser.add_argument("--max-candidates", type=int, default=20, help="Maximum number of candidates to save.")
+    scan_parser.add_argument(
+        "--oov-tokenizer",
+        default=None,
+        help="Optional Scout tokenizer for OOV scoring. Use 'auto' for BAAI/bge-small-en-v1.5 or 'proxy' for the dependency-free scorer.",
+    )
+    scan_parser.add_argument("--context-lines", type=int, default=1, help="Context lines around each evidence match.")
+    scan_parser.add_argument("--max-positive-snippets", type=int, default=3, help="Maximum positive snippets per candidate.")
+    scan_parser.add_argument("--max-negative-snippets", type=int, default=3, help="Maximum negative snippets per candidate.")
+    scan_parser.add_argument("--max-file-bytes", type=int, default=1_000_000, help="Maximum file size to read.")
+    _add_local_policy_options(scan_parser)
+    scan_parser.add_argument("--quality-report", action="store_true", help="Print Scout quality metrics after scanning.")
+    scan_parser.add_argument("--json", action="store_true", help="Print the scan report as JSON.")
+
+    analyze_parser = subparsers.add_parser(
+        "analyze",
+        help="Summarize important local terminology candidates from the workspace.",
+    )
+    analyze_parser.add_argument("--root", default=".", help="Project root where .agent-lexicon/ is stored.")
+    analyze_parser.add_argument("--limit", type=int, default=10, help="Maximum number of candidates to summarize.")
+    analyze_parser.add_argument(
+        "--priority",
+        choices=("all", "important", "later"),
+        default="all",
+        help="Filter analysis output by priority bucket.",
+    )
+    analyze_parser.add_argument(
+        "--review-agent",
+        action="store_true",
+        help="Include deterministic Review Agent recommendations in the analysis.",
+    )
+    analyze_parser.add_argument(
+        "--consensus",
+        action="store_true",
+        help="Use the Review Agent consensus and abstention wrapper when --review-agent is enabled.",
+    )
+    _add_local_policy_options(analyze_parser)
+    analyze_parser.add_argument("--quality-report", action="store_true", help="Print Scout quality metrics from the workspace.")
+    analyze_parser.add_argument("--json", action="store_true", help="Print the analysis report as JSON.")
+
+    publish_parser = subparsers.add_parser(
+        "publish",
+        help="Publish accepted local review decisions as a local lexicon snapshot.",
+    )
+    publish_parser.add_argument("--root", default=".", help="Project root where .agent-lexicon/ is stored.")
+    publish_parser.add_argument(
+        "--layout-dir",
+        default="lexicon",
+        help="Dictionary layout directory relative to the project root.",
+    )
+    publish_parser.add_argument(
+        "--lexicon",
+        default=None,
+        help="Optional base lexicon. Defaults to lexicon/lexicon.yaml when present.",
+    )
+    publish_parser.add_argument("--output", default=None, help="Optional output path for the snapshot JSON file.")
+    publish_parser.add_argument("--snapshot-id", default=None, help="Optional stable snapshot id.")
+    _add_local_policy_options(publish_parser)
+    publish_parser.add_argument("--json", action="store_true", help="Print the publish report as JSON.")
+
     validate_parser = subparsers.add_parser(
         "validate",
         help="Validate a JSON or YAML lexicon document.",
@@ -86,6 +229,39 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Override lexicon format detection.",
     )
+    validate_parser.add_argument(
+        "--lint",
+        action="store_true",
+        help="Also print lexicon quality warnings.",
+    )
+    validate_parser.add_argument(
+        "--strict-lint",
+        action="store_true",
+        help="Return exit code 1 when lint warnings are found.",
+    )
+
+    lint_parser = subparsers.add_parser(
+        "lint",
+        help="Report lexicon quality warnings for broad or risky surfaces.",
+    )
+    lint_parser.add_argument("path", help="Path to a lexicon .json, .yaml, or .yml file.")
+    lint_parser.add_argument(
+        "--format",
+        choices=("json", "yaml", "yml"),
+        default=None,
+        help="Override lexicon format detection.",
+    )
+    lint_parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Return exit code 1 when lint warnings are found.",
+    )
+    lint_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the lint report as JSON.",
+    )
+
     validate_queries_parser = subparsers.add_parser(
         "validate-queries",
         help="Validate a JSONL eval query dataset.",
@@ -107,6 +283,79 @@ def build_parser() -> argparse.ArgumentParser:
         "--json",
         action="store_true",
         help="Print the full eval report as JSON.",
+    )
+
+    check_merge_parser = subparsers.add_parser(
+        "check-merge",
+        help="Review terminology drift in added lines between git refs.",
+    )
+    check_merge_parser.add_argument("--root", default=".", help="Git repository root.")
+    check_merge_parser.add_argument(
+        "--lexicon",
+        default=None,
+        help="Lexicon file. Defaults to lexicon/lexicon.yaml under --root.",
+    )
+    check_merge_parser.add_argument("--base", default="main", help="Base git ref for the merge comparison.")
+    check_merge_parser.add_argument("--head", default="HEAD", help="Head git ref for the merge comparison.")
+    check_merge_parser.add_argument(
+        "--scope",
+        action="append",
+        default=None,
+        help="Limit terminology checks to a scope. Can be provided multiple times.",
+    )
+    check_merge_parser.add_argument(
+        "--include",
+        action="append",
+        default=None,
+        help="Limit checked paths with a git-style glob such as 'src/**'. Can be provided multiple times.",
+    )
+    check_merge_parser.add_argument(
+        "--exclude-deprecated",
+        action="store_true",
+        help="Ignore deprecated aliases or deprecated terms.",
+    )
+    check_merge_parser.add_argument(
+        "--min-confidence",
+        type=float,
+        default=0.42,
+        help="Minimum confidence for near-miss review suggestions.",
+    )
+    check_merge_parser.add_argument(
+        "--max-suggestions",
+        type=int,
+        default=3,
+        help="Maximum near-miss suggestions per unknown identifier.",
+    )
+    check_merge_parser.add_argument(
+        "--fail-on-review",
+        action="store_true",
+        help="Return exit code 1 when reviewable unknown identifiers are found.",
+    )
+    check_merge_parser.add_argument(
+        "--include-unresolved-unknowns",
+        action="store_true",
+        help="Also include low-signal unknown identifiers that are hidden by the default merge review.",
+    )
+    check_merge_parser.add_argument(
+        "--semantic-near-miss",
+        action="store_true",
+        help="Use the optional BGE semantic reranker for gray-zone near-miss suggestions.",
+    )
+    check_merge_parser.add_argument(
+        "--semantic-model",
+        default=DEFAULT_BGE_BASE_MODEL,
+        help="Semantic near-miss model name used with --semantic-near-miss.",
+    )
+    check_merge_parser.add_argument(
+        "--semantic-threshold",
+        type=float,
+        default=DEFAULT_BGE_SEMANTIC_THRESHOLD,
+        help="Minimum semantic similarity used with --semantic-near-miss.",
+    )
+    check_merge_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the merge terminology report as JSON.",
     )
 
     ingest_parser = subparsers.add_parser(
@@ -179,10 +428,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum number of candidates to print.",
     )
     discover_candidates_parser.add_argument(
+        "--oov-tokenizer",
+        default=None,
+        help="Optional Scout tokenizer for OOV scoring. Use 'auto' for BAAI/bge-small-en-v1.5 or 'proxy' for the dependency-free scorer.",
+    )
+    discover_candidates_parser.add_argument(
         "--max-file-bytes",
         type=int,
         default=1_000_000,
         help="Maximum file size to read during local ingest.",
+    )
+    discover_candidates_parser.add_argument(
+        "--quality-report",
+        action="store_true",
+        help="Print Scout quality metrics after candidate discovery.",
     )
     discover_candidates_parser.add_argument(
         "--json",
@@ -231,6 +490,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=20,
         help="Maximum number of candidate evidence packs to build.",
+    )
+    build_evidence_parser.add_argument(
+        "--oov-tokenizer",
+        default=None,
+        help="Optional Scout tokenizer for OOV scoring. Use 'auto' for BAAI/bge-small-en-v1.5 or 'proxy' for the dependency-free scorer.",
     )
     build_evidence_parser.add_argument(
         "--context-lines",
@@ -415,6 +679,143 @@ def build_parser() -> argparse.ArgumentParser:
     )
     mcp_tools_parser.add_argument("--json", action="store_true", help="Print the tool list as JSON.")
 
+
+    review_agent_parser = subparsers.add_parser(
+        "review-agent",
+        help="Run local proposal pre-review for workspace candidates.",
+    )
+    review_agent_subparsers = review_agent_parser.add_subparsers(dest="review_agent_command")
+
+    review_agent_prompt_parser = review_agent_subparsers.add_parser(
+        "prompt",
+        help="Build a safe data-only LLM review prompt for one candidate.",
+    )
+    review_agent_prompt_parser.add_argument(
+        "--root",
+        default=".",
+        help="Project root where .agent-lexicon/ is stored.",
+    )
+    review_agent_prompt_parser.add_argument(
+        "--surface",
+        default=None,
+        help="Normalized candidate surface. Defaults to the highest-priority unreviewed candidate.",
+    )
+    review_agent_prompt_parser.add_argument(
+        "--max-chars",
+        type=int,
+        default=16_000,
+        help="Maximum prompt length in characters.",
+    )
+    _add_local_policy_options(review_agent_prompt_parser)
+    review_agent_prompt_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print prompt payload as JSON.",
+    )
+
+    review_agent_assess_parser = review_agent_subparsers.add_parser(
+        "assess",
+        help="Produce a structured review recommendation for one candidate.",
+    )
+    review_agent_assess_parser.add_argument(
+        "--root",
+        default=".",
+        help="Project root where .agent-lexicon/ is stored.",
+    )
+    review_agent_assess_parser.add_argument(
+        "--surface",
+        default=None,
+        help="Normalized candidate surface. Defaults to the highest-priority unreviewed candidate.",
+    )
+    review_agent_assess_parser.add_argument(
+        "--llm-response",
+        default=None,
+        help="Optional path to a structured JSON LLM review response.",
+    )
+    _add_local_policy_options(review_agent_assess_parser)
+    review_agent_assess_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the review recommendation as JSON.",
+    )
+
+    review_agent_consensus_parser = review_agent_subparsers.add_parser(
+        "consensus",
+        help="Aggregate Review Agent samples and abstain when they disagree.",
+    )
+    review_agent_consensus_parser.add_argument(
+        "--root",
+        default=".",
+        help="Project root where .agent-lexicon/ is stored.",
+    )
+    review_agent_consensus_parser.add_argument(
+        "--surface",
+        default=None,
+        help="Normalized candidate surface. Defaults to the highest-priority unreviewed candidate.",
+    )
+    review_agent_consensus_parser.add_argument(
+        "--llm-response",
+        action="append",
+        default=None,
+        help="Path to a structured JSON LLM review response. Can be provided multiple times.",
+    )
+    review_agent_consensus_parser.add_argument(
+        "--min-agreement",
+        type=float,
+        default=0.67,
+        help="Minimum vote agreement ratio required for consensus.",
+    )
+    review_agent_consensus_parser.add_argument(
+        "--min-confidence",
+        type=float,
+        default=0.65,
+        help="Minimum average confidence required for consensus.",
+    )
+    _add_local_policy_options(review_agent_consensus_parser)
+    review_agent_consensus_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the consensus report as JSON.",
+    )
+
+    review_agent_dataset_parser = review_agent_subparsers.add_parser(
+        "dataset",
+        help="Export review-quality dataset examples from local review events.",
+    )
+    review_agent_dataset_parser.add_argument(
+        "--root",
+        default=".",
+        help="Project root where .agent-lexicon/ is stored.",
+    )
+    review_agent_dataset_parser.add_argument(
+        "--output",
+        default=None,
+        help="Optional JSONL output path. If omitted, JSONL is printed to stdout unless --json is used.",
+    )
+    review_agent_dataset_parser.add_argument(
+        "--quality",
+        choices=tuple(quality.value for quality in ReviewDatasetQuality),
+        default=None,
+        help="Export only examples with a specific quality label.",
+    )
+    review_agent_dataset_parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Maximum number of review events to read.",
+    )
+    review_agent_dataset_parser.add_argument(
+        "--include-review-agent",
+        action="store_true",
+        help="Include deterministic Review Agent suggestions next to human decisions.",
+    )
+    _add_local_policy_options(review_agent_dataset_parser)
+    review_agent_dataset_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print dataset report metadata and examples as JSON.",
+    )
+
     discover_migrations_parser = subparsers.add_parser(
         "discover-migrations",
         help="Discover canonical migration candidates from deprecated terms.",
@@ -520,6 +921,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--json",
         action="store_true",
         help="Print layout status as JSON.",
+    )
+    dictionary_validate_parser.add_argument(
+        "--lint",
+        action="store_true",
+        help="Also print lexicon quality warnings for the layout lexicon.",
+    )
+    dictionary_validate_parser.add_argument(
+        "--strict-lint",
+        action="store_true",
+        help="Return exit code 1 when lint warnings are found.",
     )
 
 
@@ -687,6 +1098,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum number of candidate evidence packs to store.",
     )
     workspace_sync_parser.add_argument(
+        "--oov-tokenizer",
+        default=None,
+        help="Optional Scout tokenizer for OOV scoring. Use 'auto' for BAAI/bge-small-en-v1.5 or 'proxy' for the dependency-free scorer.",
+    )
+    workspace_sync_parser.add_argument(
         "--context-lines",
         type=int,
         default=1,
@@ -839,6 +1255,22 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Ignore deprecated aliases or deprecated terms.",
     )
+    resolve_parser.add_argument(
+        "--semantic-near-miss",
+        action="store_true",
+        help="Use the optional BGE semantic reranker for gray-zone near-miss suggestions.",
+    )
+    resolve_parser.add_argument(
+        "--semantic-model",
+        default=DEFAULT_BGE_BASE_MODEL,
+        help="Semantic near-miss model name used with --semantic-near-miss.",
+    )
+    resolve_parser.add_argument(
+        "--semantic-threshold",
+        type=float,
+        default=DEFAULT_BGE_SEMANTIC_THRESHOLD,
+        help="Minimum semantic similarity used with --semantic-near-miss.",
+    )
 
     guard_parser = subparsers.add_parser(
         "guard",
@@ -861,6 +1293,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--exclude-deprecated",
         action="store_true",
         help="Ignore deprecated aliases or deprecated terms.",
+    )
+    guard_parser.add_argument(
+        "--allow-risky-unicode",
+        action="store_true",
+        help="Do not block tool calls when bidi-control Unicode characters are found after normalization.",
     )
     return parser
 
@@ -890,8 +1327,33 @@ def main(argv: list[str] | None = None) -> int:
         print(__version__)
         return 0
 
+    if args.command == "init":
+        return _simple_init_command(args)
+
+    if args.command == "scan":
+        return _simple_scan_command(args)
+
+    if args.command == "analyze":
+        return _simple_analyze_command(args)
+
+    if args.command == "publish":
+        return _simple_publish_command(args)
+
     if args.command == "validate":
-        return _validate_command(path=Path(args.path), document_format=args.format)
+        return _validate_command(
+            path=Path(args.path),
+            document_format=args.format,
+            include_lint=args.lint,
+            strict_lint=args.strict_lint,
+        )
+
+    if args.command == "lint":
+        return _lint_command(
+            path=Path(args.path),
+            document_format=args.format,
+            strict=args.strict,
+            as_json=args.json,
+        )
 
     if args.command == "validate-queries":
         return _validate_queries_command(path=Path(args.path))
@@ -901,6 +1363,25 @@ def main(argv: list[str] | None = None) -> int:
             lexicon_path=Path(args.lexicon_path),
             queries_path=Path(args.queries_path),
             include_deprecated=not args.exclude_deprecated,
+            as_json=args.json,
+        )
+
+    if args.command == "check-merge":
+        return _check_merge_command(
+            root=Path(args.root),
+            lexicon_path=Path(args.lexicon) if args.lexicon else None,
+            base=args.base,
+            head=args.head,
+            scopes=args.scope,
+            include_globs=args.include,
+            include_deprecated=not args.exclude_deprecated,
+            min_confidence=args.min_confidence,
+            max_suggestions=args.max_suggestions,
+            fail_on_review=args.fail_on_review,
+            include_unresolved_unknowns=args.include_unresolved_unknowns,
+            semantic_near_miss=args.semantic_near_miss,
+            semantic_model=args.semantic_model,
+            semantic_threshold=args.semantic_threshold,
             as_json=args.json,
         )
 
@@ -921,9 +1402,11 @@ def main(argv: list[str] | None = None) -> int:
             lexicon_path=Path(args.lexicon) if args.lexicon else None,
             min_score=args.min_score,
             max_candidates=args.max_candidates,
+            oov_tokenizer=args.oov_tokenizer,
             max_file_bytes=args.max_file_bytes,
             as_json=args.json,
             as_jsonl=args.jsonl,
+            quality_report=args.quality_report,
         )
 
     if args.command == "build-evidence":
@@ -934,6 +1417,7 @@ def main(argv: list[str] | None = None) -> int:
             lexicon_path=Path(args.lexicon) if args.lexicon else None,
             min_score=args.min_score,
             max_candidates=args.max_candidates,
+            oov_tokenizer=args.oov_tokenizer,
             context_lines=args.context_lines,
             max_positive_snippets=args.max_positive_snippets,
             max_negative_snippets=args.max_negative_snippets,
@@ -951,6 +1435,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "mcp":
         return _mcp_command(args)
+
+    if args.command == "review-agent":
+        return _review_agent_command(args)
 
     if args.command == "discover-migrations":
         return _discover_migrations_command(
@@ -993,6 +1480,9 @@ def main(argv: list[str] | None = None) -> int:
             text=args.text,
             scopes=args.scope,
             include_deprecated=not args.exclude_deprecated,
+            semantic_near_miss=args.semantic_near_miss,
+            semantic_model=args.semantic_model,
+            semantic_threshold=args.semantic_threshold,
         )
 
     if args.command == "guard":
@@ -1002,10 +1492,338 @@ def main(argv: list[str] | None = None) -> int:
             tool_name=args.tool,
             scopes=args.scope,
             include_deprecated=not args.exclude_deprecated,
+            block_on_unicode_risk=not args.allow_risky_unicode,
         )
 
     print(about())
     return 0
+
+
+
+
+def _simple_init_command(args: argparse.Namespace) -> int:
+    try:
+        report = run_simple_init(
+            Path(args.root),
+            layout_dir=args.layout_dir,
+            policy_mode=args.policy_mode,
+            actor=args.actor,
+            role=args.role,
+            force=args.force,
+            reset_workspace=args.reset_workspace,
+        )
+    except SimpleWorkflowError as exc:
+        print(f"Invalid init input: {exc}")
+        return 1
+    if args.json:
+        print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+        return 0
+    print("Agent Lexicon initialized")
+    print(f"Dictionary: {report.dictionary.layout.layout_path}")
+    print(f"Workspace: {report.workspace.db_path}")
+    print(f"Policy: {report.policy_path} ({report.policy_mode})")
+    print("Next: agent-lexicon scan README.md docs src")
+    return 0
+
+
+def _simple_scan_command(args: argparse.Namespace) -> int:
+    policy_exit = _check_policy_or_print(
+        root=Path(args.root),
+        action=PolicyAction.SYNC_WORKSPACE,
+        actor=args.actor,
+        role=args.role,
+        policy_mode=args.policy_mode,
+    )
+    if policy_exit != 0:
+        return policy_exit
+    try:
+        report = run_simple_scan(
+            args.paths,
+            root=Path(args.root),
+            layout_dir=args.layout_dir,
+            lexicon_path=Path(args.lexicon) if args.lexicon else None,
+            include_globs=args.include,
+            min_score=args.min_score,
+            max_candidates=args.max_candidates,
+            oov_tokenizer=args.oov_tokenizer,
+            context_lines=args.context_lines,
+            max_positive_snippets=args.max_positive_snippets,
+            max_negative_snippets=args.max_negative_snippets,
+            max_file_bytes=args.max_file_bytes,
+        )
+    except SimpleWorkflowError as exc:
+        print(f"Invalid scan input: {exc}")
+        return 1
+    if args.json:
+        print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+        return 0
+    print(
+        "Agent Lexicon scan: "
+        f"{report.document_count} documents, "
+        f"{report.candidate_count} candidates, "
+        f"{report.evidence_pack_count} evidence packs saved, "
+        f"{report.candidates.important_count} important"
+    )
+    print(
+        "Prompt safety: "
+        f"risk={report.safety.highest_risk.value}, "
+        f"action={report.safety.action.value}, "
+        f"findings={report.safety.finding_count}"
+    )
+    if getattr(args, "quality_report", False):
+        print(report.quality_report.to_text())
+    for candidate in report.candidates.candidates[:5]:
+        print(f"- {candidate.surface} score={candidate.score:.3f} jargon={candidate.jargon_score:.3f}")
+    print("Next: agent-lexicon analyze")
+    return 0
+
+
+def _simple_analyze_command(args: argparse.Namespace) -> int:
+    policy_exit = _check_policy_or_print(
+        root=Path(args.root),
+        action=PolicyAction.READ_WORKSPACE,
+        actor=args.actor,
+        role=args.role,
+        policy_mode=args.policy_mode,
+    )
+    if policy_exit != 0:
+        return policy_exit
+    if args.review_agent:
+        llm_policy_exit = _check_policy_or_print(
+            root=Path(args.root),
+            action=PolicyAction.RUN_LLM_REVIEW,
+            actor=args.actor,
+            role=args.role,
+            policy_mode=args.policy_mode,
+        )
+        if llm_policy_exit != 0:
+            return llm_policy_exit
+    try:
+        report = run_simple_analyze(
+            Path(args.root),
+            limit=args.limit,
+            include_review_agent=args.review_agent,
+            include_review_agent_consensus=args.consensus,
+            priority=args.priority,
+        )
+    except SimpleWorkflowError as exc:
+        print(f"Invalid analyze input: {exc}")
+        return 1
+    if args.json:
+        print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+        return 0
+    print(
+        "Agent Lexicon analyze: "
+        f"{report.important_count} important, "
+        f"{report.later_count} later, "
+        f"{report.item_count} shown"
+    )
+    if getattr(args, "quality_report", False):
+        print(report.quality_report.to_text())
+    if not report.items:
+        print("No workspace candidates found. Run: agent-lexicon scan README.md docs src")
+        return 0
+    for item in report.items:
+        label = "IMPORTANT" if item.priority == "important" else "LATER"
+        print(
+            f"[{label}] {item.surface} "
+            f"priority={item.priority_score:.3f} "
+            f"score={item.score:.3f} "
+            f"oov={item.oov_score:.3f} "
+            f"oov_source={item.oov_source} "
+            f"cluster={item.cluster_size} "
+            f"status={item.review_status}"
+        )
+        if item.priority_reasons:
+            print(f"  reasons={', '.join(item.priority_reasons[:4])}")
+        if item.recommendation:
+            print(f"  review-agent={item.recommendation}: {item.reviewer_note}")
+        if item.consensus_status:
+            print(
+                f"  consensus={item.consensus_status} "
+                f"agreement={item.agreement_ratio:.2f} "
+                f"confidence={item.consensus_confidence:.2f}"
+            )
+    print("Next: agent-lexicon review")
+    return 0
+
+
+def _simple_publish_command(args: argparse.Namespace) -> int:
+    policy_exit = _check_policy_or_print(
+        root=Path(args.root),
+        action=PolicyAction.PUBLISH_SNAPSHOT,
+        actor=args.actor,
+        role=args.role,
+        policy_mode=args.policy_mode,
+    )
+    if policy_exit != 0:
+        return policy_exit
+    try:
+        report = run_simple_publish(
+            Path(args.root),
+            layout_dir=args.layout_dir,
+            lexicon_path=Path(args.lexicon) if args.lexicon else None,
+            output_path=Path(args.output) if args.output else None,
+            snapshot_id=args.snapshot_id,
+        )
+    except SimpleWorkflowError as exc:
+        print(f"Invalid publish input: {exc}")
+        return 1
+    if args.json:
+        print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+        return 0
+    print(f"Snapshot published: {report.output_path}")
+    print(f"Snapshot id: {report.snapshot_id}")
+    print(
+        "Terms: "
+        f"{report.term_count} total, "
+        f"{report.generated_term_count} generated from "
+        f"{report.accepted_count} accepted decisions, "
+        f"{report.skipped_count} skipped"
+    )
+    return 0
+
+def _review_agent_command(args: argparse.Namespace) -> int:
+    if args.review_agent_command not in {"prompt", "assess", "consensus", "dataset"}:
+        print("Review agent command required: prompt, assess, consensus, or dataset")
+        return 1
+
+    if args.review_agent_command == "dataset":
+        return _review_agent_dataset_command(args)
+
+    policy_exit = _check_policy_or_print(
+        root=Path(args.root),
+        action=PolicyAction.RUN_LLM_REVIEW,
+        actor=args.actor,
+        role=args.role,
+        policy_mode=args.policy_mode,
+    )
+    if policy_exit != 0:
+        return policy_exit
+
+    try:
+        state = open_workspace(Path(args.root), create=True)
+        item = _select_review_agent_item(state, normalized_surface=args.surface)
+        if args.review_agent_command == "prompt":
+            prompt = build_review_agent_prompt(item, max_chars=args.max_chars)
+            if args.json:
+                print(json.dumps(prompt.to_dict(), indent=2, sort_keys=True))
+            else:
+                if not prompt.llm_review_allowed:
+                    print("Review prompt warning: high-risk evidence should not be sent to an LLM reviewer.")
+                print(prompt.prompt)
+            return 0 if prompt.llm_review_allowed else 2
+
+        if args.review_agent_command == "consensus":
+            llm_responses = None
+            if args.llm_response:
+                llm_responses = [Path(path).read_text(encoding="utf-8") for path in args.llm_response]
+            report = run_review_agent_consensus(
+                item,
+                llm_responses=llm_responses,
+                min_agreement=args.min_agreement,
+                min_confidence=args.min_confidence,
+            )
+            if args.json:
+                print(report.to_json())
+            else:
+                print(f"Review agent consensus: {report.status.value} ({report.confidence:.2f})")
+                print(f"Surface: {report.surface}")
+                print(f"Recommendation: {report.decision.recommendation.value}")
+                print(f"Workspace decision: {report.decision.review_decision_status}")
+                print(f"Agreement: {report.agreement_count}/{report.sample_count} ({report.agreement_ratio:.2f})")
+                print(f"Reason: {report.reason}")
+                if report.decision.risk_flags:
+                    print(f"Risk flags: {', '.join(report.decision.risk_flags)}")
+            return 0 if not report.abstained else 2
+
+        llm_response = None
+        if args.llm_response is not None:
+            llm_response = Path(args.llm_response).read_text(encoding="utf-8")
+        decision = run_review_agent(item, llm_response=llm_response)
+        if args.json:
+            print(decision.to_json())
+        else:
+            print(f"Review agent: {decision.recommendation.value} ({decision.confidence:.2f})")
+            print(f"Surface: {decision.surface}")
+            print(f"Canonical name: {decision.canonical_name or '-'}")
+            print(f"Workspace decision: {decision.review_decision_status}")
+            print(f"LLM review allowed: {'yes' if decision.llm_review_allowed else 'no'}")
+            if decision.risk_flags:
+                print(f"Risk flags: {', '.join(decision.risk_flags)}")
+            print(f"Note: {decision.reviewer_note}")
+        return 0 if decision.llm_review_allowed else 2
+    except (WorkspaceError, ReviewAgentError, OSError) as exc:
+        print(f"Review agent error: {exc}")
+        return 1
+
+
+def _review_agent_dataset_command(args: argparse.Namespace) -> int:
+    policy_exit = _check_policy_or_print(
+        root=Path(args.root),
+        action=PolicyAction.EXPORT_REVIEW_EVENTS,
+        actor=args.actor,
+        role=args.role,
+        policy_mode=args.policy_mode,
+    )
+    if policy_exit != 0:
+        return policy_exit
+    if args.include_review_agent:
+        llm_policy_exit = _check_policy_or_print(
+            root=Path(args.root),
+            action=PolicyAction.RUN_LLM_REVIEW,
+            actor=args.actor,
+            role=args.role,
+            policy_mode=args.policy_mode,
+        )
+        if llm_policy_exit != 0:
+            return llm_policy_exit
+
+    try:
+        state = open_workspace(Path(args.root), create=True)
+        if args.json:
+            report = build_review_dataset(
+                state,
+                include_review_agent=args.include_review_agent,
+                quality=args.quality,
+                limit=args.limit,
+            )
+            print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+            return 0
+
+        content = export_review_dataset_jsonl(
+            state,
+            output_path=Path(args.output) if args.output else None,
+            include_review_agent=args.include_review_agent,
+            quality=args.quality,
+            limit=args.limit,
+        )
+        if args.output:
+            report = build_review_dataset(
+                state,
+                include_review_agent=args.include_review_agent,
+                quality=args.quality,
+                limit=args.limit,
+            )
+            print(f"Review dataset exported: {report.example_count} examples -> {args.output}")
+        else:
+            print(content, end="")
+        return 0
+    except (WorkspaceError, ReviewDatasetError, ReviewAgentError, OSError) as exc:
+        print(f"Review dataset error: {exc}")
+        return 1
+
+
+def _select_review_agent_item(state: object, *, normalized_surface: str | None) -> object:
+    if normalized_surface:
+        item = state.get_review_item(normalized_surface)
+        if item is None:
+            raise ReviewAgentError(f"workspace candidate not found: {normalized_surface}")
+        return item
+    items = state.list_review_items(limit=1)
+    if not items:
+        raise ReviewAgentError("workspace has no candidates; run workspace sync first")
+    return items[0]
 
 
 def _mcp_command(args: argparse.Namespace) -> int:
@@ -1037,7 +1855,13 @@ def _mcp_command(args: argparse.Namespace) -> int:
 
 
 
-def _validate_command(*, path: Path, document_format: str | None) -> int:
+def _validate_command(
+    *,
+    path: Path,
+    document_format: str | None,
+    include_lint: bool = False,
+    strict_lint: bool = False,
+) -> int:
     try:
         lexicon = load_lexicon(path, document_format=document_format)
     except AgentLexiconLoadError as exc:
@@ -1050,7 +1874,29 @@ def _validate_command(*, path: Path, document_format: str | None) -> int:
         f"{len(lexicon.terms)} terms, "
         f"{len(lexicon.proposals)} proposals"
     )
-    return 0
+    if not include_lint:
+        return 0
+    lint_exit = _lint_command(path=path, document_format=document_format, strict=strict_lint, as_json=False)
+    return lint_exit if strict_lint else 0
+
+
+def _lint_command(
+    *,
+    path: Path,
+    document_format: str | None,
+    strict: bool,
+    as_json: bool,
+) -> int:
+    try:
+        report = lint_lexicon_file(path, document_format=document_format)
+    except AgentLexiconLoadError as exc:
+        print(f"Invalid lexicon: {exc}")
+        return 1
+    if as_json:
+        print(report.to_json())
+    else:
+        print(report.to_text())
+    return 1 if strict and report.findings else 0
 
 
 def _validate_queries_command(*, path: Path) -> int:
@@ -1115,6 +1961,87 @@ def _check_command(
     return 0 if report.passed else 1
 
 
+def _semantic_backend_from_cli(
+    *,
+    enabled: bool,
+    model_name: str,
+    min_semantic_score: float,
+) -> SemanticNearMissBackend | None:
+    if not enabled:
+        return None
+    return BgeSemanticNearMissBackend(
+        model_name=model_name,
+        min_semantic_score=min_semantic_score,
+    )
+
+
+def _check_merge_command(
+    *,
+    root: Path,
+    lexicon_path: Path | None,
+    base: str,
+    head: str,
+    scopes: list[str] | None,
+    include_globs: list[str] | None,
+    include_deprecated: bool,
+    min_confidence: float,
+    max_suggestions: int,
+    fail_on_review: bool,
+    include_unresolved_unknowns: bool,
+    semantic_near_miss: bool,
+    semantic_model: str,
+    semantic_threshold: float,
+    as_json: bool,
+) -> int:
+    root_path = root.resolve()
+    resolved_lexicon_path = lexicon_path or (root_path / "lexicon" / "lexicon.yaml")
+    if not resolved_lexicon_path.is_absolute():
+        resolved_lexicon_path = root_path / resolved_lexicon_path
+    try:
+        lexicon = load_lexicon(resolved_lexicon_path)
+    except AgentLexiconLoadError as exc:
+        print(f"Invalid lexicon: {exc}")
+        return 1
+
+    try:
+        semantic_backend = _semantic_backend_from_cli(
+            enabled=semantic_near_miss,
+            model_name=semantic_model,
+            min_semantic_score=semantic_threshold,
+        )
+    except SemanticNearMissError as exc:
+        print(f"Invalid semantic near-miss input: {exc}")
+        return 1
+
+    try:
+        report = check_git_merge_terminology(
+            lexicon,
+            root=root_path,
+            lexicon_path=resolved_lexicon_path,
+            base=base,
+            head=head,
+            scopes=scopes,
+            include_deprecated=include_deprecated,
+            include_globs=include_globs,
+            max_suggestions_per_identifier=max_suggestions,
+            min_confidence=min_confidence,
+            include_unresolved_unknowns=include_unresolved_unknowns,
+            semantic_backend=semantic_backend,
+        )
+    except GitMergeCheckError as exc:
+        print(f"Invalid merge check input: {exc}")
+        return 1
+    except SemanticNearMissError as exc:
+        print(f"Invalid semantic near-miss input: {exc}")
+        return 1
+
+    if as_json:
+        print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+    else:
+        print(report.to_text())
+    return 1 if fail_on_review and report.has_review_items else 0
+
+
 def _print_metric(label: str, value: float | None) -> None:
     if value is None:
         print(f"{label}: n/a")
@@ -1172,9 +2099,11 @@ def _discover_candidates_command(
     lexicon_path: Path | None,
     min_score: float,
     max_candidates: int,
+    oov_tokenizer: str | None,
     max_file_bytes: int,
     as_json: bool,
     as_jsonl: bool,
+    quality_report: bool = False,
 ) -> int:
     if as_json and as_jsonl:
         print("Invalid candidate discovery input: choose either --json or --jsonl")
@@ -1207,6 +2136,7 @@ def _discover_candidates_command(
             existing_surfaces=existing_surfaces,
             min_score=min_score,
             max_candidates=max_candidates,
+            oov_tokenizer=oov_tokenizer,
         )
     except ScoutCandidateError as exc:
         print(f"Invalid candidate discovery input: {exc}")
@@ -1225,6 +2155,12 @@ def _discover_candidates_command(
         f"{report.candidate_count} candidates from "
         f"{report.document_count} documents"
     )
+    if quality_report:
+        try:
+            print(build_scout_quality_report(report).to_text())
+        except ScoutQualityReportError as exc:
+            print(f"Scout quality report error: {exc}")
+            return 1
     for candidate in report.candidates:
         print(
             f"- {candidate.surface} "
@@ -1249,6 +2185,7 @@ def _build_evidence_command(
     lexicon_path: Path | None,
     min_score: float,
     max_candidates: int,
+    oov_tokenizer: str | None,
     context_lines: int,
     max_positive_snippets: int,
     max_negative_snippets: int,
@@ -1287,6 +2224,7 @@ def _build_evidence_command(
             existing_surfaces=existing_surfaces,
             min_score=min_score,
             max_candidates=max_candidates,
+            oov_tokenizer=oov_tokenizer,
         )
         evidence_report = build_evidence_packs(
             ingest_report.documents,
@@ -1391,6 +2329,7 @@ def _safety_scan_command(
                 f"[{finding.risk.value.upper()}] "
                 f"{finding.source_path}:{finding.line_number} "
                 f"{finding.rule_id} — {finding.message} "
+                f"scope={finding.scan_scope.value} "
                 f"({finding.matched_text!r})"
             )
     else:
@@ -1565,19 +2504,29 @@ def _dictionary_command(args: argparse.Namespace) -> int:
     if args.dictionary_command == "validate":
         try:
             summary = validate_dictionary_layout(Path(args.root), layout_dir=args.layout_dir)
+            lint_report = (
+                lint_lexicon_file(Path(summary.layout.lexicon_path))
+                if args.lint or args.strict_lint
+                else None
+            )
             if args.manifest:
                 write_dictionary_manifest(summary, Path(args.manifest))
-        except DictionaryLayoutError as exc:
+        except (DictionaryLayoutError, AgentLexiconLoadError) as exc:
             print(f"Invalid dictionary layout: {exc}")
             return 1
         if args.json:
-            print(json.dumps(summary.to_dict(), indent=2, sort_keys=True))
-            return 0
+            payload = summary.to_dict()
+            if lint_report is not None:
+                payload["lint"] = lint_report.to_dict()
+            print(json.dumps(payload, indent=2, sort_keys=True))
+            return 1 if args.strict_lint and lint_report is not None and lint_report.findings else 0
         print(f"Valid dictionary layout: {summary.layout.layout_path}")
         _print_dictionary_summary(summary)
+        if lint_report is not None:
+            print(lint_report.to_text())
         if args.manifest:
             print(f"Manifest written: {args.manifest}")
-        return 0
+        return 1 if args.strict_lint and lint_report is not None and lint_report.findings else 0
 
     if args.dictionary_command == "diff":
         return _dictionary_diff_command(
@@ -1673,6 +2622,10 @@ def _dictionary_merge_command(
             print(f"Theirs: {report.theirs_label}")
             for conflict in report.conflicts:
                 print(conflict.to_text())
+            if report.has_warnings:
+                print(f"Semantic warnings: {report.warning_count}")
+                for warning in report.warnings:
+                    print(warning.to_text())
         return 1
 
     if output_path is not None and not check_only:
@@ -1697,6 +2650,10 @@ def _dictionary_merge_command(
     print(f"Base: {report.base_label}")
     print(f"Ours: {report.ours_label}")
     print(f"Theirs: {report.theirs_label}")
+    if report.has_warnings:
+        print(f"Semantic warnings: {report.warning_count}")
+        for warning in report.warnings:
+            print(warning.to_text())
     if check_only:
         print("Check only: no merged lexicon was written.")
     elif written_path is not None:
@@ -1802,6 +2759,7 @@ def _workspace_command(args: argparse.Namespace) -> int:
             lexicon_path=Path(args.lexicon) if args.lexicon else None,
             min_score=args.min_score,
             max_candidates=args.max_candidates,
+            oov_tokenizer=args.oov_tokenizer,
             context_lines=args.context_lines,
             max_positive_snippets=args.max_positive_snippets,
             max_negative_snippets=args.max_negative_snippets,
@@ -1846,6 +2804,7 @@ def _workspace_sync_command(
     lexicon_path: Path | None,
     min_score: float,
     max_candidates: int,
+    oov_tokenizer: str | None,
     context_lines: int,
     max_positive_snippets: int,
     max_negative_snippets: int,
@@ -1891,6 +2850,7 @@ def _workspace_sync_command(
             existing_surfaces=existing_surfaces,
             min_score=min_score,
             max_candidates=max_candidates,
+            oov_tokenizer=oov_tokenizer,
         )
         evidence_report = build_evidence_packs(
             ingest_report.documents,
@@ -2092,6 +3052,9 @@ def _resolve_command(
     text: str,
     scopes: list[str] | None,
     include_deprecated: bool,
+    semantic_near_miss: bool,
+    semantic_model: str,
+    semantic_threshold: float,
 ) -> int:
     try:
         lexicon = load_lexicon(path)
@@ -2099,16 +3062,37 @@ def _resolve_command(
         print(f"Invalid lexicon: {exc}")
         return 1
 
-    decision = resolve_text(
-        lexicon,
-        text,
-        scopes=scopes,
-        include_deprecated=include_deprecated,
-    )
+    try:
+        semantic_backend = _semantic_backend_from_cli(
+            enabled=semantic_near_miss,
+            model_name=semantic_model,
+            min_semantic_score=semantic_threshold,
+        )
+    except SemanticNearMissError as exc:
+        print(f"Invalid semantic near-miss input: {exc}")
+        return 1
+
+    try:
+        decision = resolve_text(
+            lexicon,
+            text,
+            scopes=scopes,
+            include_deprecated=include_deprecated,
+            near_miss_semantic_backend=semantic_backend,
+        )
+    except SemanticNearMissError as exc:
+        print(f"Invalid semantic near-miss input: {exc}")
+        return 1
     print(f"Status: {decision.status.value}")
     print(f"Action: {decision.action.value}")
     if decision.message:
         print(f"Message: {decision.message}")
+    if decision.metadata.get("unicode_findings"):
+        print("Unicode findings:")
+        for finding in decision.metadata.get("unicode_findings", []):
+            if isinstance(finding, dict):
+                print(f"- {finding.get('kind')} at {finding.get('start')} ({finding.get('name')})")
+    _print_near_miss_suggestions(decision.metadata)
 
     if decision.status == ResolutionStatus.UNKNOWN:
         return 0
@@ -2129,6 +3113,59 @@ def _resolve_command(
 
 
 
+def _print_near_miss_suggestions(metadata: Mapping[str, object]) -> None:
+    suggestions = metadata.get("near_miss_suggestions") if metadata else None
+    if not isinstance(suggestions, list) or not suggestions:
+        return
+    print("Near-miss suggestions:")
+    for report in suggestions:
+        if not isinstance(report, dict):
+            continue
+        surface = report.get("surface")
+        items = report.get("suggestions")
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            target_term_id = item.get("target_term_id")
+            target_canonical = item.get("target_canonical")
+            confidence = item.get("confidence")
+            matched_surface = item.get("matched_surface")
+            reasons = item.get("reasons")
+            reason_label = ",".join(str(reason) for reason in reasons) if isinstance(reasons, list) else "shape"
+            try:
+                confidence_label = f"{float(confidence):.3f}"
+            except (TypeError, ValueError):
+                confidence_label = "n/a"
+            semantic_label = _semantic_escalation_label(item.get("metadata"))
+            print(
+                f"- {surface!r} -> {target_term_id} "
+                f"({target_canonical}) confidence={confidence_label} "
+                f"via {matched_surface!r} reasons={reason_label}{semantic_label}"
+            )
+
+
+
+def _semantic_escalation_label(metadata: object) -> str:
+    if not isinstance(metadata, Mapping):
+        return ""
+    labels: list[str] = []
+    if metadata.get("semantic_applied") is True:
+        backend = metadata.get("semantic_backend") or metadata.get("semantic_model") or "semantic"
+        score = metadata.get("semantic_score")
+        try:
+            labels.append(f"semantic_score={float(score):.3f}")
+        except (TypeError, ValueError):
+            labels.append("semantic_score=n/a")
+        labels.append(f"semantic_backend={backend}")
+    semantic = metadata.get("semantic_escalation")
+    if isinstance(semantic, Mapping) and semantic.get("recommended") is True:
+        reasons = semantic.get("reasons")
+        reason_label = ",".join(str(reason) for reason in reasons) if isinstance(reasons, list) else "recommended"
+        labels.append(f"semantic_escalation={reason_label}")
+    return " " + " ".join(labels) if labels else ""
+
 def _guard_command(
     *,
     path: Path,
@@ -2136,6 +3173,7 @@ def _guard_command(
     tool_name: str,
     scopes: list[str] | None,
     include_deprecated: bool,
+    block_on_unicode_risk: bool,
 ) -> int:
     try:
         lexicon = load_lexicon(path)
@@ -2149,12 +3187,19 @@ def _guard_command(
         tool_name=tool_name,
         scopes=scopes,
         include_deprecated=include_deprecated,
+        block_on_unicode_risk=block_on_unicode_risk,
     )
     print(f"Status: {decision.status.value}")
     print(f"Action: {decision.action.value}")
     print(f"Allowed: {'yes' if decision.is_allowed else 'no'}")
     print(f"Reason: {decision.reason}")
     print(f"Resolution: {decision.resolution.status.value}")
+    if decision.metadata.get("unicode_findings"):
+        print("Unicode findings:")
+        for finding in decision.metadata.get("unicode_findings", []):
+            if isinstance(finding, dict):
+                print(f"- {finding.get('kind')} at {finding.get('start')} ({finding.get('name')})")
+    _print_near_miss_suggestions(decision.metadata)
 
     if decision.matched_term_ids:
         print("Matched terms:")
