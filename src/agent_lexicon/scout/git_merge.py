@@ -9,6 +9,7 @@ optional near-miss hints.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 import fnmatch
 from pathlib import Path
 import re
@@ -24,10 +25,19 @@ from agent_lexicon.scout.near_miss import (
     suggest_near_misses,
 )
 from agent_lexicon.scout.semantic import SemanticNearMissBackend
+from agent_lexicon.text import surface_fragments
 
 
 class GitMergeCheckError(RuntimeError):
     """Raised when a git merge terminology check cannot be completed."""
+
+
+class GitMergeReviewKind(str, Enum):
+    """Review class for an unknown identifier found in a merge diff."""
+
+    LIKELY_ALIAS = "likely_alias"
+    LIKELY_NEW_TERM = "likely_new_term"
+    UNRESOLVED_IDENTIFIER = "unresolved_identifier"
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +118,7 @@ class GitMergeUnknownIdentifier:
     surface: str
     text: str
     suggestions: tuple[NearMissSuggestion, ...] = ()
+    review_kind: GitMergeReviewKind = GitMergeReviewKind.LIKELY_ALIAS
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "path", _clean_text(self.path, field_name="path"))
@@ -121,9 +132,25 @@ class GitMergeUnknownIdentifier:
         for suggestion in self.suggestions:
             if not isinstance(suggestion, NearMissSuggestion):
                 raise GitMergeCheckError("suggestions must contain NearMissSuggestion objects")
+        try:
+            review_kind = GitMergeReviewKind(
+                self.review_kind.value if isinstance(self.review_kind, GitMergeReviewKind) else str(self.review_kind)
+            )
+        except ValueError as exc:
+            raise GitMergeCheckError("review_kind must be a GitMergeReviewKind value") from exc
+        if self.suggestions and review_kind != GitMergeReviewKind.LIKELY_ALIAS:
+            raise GitMergeCheckError("identifiers with suggestions must use likely_alias review_kind")
+        if not self.suggestions and review_kind == GitMergeReviewKind.LIKELY_ALIAS:
+            review_kind = GitMergeReviewKind.LIKELY_NEW_TERM
+        object.__setattr__(self, "review_kind", review_kind)
 
     @property
     def needs_review(self) -> bool:
+        """Return whether this identifier should be shown in the merge review."""
+        return self.review_kind in {GitMergeReviewKind.LIKELY_ALIAS, GitMergeReviewKind.LIKELY_NEW_TERM}
+
+    @property
+    def has_near_miss(self) -> bool:
         """Return whether this identifier has at least one likely canonical target."""
         return bool(self.suggestions)
 
@@ -134,11 +161,14 @@ class GitMergeUnknownIdentifier:
             "surface": self.surface,
             "text": self.text,
             "needs_review": self.needs_review,
+            "review_kind": self.review_kind.value,
             "suggestions": [suggestion.to_dict() for suggestion in self.suggestions],
         }
 
     def to_text(self) -> str:
         if not self.suggestions:
+            if self.review_kind == GitMergeReviewKind.LIKELY_NEW_TERM:
+                return f"{self.path}:{self.line_number} {self.surface!r} unknown; possible new term"
             return f"{self.path}:{self.line_number} {self.surface!r} unknown"
         best = self.suggestions[0]
         semantic_label = _semantic_escalation_label(best.metadata)
@@ -209,28 +239,60 @@ class GitMergeTerminologyReport:
         return len(self.unknown_identifiers)
 
     @property
+    def likely_aliases(self) -> tuple[GitMergeUnknownIdentifier, ...]:
+        """Return unknown identifiers that look like aliases for existing terms."""
+        return tuple(
+            identifier
+            for identifier in self.unknown_identifiers
+            if identifier.review_kind == GitMergeReviewKind.LIKELY_ALIAS
+        )
+
+    @property
+    def likely_alias_count(self) -> int:
+        """Return the number of likely alias review items."""
+        return len(self.likely_aliases)
+
+    @property
+    def likely_new_terms(self) -> tuple[GitMergeUnknownIdentifier, ...]:
+        """Return unknown identifiers that may represent new terminology."""
+        return tuple(
+            identifier
+            for identifier in self.unknown_identifiers
+            if identifier.review_kind == GitMergeReviewKind.LIKELY_NEW_TERM
+        )
+
+    @property
+    def likely_new_term_count(self) -> int:
+        """Return the number of possible new-term review items."""
+        return len(self.likely_new_terms)
+
+    @property
     def needs_review(self) -> tuple[GitMergeUnknownIdentifier, ...]:
-        """Return unknown identifiers with near-miss suggestions."""
+        """Return unknown identifiers shown in the default merge review."""
         return tuple(identifier for identifier in self.unknown_identifiers if identifier.needs_review)
 
     @property
     def needs_review_count(self) -> int:
-        """Return the number of unknown identifiers with likely canonical targets."""
+        """Return the number of reviewable unknown identifiers."""
         return len(self.needs_review)
 
     @property
     def unresolved_unknowns(self) -> tuple[GitMergeUnknownIdentifier, ...]:
-        """Return unknown identifiers that did not receive near-miss suggestions."""
-        return tuple(identifier for identifier in self.unknown_identifiers if not identifier.needs_review)
+        """Return low-signal unknown identifiers included only for full audits."""
+        return tuple(
+            identifier
+            for identifier in self.unknown_identifiers
+            if identifier.review_kind == GitMergeReviewKind.UNRESOLVED_IDENTIFIER
+        )
 
     @property
     def unresolved_unknown_count(self) -> int:
-        """Return the number of unknown identifiers without near-miss suggestions."""
+        """Return the number of low-signal unknown identifiers."""
         return len(self.unresolved_unknowns)
 
     @property
     def has_review_items(self) -> bool:
-        """Return whether the report contains reviewable near-miss items."""
+        """Return whether the report contains items that should be reviewed."""
         return self.needs_review_count > 0
 
     def to_dict(self) -> dict[str, object]:
@@ -246,11 +308,15 @@ class GitMergeTerminologyReport:
             "known_occurrence_count": self.known_occurrence_count,
             "unknown_identifier_count": self.unknown_identifier_count,
             "needs_review_count": self.needs_review_count,
+            "likely_alias_count": self.likely_alias_count,
+            "likely_new_term_count": self.likely_new_term_count,
             "unresolved_unknown_count": self.unresolved_unknown_count,
             "has_review_items": self.has_review_items,
             "added_lines": [line.to_dict() for line in self.added_lines],
             "known_occurrences": [occurrence.to_dict() for occurrence in self.known_occurrences],
             "needs_review": [identifier.to_dict() for identifier in self.needs_review],
+            "likely_aliases": [identifier.to_dict() for identifier in self.likely_aliases],
+            "likely_new_terms": [identifier.to_dict() for identifier in self.likely_new_terms],
             "unresolved_unknowns": [identifier.to_dict() for identifier in self.unresolved_unknowns],
             "metadata": dict(self.metadata),
         }
@@ -264,7 +330,8 @@ class GitMergeTerminologyReport:
             f"Lexicon: {self.lexicon_path}",
             "Summary: "
             f"known={self.known_occurrence_count}, "
-            f"needs_review={self.needs_review_count}, "
+            f"likely_alias={self.likely_alias_count}, "
+            f"likely_new_term={self.likely_new_term_count}, "
             f"unresolved_unknown={self.unresolved_unknown_count}",
         ]
         if self.known_occurrences:
@@ -273,7 +340,9 @@ class GitMergeTerminologyReport:
                 lines.append(f"- {occurrence.to_text()}")
         if self.needs_review:
             lines.append("Needs review:")
-            for identifier in self.needs_review:
+        if self.likely_aliases:
+            lines.append("Likely aliases:")
+            for identifier in self.likely_aliases:
                 lines.append(f"- {identifier.to_text()}")
                 for suggestion in identifier.suggestions[1:]:
                     lines.append(
@@ -281,8 +350,12 @@ class GitMergeTerminologyReport:
                         f"{suggestion.target_term_id} ({suggestion.target_canonical}) "
                         f"confidence={suggestion.confidence:.3f} via {suggestion.matched_surface!r}"
                     )
+        if self.likely_new_terms:
+            lines.append("New terminology candidates:")
+            for identifier in self.likely_new_terms:
+                lines.append(f"- {identifier.to_text()}")
         if self.unresolved_unknowns:
-            lines.append("Unknown identifiers without suggestion:")
+            lines.append("Low-signal unknown identifiers:")
             for identifier in self.unresolved_unknowns:
                 lines.append(f"- {identifier.to_text()}")
         if not self.known_occurrences and not self.unknown_identifiers:
@@ -292,6 +365,51 @@ class GitMergeTerminologyReport:
 
 _HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 _PATH_PREFIXES = ("a/", "b/")
+_LOW_SIGNAL_IDENTIFIER_FRAGMENTS = frozenset({
+    "actual",
+    "arg",
+    "args",
+    "ctx",
+    "dst",
+    "entry",
+    "entries",
+    "expected",
+    "file",
+    "files",
+    "fixture",
+    "fixtures",
+    "flag",
+    "idx",
+    "index",
+    "issue",
+    "issues",
+    "item",
+    "items",
+    "mock",
+    "name",
+    "names",
+    "node",
+    "nodes",
+    "obj",
+    "object",
+    "old",
+    "param",
+    "params",
+    "path",
+    "result",
+    "results",
+    "row",
+    "rows",
+    "src",
+    "temp",
+    "test",
+    "tests",
+    "tmp",
+    "val",
+    "value",
+    "values",
+    "var",
+})
 
 
 def check_git_merge_terminology(
@@ -398,6 +516,8 @@ def build_git_merge_terminology_report(
             )
 
         for surface in discover_unknown_identifier_surfaces(line.text, max_surfaces=25):
+            if not _is_merge_identifier_surface(surface):
+                continue
             if _surface_is_known(surface, matcher, scopes=scopes, include_deprecated=include_deprecated):
                 continue
             key = (line.path, line.line_number, surface)
@@ -417,7 +537,8 @@ def build_git_merge_terminology_report(
                 suggestions = near_miss_report.suggestions
             except NearMissError:
                 suggestions = ()
-            if not suggestions and not include_unresolved_unknowns:
+            review_kind = _unknown_review_kind(surface, text=line.text, suggestions=suggestions)
+            if review_kind == GitMergeReviewKind.UNRESOLVED_IDENTIFIER and not include_unresolved_unknowns:
                 continue
             unknown_identifiers.append(
                 GitMergeUnknownIdentifier(
@@ -426,8 +547,12 @@ def build_git_merge_terminology_report(
                     surface=surface,
                     text=line.text,
                     suggestions=suggestions,
+                    review_kind=review_kind,
                 )
             )
+
+    report_metadata: dict[str, Any] = dict(metadata or {})
+    report_metadata["include_unresolved_unknowns"] = include_unresolved_unknowns
 
     return GitMergeTerminologyReport(
         root=str(Path(root)),
@@ -438,7 +563,7 @@ def build_git_merge_terminology_report(
         added_lines=line_tuple,
         known_occurrences=tuple(sorted(known_occurrences, key=_known_occurrence_sort_key)),
         unknown_identifiers=tuple(sorted(unknown_identifiers, key=_unknown_identifier_sort_key)),
-        metadata=metadata or {},
+        metadata=report_metadata,
     )
 
 
@@ -488,7 +613,6 @@ def parse_git_added_lines(diff_text: str, *, include_globs: Sequence[str] | None
     return tuple(added_lines)
 
 
-
 def _semantic_escalation_label(metadata: Mapping[str, Any]) -> str:
     labels: list[str] = []
     if metadata.get("semantic_applied") is True:
@@ -505,6 +629,7 @@ def _semantic_escalation_label(metadata: Mapping[str, Any]) -> str:
         reason_label = ",".join(str(reason) for reason in reasons) if isinstance(reasons, list) else "recommended"
         labels.append(f"semantic_escalation={reason_label}")
     return " " + " ".join(labels) if labels else ""
+
 
 def _run_git_diff(root: Path, *, diff_ref: str, git_executable: str) -> str:
     command = [
@@ -584,8 +709,52 @@ def _known_occurrence_sort_key(occurrence: GitMergeKnownOccurrence) -> tuple[str
     return (occurrence.path, occurrence.line_number, occurrence.term_id, occurrence.matched_text)
 
 
-def _unknown_identifier_sort_key(identifier: GitMergeUnknownIdentifier) -> tuple[str, int, str]:
-    return (identifier.path, identifier.line_number, identifier.surface)
+def _unknown_identifier_sort_key(identifier: GitMergeUnknownIdentifier) -> tuple[str, int, str, str]:
+    return (identifier.path, identifier.line_number, identifier.review_kind.value, identifier.surface)
+
+
+def _is_merge_identifier_surface(surface: str) -> bool:
+    if not isinstance(surface, str) or not surface.strip():
+        return False
+    if any(char.isspace() for char in surface):
+        return False
+    return not any(char in surface for char in "(){}[]='\"")
+
+
+def _unknown_review_kind(
+    surface: str,
+    *,
+    text: str,
+    suggestions: tuple[NearMissSuggestion, ...],
+) -> GitMergeReviewKind:
+    if suggestions:
+        return GitMergeReviewKind.LIKELY_ALIAS
+    if _is_low_signal_unknown_identifier(surface) or _is_call_like_unknown_identifier(surface, text):
+        return GitMergeReviewKind.UNRESOLVED_IDENTIFIER
+    return GitMergeReviewKind.LIKELY_NEW_TERM
+
+
+def _is_low_signal_unknown_identifier(surface: str) -> bool:
+    fragments = tuple(fragment.lower() for fragment in surface_fragments(surface) if fragment.strip())
+    if not fragments:
+        return True
+    if any(len(fragment) == 1 for fragment in fragments):
+        return True
+    return all(fragment in _LOW_SIGNAL_IDENTIFIER_FRAGMENTS for fragment in fragments)
+
+
+def _is_call_like_unknown_identifier(surface: str, text: str) -> bool:
+    if not surface or not text:
+        return False
+    pattern = re.compile(r"(?<![A-Za-z0-9_])" + re.escape(surface) + r"(?![A-Za-z0-9_])")
+    matches = tuple(pattern.finditer(text))
+    if not matches:
+        return False
+    for match in matches:
+        tail = text[match.end():].lstrip()
+        if not tail.startswith("("):
+            return False
+    return True
 
 
 def _clean_text(value: str, *, field_name: str) -> str:
@@ -610,6 +779,7 @@ __all__ = [
     "GitDiffAddedLine",
     "GitMergeCheckError",
     "GitMergeKnownOccurrence",
+    "GitMergeReviewKind",
     "GitMergeTerminologyReport",
     "GitMergeUnknownIdentifier",
     "build_git_merge_terminology_report",

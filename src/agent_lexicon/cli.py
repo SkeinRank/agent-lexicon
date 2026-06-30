@@ -334,7 +334,7 @@ def build_parser() -> argparse.ArgumentParser:
     check_merge_parser.add_argument(
         "--include-unresolved-unknowns",
         action="store_true",
-        help="Also include unknown identifiers that did not receive near-miss suggestions.",
+        help="Also include low-signal unknown identifiers that are hidden by the default merge review.",
     )
     check_merge_parser.add_argument(
         "--semantic-near-miss",

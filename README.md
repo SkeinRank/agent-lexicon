@@ -595,23 +595,31 @@ to the merge base.
 Example output:
 
 ```text
-Git merge terminology check: 1 files, 2 added lines
+Git merge terminology check: 1 files, 3 added lines
 Range: main...HEAD
-Summary: known=1, needs_review=1, unresolved_unknown=0
+Summary: known=1, likely_alias=1, likely_new_term=1, unresolved_unknown=0
 Known terminology:
 - src/auth.py:12 'accessToken' -> auth.access_token (access token)
 Needs review:
+Likely aliases:
 - src/auth.py:13 'authToken' unknown; near miss: auth.access_token (access token) confidence=0.623 via 'AccessToken' semantic_escalation=related_fragment_bridge
+New terminology candidates:
+- src/auth.py:14 'credentialBlob' unknown; possible new term
 ```
 
 Known occurrences are useful for confirming that different branch naming styles
-still resolve to the same canonical term. Review items keep the unknown status
-unchanged and attach deterministic near-miss hints, so a reviewer can decide
-whether the surface should become a new alias or a new term. Identifiers without
-near-miss suggestions are omitted by default to keep the merge output focused;
-use `--include-unresolved-unknowns` when a workflow needs the full unknown
-identifier list. Use `--fail-on-review` in CI when near-miss review items should
-block the workflow.
+still resolve to the same canonical term. Unknown identifiers are now separated
+into two review classes. `likely_alias` items have deterministic near-miss hints
+that point to an existing canonical term. `likely_new_term` items have no strong
+canonical neighbor, but still look terminology-relevant enough to review as a
+possible new lexicon term. Both classes keep the runtime decision unchanged: the
+identifier remains unknown until a reviewer adds an alias or a new term.
+
+Low-signal local identifiers such as helper function names, one-letter suffixes,
+and temporary variables stay out of the default report. Use
+`--include-unresolved-unknowns` when a workflow needs the full unknown identifier
+list, including low-signal items. Use `--fail-on-review` in CI when alias or
+new-term review items should block the workflow.
 
 Python usage:
 

@@ -128,6 +128,7 @@ def test_cli_check_merge_reads_git_diff_and_can_fail_on_review(tmp_path: Path, c
     assert "Git merge terminology check:" in captured.out
     assert "Known terminology:" in captured.out
     assert "Needs review:" in captured.out
+    assert "Likely aliases:" in captured.out
     assert "accessToken" in captured.out
     assert "authToken" in captured.out
     assert "auth.access_token" in captured.out
