@@ -140,10 +140,11 @@ class GitMergeUnknownIdentifier:
         if not self.suggestions:
             return f"{self.path}:{self.line_number} {self.surface!r} unknown"
         best = self.suggestions[0]
+        semantic_label = _semantic_escalation_label(best.metadata)
         return (
             f"{self.path}:{self.line_number} {self.surface!r} unknown; "
             f"near miss: {best.target_term_id} ({best.target_canonical}) "
-            f"confidence={best.confidence:.3f} via {best.matched_surface!r}"
+            f"confidence={best.confidence:.3f} via {best.matched_surface!r}{semantic_label}"
         )
 
 
@@ -481,6 +482,15 @@ def parse_git_added_lines(diff_text: str, *, include_globs: Sequence[str] | None
 
     return tuple(added_lines)
 
+
+
+def _semantic_escalation_label(metadata: Mapping[str, Any]) -> str:
+    semantic = metadata.get("semantic_escalation")
+    if not isinstance(semantic, Mapping) or semantic.get("recommended") is not True:
+        return ""
+    reasons = semantic.get("reasons")
+    reason_label = ",".join(str(reason) for reason in reasons) if isinstance(reasons, list) else "recommended"
+    return f" semantic_escalation={reason_label}"
 
 def _run_git_diff(root: Path, *, diff_ref: str, git_executable: str) -> str:
     command = [

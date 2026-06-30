@@ -477,6 +477,42 @@ for suggestion in report.suggestions:
 
 
 
+## Semantic escalation interface
+
+Near-miss hints stay deterministic by default. Each heuristic suggestion now
+records `metadata["suggestion_source"] == "heuristic"` and a
+`metadata["semantic_escalation"]` object that marks whether the item is a good
+candidate for an optional semantic reranker. The built-in backend is a no-op,
+so no model weights are loaded and runtime `resolve` / `guard` decisions remain
+unchanged.
+
+This gives Scout workflows a cheap-first cascade:
+
+1. deterministic fragments, edit distance, and code-shape scoring run first;
+2. confident items can be reviewed directly;
+3. gray-zone or weak-bridge items are marked for an optional semantic backend.
+
+```python
+from agent_lexicon import Lexicon, Term, suggest_near_misses
+
+lexicon = Lexicon(
+    terms=(Term(id="auth.access_token", canonical="access token"),)
+)
+
+report = suggest_near_misses(lexicon, "authToken")
+suggestion = report.suggestions[0]
+print(suggestion.metadata["suggestion_source"])
+# heuristic
+print(suggestion.metadata["semantic_escalation"]["recommended"])
+# True
+```
+
+Use this metadata when a review pipeline wants to route only uncertain
+near-miss items to a heavier semantic scorer. The default package does not ship
+a semantic model and does not call external services. Future semantic backends
+can implement the `SemanticNearMissBackend` protocol and keep their output
+clearly labeled as `semantic`, separate from the deterministic heuristic source.
+
 ## Git merge terminology check
 
 Agent-generated branches often introduce new code identifiers before reviewers
@@ -506,7 +542,7 @@ Summary: known=1, needs_review=1, unresolved_unknown=0
 Known terminology:
 - src/auth.py:12 'accessToken' -> auth.access_token (access token)
 Needs review:
-- src/auth.py:13 'authToken' unknown; near miss: auth.access_token (access token) confidence=0.599 via 'AccessToken'
+- src/auth.py:13 'authToken' unknown; near miss: auth.access_token (access token) confidence=0.623 via 'AccessToken' semantic_escalation=related_fragment_bridge
 ```
 
 Known occurrences are useful for confirming that different branch naming styles

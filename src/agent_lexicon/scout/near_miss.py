@@ -15,6 +15,14 @@ from typing import Any, Iterable, Mapping
 
 from agent_lexicon.core.models import Alias, Lexicon, Term
 from agent_lexicon.text import code_identifier_variants, normalized_fragment_surface, surface_fragments
+from agent_lexicon.scout.semantic import (
+    NoopSemanticNearMissBackend,
+    SemanticNearMissBackend,
+    SemanticNearMissCandidate,
+    SemanticNearMissRequest,
+    SemanticSuggestionSource,
+    semantic_escalation_hint,
+)
 
 
 class NearMissError(ValueError):
@@ -261,6 +269,8 @@ def suggest_near_misses(
     include_deprecated: bool = False,
     max_suggestions: int = _DEFAULT_MAX_SUGGESTIONS,
     min_confidence: float = _DEFAULT_MIN_CONFIDENCE,
+    semantic_backend: SemanticNearMissBackend | None = None,
+    semantic_confidence_band: tuple[float, float] = (_DEFAULT_MIN_CONFIDENCE, 0.62),
 ) -> NearMissReport:
     """Suggest likely canonical targets for one unknown identifier surface."""
     if not isinstance(lexicon, Lexicon):
@@ -292,6 +302,7 @@ def suggest_near_misses(
             normalized_query=normalized_query,
             query_fragments=query_fragments,
             known=known,
+            semantic_confidence_band=semantic_confidence_band,
         )
         if suggestion is None or suggestion.confidence < min_confidence:
             continue
@@ -302,6 +313,13 @@ def suggest_near_misses(
     suggestions = tuple(
         sorted(best_by_term.values(), key=_suggestion_sort_key)[:max_suggestions]
     )
+    semantic_result = _run_semantic_backend(
+        semantic_backend,
+        surface=cleaned_surface,
+        normalized_surface=normalized_query,
+        query_fragments=query_fragments,
+        suggestions=suggestions,
+    )
     return NearMissReport(
         surface=cleaned_surface,
         suggestions=suggestions,
@@ -310,6 +328,8 @@ def suggest_near_misses(
             "normalized_surface": normalized_query,
             "min_confidence": min_confidence,
             "max_suggestions": max_suggestions,
+            "semantic_escalation_recommended_count": _semantic_escalation_recommended_count(suggestions),
+            "semantic_backend": semantic_result.to_dict(),
         },
     )
 
@@ -323,6 +343,8 @@ def suggest_near_misses_for_text(
     max_surfaces: int = 10,
     max_suggestions_per_surface: int = _DEFAULT_MAX_SUGGESTIONS,
     min_confidence: float = _DEFAULT_MIN_CONFIDENCE,
+    semantic_backend: SemanticNearMissBackend | None = None,
+    semantic_confidence_band: tuple[float, float] = (_DEFAULT_MIN_CONFIDENCE, 0.62),
 ) -> tuple[NearMissReport, ...]:
     """Return near-miss suggestions for identifier-like surfaces in text."""
     surfaces = discover_unknown_identifier_surfaces(text, max_surfaces=max_surfaces)
@@ -335,6 +357,8 @@ def suggest_near_misses_for_text(
             include_deprecated=include_deprecated,
             max_suggestions=max_suggestions_per_surface,
             min_confidence=min_confidence,
+            semantic_backend=semantic_backend,
+            semantic_confidence_band=semantic_confidence_band,
         )
         if report.suggestions:
             reports.append(report)
@@ -382,6 +406,7 @@ def _score_known_surface(
     normalized_query: str,
     query_fragments: tuple[str, ...],
     known: _KnownSurface,
+    semantic_confidence_band: tuple[float, float],
 ) -> NearMissSuggestion | None:
     target_fragments = surface_fragments(known.surface)
     if len(target_fragments) < 1:
@@ -450,16 +475,88 @@ def _score_known_surface(
         target_fragments=target_fragments,
         scopes=known.scopes,
         deprecated=known.deprecated,
-        metadata={
-            "shared_fragment_score": round(shared_fragment_score, 4),
-            "raw_jaccard": round(raw_jaccard, 4),
-            "edit_similarity": round(edit_similarity, 4),
-            "shape_score": round(shape_score, 4),
-            "related_fragments": related,
-            "precision_adjustments": precision_adjustments,
-        },
+        metadata=_suggestion_metadata(
+            shared_fragment_score=shared_fragment_score,
+            raw_jaccard=raw_jaccard,
+            edit_similarity=edit_similarity,
+            shape_score=shape_score,
+            related=related,
+            precision_adjustments=precision_adjustments,
+            confidence=confidence,
+            shared_fragments=shared,
+            semantic_confidence_band=semantic_confidence_band,
+        ),
     )
 
+
+
+def _suggestion_metadata(
+    *,
+    shared_fragment_score: float,
+    raw_jaccard: float,
+    edit_similarity: float,
+    shape_score: float,
+    related: tuple[str, ...],
+    precision_adjustments: tuple[dict[str, Any], ...],
+    confidence: float,
+    shared_fragments: tuple[str, ...],
+    semantic_confidence_band: tuple[float, float],
+) -> dict[str, Any]:
+    hint = semantic_escalation_hint(
+        confidence=confidence,
+        shared_fragments=shared_fragments,
+        related_fragments=related,
+        precision_adjustments=precision_adjustments,
+        confidence_band=semantic_confidence_band,
+    )
+    return {
+        "shared_fragment_score": round(shared_fragment_score, 4),
+        "raw_jaccard": round(raw_jaccard, 4),
+        "edit_similarity": round(edit_similarity, 4),
+        "shape_score": round(shape_score, 4),
+        "related_fragments": related,
+        "precision_adjustments": precision_adjustments,
+        "suggestion_source": SemanticSuggestionSource.HEURISTIC.value,
+        "semantic_escalation": hint.to_dict(),
+    }
+
+
+def _semantic_candidate_from_suggestion(suggestion: NearMissSuggestion) -> SemanticNearMissCandidate:
+    return SemanticNearMissCandidate(
+        target_term_id=suggestion.target_term_id,
+        target_canonical=suggestion.target_canonical,
+        matched_surface=suggestion.matched_surface,
+        confidence=suggestion.confidence,
+        reasons=tuple(reason.value for reason in suggestion.reasons),
+        metadata=suggestion.metadata,
+    )
+
+
+def _run_semantic_backend(
+    semantic_backend: SemanticNearMissBackend | None,
+    *,
+    surface: str,
+    normalized_surface: str,
+    query_fragments: tuple[str, ...],
+    suggestions: tuple[NearMissSuggestion, ...],
+):
+    backend = semantic_backend or NoopSemanticNearMissBackend()
+    request = SemanticNearMissRequest(
+        surface=surface,
+        normalized_surface=normalized_surface,
+        query_fragments=query_fragments,
+        candidates=tuple(_semantic_candidate_from_suggestion(suggestion) for suggestion in suggestions),
+    )
+    return backend.rerank(request)
+
+
+def _semantic_escalation_recommended_count(suggestions: tuple[NearMissSuggestion, ...]) -> int:
+    count = 0
+    for suggestion in suggestions:
+        semantic = suggestion.metadata.get("semantic_escalation")
+        if isinstance(semantic, Mapping) and semantic.get("recommended") is True:
+            count += 1
+    return count
 
 def _precision_adjustments(
     *,
@@ -593,6 +690,7 @@ __all__ = [
     "NearMissReason",
     "NearMissReport",
     "NearMissSuggestion",
+    "SemanticNearMissBackend",
     "discover_unknown_identifier_surfaces",
     "suggest_near_misses",
     "suggest_near_misses_for_text",

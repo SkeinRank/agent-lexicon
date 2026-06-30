@@ -3037,12 +3037,24 @@ def _print_near_miss_suggestions(metadata: Mapping[str, object]) -> None:
                 confidence_label = f"{float(confidence):.3f}"
             except (TypeError, ValueError):
                 confidence_label = "n/a"
+            semantic_label = _semantic_escalation_label(item.get("metadata"))
             print(
                 f"- {surface!r} -> {target_term_id} "
                 f"({target_canonical}) confidence={confidence_label} "
-                f"via {matched_surface!r} reasons={reason_label}"
+                f"via {matched_surface!r} reasons={reason_label}{semantic_label}"
             )
 
+
+
+def _semantic_escalation_label(metadata: object) -> str:
+    if not isinstance(metadata, Mapping):
+        return ""
+    semantic = metadata.get("semantic_escalation")
+    if not isinstance(semantic, Mapping) or semantic.get("recommended") is not True:
+        return ""
+    reasons = semantic.get("reasons")
+    reason_label = ",".join(str(reason) for reason in reasons) if isinstance(reasons, list) else "recommended"
+    return f" semantic_escalation={reason_label}"
 
 def _guard_command(
     *,

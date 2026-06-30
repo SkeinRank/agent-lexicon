@@ -22,6 +22,21 @@ from .near_miss import (
 )
 
 
+
+from .semantic import (
+    NoopSemanticNearMissBackend,
+    SemanticEscalationHint,
+    SemanticEscalationReason,
+    SemanticNearMissBackend,
+    SemanticNearMissCandidate,
+    SemanticNearMissError,
+    SemanticNearMissRequest,
+    SemanticNearMissResult,
+    SemanticSuggestionSource,
+    semantic_candidate_from_mapping,
+    semantic_escalation_hint,
+)
+
 from .git_merge import (
     GitDiffAddedLine,
     GitMergeCheckError,
@@ -89,6 +104,17 @@ __all__ = [
     "discover_unknown_identifier_surfaces",
     "suggest_near_misses",
     "suggest_near_misses_for_text",
+    "NoopSemanticNearMissBackend",
+    "SemanticEscalationHint",
+    "SemanticEscalationReason",
+    "SemanticNearMissBackend",
+    "SemanticNearMissCandidate",
+    "SemanticNearMissError",
+    "SemanticNearMissRequest",
+    "SemanticNearMissResult",
+    "SemanticSuggestionSource",
+    "semantic_candidate_from_mapping",
+    "semantic_escalation_hint",
     "GitDiffAddedLine",
     "GitMergeCheckError",
     "GitMergeKnownOccurrence",
