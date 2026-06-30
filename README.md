@@ -455,6 +455,15 @@ agent-generated branches may introduce surfaces such as `authToken` or
 `sessionKey` that look close to known terms but should still require a human
 review decision.
 
+The scorer is intentionally conservative with weak single-fragment bridges.
+Broad fragments such as `key`, `id`, `token`, or `access` are not enough on
+their own when the rest of the identifier is not a close typo and no related
+fragment bridge exists. This keeps review output focused: `authToken` can still
+point to `access token` through the deterministic `auth` → `access` relation,
+while unrelated surfaces such as `sessionKey` are not pulled toward
+`partition key` just because both share `key`. Precision dampening is recorded
+in suggestion metadata for audit-friendly review.
+
 The lower-level API is also available when a workflow already has a candidate
 surface:
 

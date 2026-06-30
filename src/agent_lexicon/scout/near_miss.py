@@ -30,6 +30,7 @@ class NearMissReason(str, Enum):
     EDIT_SIMILARITY = "edit_similarity"
     CODE_SHAPE = "code_shape"
     RELATED_FRAGMENT = "related_fragment"
+    WEAK_LEXICAL_BRIDGE = "weak_lexical_bridge"
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,6 +150,7 @@ _BACKTICK_PATTERN = re.compile(r"`([^`\n]{2,120})`")
 _BROAD_FRAGMENTS = frozenset({
     "api",
     "auth",
+    "access",
     "cache",
     "cap",
     "client",
@@ -189,6 +191,34 @@ _RELATED_FRAGMENTS: Mapping[str, frozenset[str]] = {
     "quota": frozenset({"cap", "limit", "threshold"}),
     "threshold": frozenset({"cap", "limit", "quota"}),
 }
+_WEAK_SINGLE_BRIDGE_FRAGMENTS = frozenset({
+    "access",
+    "api",
+    "auth",
+    "cache",
+    "client",
+    "config",
+    "data",
+    "error",
+    "event",
+    "id",
+    "key",
+    "limit",
+    "log",
+    "model",
+    "policy",
+    "request",
+    "response",
+    "service",
+    "session",
+    "state",
+    "system",
+    "token",
+    "url",
+    "uri",
+    "user",
+    "value",
+})
 _DEFAULT_MIN_CONFIDENCE = 0.42
 _DEFAULT_MAX_SUGGESTIONS = 3
 
@@ -382,6 +412,12 @@ def _score_known_surface(
         + (0.08 * shape_score)
         + related_score
     )
+    precision_adjustments = _precision_adjustments(
+        shared_set=shared_set,
+        related=related,
+        edit_similarity=edit_similarity,
+    )
+    confidence -= sum(adjustment["penalty"] for adjustment in precision_adjustments)
     confidence = round(max(0.0, min(1.0, confidence)), 4)
     reasons: list[NearMissReason] = []
     if shared:
@@ -396,6 +432,8 @@ def _score_known_surface(
         reasons.append(NearMissReason.CODE_SHAPE)
     if related:
         reasons.append(NearMissReason.RELATED_FRAGMENT)
+    if precision_adjustments:
+        reasons.append(NearMissReason.WEAK_LEXICAL_BRIDGE)
 
     if not reasons:
         return None
@@ -418,6 +456,36 @@ def _score_known_surface(
             "edit_similarity": round(edit_similarity, 4),
             "shape_score": round(shape_score, 4),
             "related_fragments": related,
+            "precision_adjustments": precision_adjustments,
+        },
+    )
+
+
+def _precision_adjustments(
+    *,
+    shared_set: frozenset[str],
+    related: tuple[str, ...],
+    edit_similarity: float,
+) -> tuple[dict[str, Any], ...]:
+    """Return confidence dampening rules for weak lexical bridges.
+
+    Near-miss is intentionally recall-friendly, but single shared fragments such
+    as ``key`` or ``access`` can create noisy review hints when the rest of the
+    identifier points elsewhere. Keep high-edit typo cases and explicit related
+    fragment bridges, but dampen lower-confidence single-fragment matches.
+    """
+    if related or len(shared_set) != 1:
+        return ()
+    fragment = next(iter(shared_set))
+    if fragment not in _WEAK_SINGLE_BRIDGE_FRAGMENTS:
+        return ()
+    if edit_similarity >= 0.78:
+        return ()
+    return (
+        {
+            "kind": "weak_single_fragment_bridge",
+            "fragment": fragment,
+            "penalty": 0.14,
         },
     )
 
