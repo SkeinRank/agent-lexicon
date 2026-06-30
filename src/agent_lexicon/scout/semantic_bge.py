@@ -126,7 +126,8 @@ class BgeSemanticNearMissBackend:
             from sentence_transformers import SentenceTransformer  # type: ignore[import-not-found]
         except ImportError as exc:
             raise SemanticNearMissError(
-                "semantic near-miss requires sentence-transformers; install sentence-transformers>=2.6,<4.0"
+                "semantic near-miss requires the optional semantic extra; "
+                "install with `pip install agent-lexicon[semantic]` or `poetry install -E semantic`"
             ) from exc
         self._loaded_model = SentenceTransformer(self.model_name)
         return self._loaded_model

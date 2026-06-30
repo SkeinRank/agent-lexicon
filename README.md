@@ -520,10 +520,16 @@ near-miss signals are useful but not decisive. This is an offline review aid:
 `resolve` still returns `unknown`, guard decisions remain unchanged, and the
 default package stays dependency-free.
 
-Install `sentence-transformers` in the environment where semantic review runs:
+Install the semantic extra in the environment where semantic review runs:
 
 ```bash
-pip install "sentence-transformers>=2.6,<4.0"
+pip install "agent-lexicon[semantic]"
+```
+
+For local repository development with Poetry:
+
+```bash
+poetry install -E semantic
 ```
 
 Command line usage:

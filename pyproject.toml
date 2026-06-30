@@ -39,6 +39,9 @@ oov = [
   "tokenizers>=0.15,<1.0",
   "huggingface-hub>=0.20,<1.0"
 ]
+semantic = [
+  "sentence-transformers>=2.6,<4.0"
+]
 
 [project.urls]
 Homepage = "https://github.com/SkeinRank/agent-lexicon"
