@@ -254,6 +254,10 @@ from .text import (
 
 from .workspace import (
     DEFAULT_DATABASE_NAME,
+    DEFAULT_SQLITE_BUSY_TIMEOUT_MS,
+    DEFAULT_SQLITE_JOURNAL_MODE,
+    DEFAULT_SQLITE_SYNCHRONOUS,
+    DEFAULT_SQLITE_TIMEOUT_SECONDS,
     DEFAULT_WORKSPACE_DIR,
     SCHEMA_VERSION,
     PublishedSnapshot,
@@ -454,6 +458,10 @@ __all__ = [
     "write_dictionary_manifest",
     "__version__",
     "DEFAULT_DATABASE_NAME",
+    "DEFAULT_SQLITE_BUSY_TIMEOUT_MS",
+    "DEFAULT_SQLITE_JOURNAL_MODE",
+    "DEFAULT_SQLITE_SYNCHRONOUS",
+    "DEFAULT_SQLITE_TIMEOUT_SECONDS",
     "DEFAULT_WORKSPACE_DIR",
     "SCHEMA_VERSION",
     "PublishedSnapshot",

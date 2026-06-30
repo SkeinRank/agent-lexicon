@@ -897,7 +897,11 @@ print(summary.document_count, summary.db_path)
 
 The workspace stores documents, candidate payloads, evidence pack payloads,
 local review decisions, and append-only review events. The database is designed
-for local review workflows without requiring a service backend.
+for local review workflows without requiring a service backend. SQLite connections
+use WAL mode with a 30-second busy timeout and `synchronous=NORMAL`, so parallel
+readers and short-lived writer bursts from local agents or CI jobs do not fail
+with transient lock errors. Writes are still serialized by SQLite, preserving
+transaction order while allowing readers to observe consistent snapshots.
 
 ## Local web proposal inbox
 

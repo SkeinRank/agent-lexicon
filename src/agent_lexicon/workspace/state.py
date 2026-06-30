@@ -42,6 +42,10 @@ class ReviewEventType(str, Enum):
 SCHEMA_VERSION = 4
 DEFAULT_WORKSPACE_DIR = ".agent-lexicon"
 DEFAULT_DATABASE_NAME = "agent_lexicon.db"
+DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 30_000
+DEFAULT_SQLITE_TIMEOUT_SECONDS = DEFAULT_SQLITE_BUSY_TIMEOUT_MS / 1000
+DEFAULT_SQLITE_JOURNAL_MODE = "WAL"
+DEFAULT_SQLITE_SYNCHRONOUS = "NORMAL"
 
 
 @dataclass(frozen=True, slots=True)
@@ -812,9 +816,17 @@ def list_snapshots(state: WorkspaceState, *, limit: int = 20) -> tuple[Workspace
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
-    connection = sqlite3.connect(str(db_path))
-    connection.execute("PRAGMA foreign_keys = ON")
+    connection = sqlite3.connect(str(db_path), timeout=DEFAULT_SQLITE_TIMEOUT_SECONDS)
+    _configure_connection(connection)
     return connection
+
+
+def _configure_connection(connection: sqlite3.Connection) -> None:
+    """Apply durability and concurrency settings for local workspace SQLite."""
+    connection.execute(f"PRAGMA busy_timeout = {DEFAULT_SQLITE_BUSY_TIMEOUT_MS}")
+    connection.execute(f"PRAGMA journal_mode = {DEFAULT_SQLITE_JOURNAL_MODE}")
+    connection.execute(f"PRAGMA synchronous = {DEFAULT_SQLITE_SYNCHRONOUS}")
+    connection.execute("PRAGMA foreign_keys = ON")
 
 
 def _create_schema(connection: sqlite3.Connection) -> None:
