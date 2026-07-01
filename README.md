@@ -265,6 +265,7 @@ These hold on the deterministic runtime and local review paths:
 - **Auditable.** Every runtime decision reports its reason — which surface matched, at which span, in which scope, and why a tool was allowed or blocked. Local review and publish decisions are also written to an append-only provenance log with actor, action, rule, result, and lexicon snapshot metadata.
 - **Dependency-free core.** The resolver and matcher have zero runtime dependencies and run entirely in memory. Optional extras are opt-in and never touch the hot path.
 - **Safe by construction.** Local writes are atomic (a reader sees a complete file or none), and the workspace database is configured for concurrent access without torn reads.
+- **Storage boundary.** The local workspace is SQLite-backed by default, but workflow code depends on a small `WorkspaceStore` boundary so future shared storage can be added without changing the deterministic runtime.
 
 ---
 
@@ -277,7 +278,7 @@ These hold on the deterministic runtime and local review paths:
 
 ## Status
 
-Agent Lexicon is an early, actively developed project (0.6.x). The core — resolve, guard, near-miss, dictionary-as-code, and merge-time drift detection — is well tested (276 passing tests) and used through the CLI, the Python API, and the local MCP server. Scaling it across many processes or a networked deployment is on the roadmap, not yet proven in production.
+Agent Lexicon is an early, actively developed project (0.6.x). The core — resolve, guard, near-miss, dictionary-as-code, and merge-time drift detection — is well tested (284 passing tests) and used through the CLI, the Python API, and the local MCP server. Scaling it across many processes or a networked deployment is on the roadmap, not yet proven in production.
 
 If terminology consistency across long, multi-agent sessions is a real cost for you — especially in regulated domains where decisions must be reproducible and auditable — this is built for exactly that.
 

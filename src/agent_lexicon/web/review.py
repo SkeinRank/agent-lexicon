@@ -25,7 +25,7 @@ from agent_lexicon.workspace import (
     ReviewDecisionStatus,
     WorkspaceError,
     WorkspaceReviewItem,
-    WorkspaceState,
+    WorkspaceStore,
     open_workspace,
 )
 
@@ -330,7 +330,7 @@ button.primary { background: var(--accent); color: #fff; border-color: var(--acc
 
 
 def build_review_inbox_html(
-    state: WorkspaceState,
+    state: WorkspaceStore,
     *,
     selected_surface: str | None = None,
     limit: int = 100,
@@ -339,8 +339,8 @@ def build_review_inbox_html(
     policy_mode: str | None = None,
 ) -> str:
     """Render the local proposal inbox as a complete HTML document."""
-    if not isinstance(state, WorkspaceState):
-        raise ReviewInboxError("state must be a WorkspaceState")
+    if not isinstance(state, WorkspaceStore):
+        raise ReviewInboxError("state must implement WorkspaceStore")
     items = state.list_review_items(limit=limit)
     selected = _select_item(state, items, selected_surface=selected_surface)
     policy = load_local_policy(state.root, mode=policy_mode)
@@ -382,7 +382,7 @@ def run_review_inbox(
 
 
 def _handler_for_state(
-    state: WorkspaceState,
+    state: WorkspaceStore,
     *,
     actor: str = "local",
     policy_decision: PolicyDecision | None = None,
@@ -478,7 +478,7 @@ def _handler_for_state(
 
 
 def _select_item(
-    state: WorkspaceState,
+    state: WorkspaceStore,
     items: tuple[WorkspaceReviewItem, ...],
     *,
     selected_surface: str | None,

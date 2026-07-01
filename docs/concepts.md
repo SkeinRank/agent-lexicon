@@ -34,6 +34,13 @@ This is different from the current review state. The current state answers "what
 
 Agents write terminology as code, not just prose. Agent Lexicon resolves identifier forms of a known surface — `accessToken`, `access_token`, `ACCESS_TOKEN` all resolve to the term whose surface is `access token`. This is what lets drift detection see terminology inside real source, not only in comments.
 
+
+## Workspace storage boundary
+
+The default workspace store is SQLite because local CLI, review, and CI loops should work without a server. The workspace APIs now sit behind a `WorkspaceStore` boundary, with `SQLiteWorkspaceStore` as the built-in implementation.
+
+This keeps the core workflow local-first while leaving a clear integration point for future shared storage. The runtime resolver and guard should still operate from immutable in-memory lexicon snapshots; storage is for ingest, review, snapshot metadata, and provenance records, not for every hot-path resolve call.
+
 ## Repository scan config
 
 Agent Lexicon treats repository files as terminology-bearing text. `.agent-lexicon/config.yaml` defines the default scan surface: which paths to read, which glob patterns to include, which paths to ignore, and the maximum file size. CLI flags can override these rules for a one-off scan, while the config keeps local runs and CI jobs consistent.

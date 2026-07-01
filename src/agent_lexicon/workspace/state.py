@@ -19,6 +19,14 @@ from typing import Any, Iterable, Mapping
 from agent_lexicon.ingest import IngestDocument, LocalIngestReport
 from agent_lexicon.scout import EvidencePack, EvidencePackReport, ScoutCandidate, ScoutCandidateReport
 
+from .storage import (
+    DEFAULT_WORKSPACE_STORAGE_BACKEND,
+    WorkspaceStorageBackend,
+    WorkspaceStorageConfig,
+    WorkspaceStorageError,
+    require_supported_workspace_storage,
+)
+
 
 class WorkspaceError(ValueError):
     """Raised when the local workspace cannot be opened or updated."""
@@ -350,7 +358,7 @@ class WorkspaceReviewItem:
 
 @dataclass(frozen=True, slots=True)
 class WorkspaceState:
-    """Handle for a local SQLite workspace database."""
+    """SQLite-backed workspace store implementation."""
 
     root: Path
     db_path: Path
@@ -921,13 +929,33 @@ class WorkspaceState:
         return _review_item_from_row(row)
 
 
+
+SQLiteWorkspaceStore = WorkspaceState
+
+
+def _require_sqlite_storage(storage_backend: WorkspaceStorageBackend | str) -> WorkspaceStorageBackend:
+    try:
+        backend = require_supported_workspace_storage(storage_backend)
+    except WorkspaceStorageError as exc:
+        raise WorkspaceError(str(exc)) from exc
+    if backend is not WorkspaceStorageBackend.SQLITE:  # pragma: no cover - future backend guard
+        raise WorkspaceError(f"workspace storage backend is not available in this build: {backend.value}")
+    return backend
+
 def workspace_path(
     root: str | Path = ".",
     *,
     workspace_dir: str = DEFAULT_WORKSPACE_DIR,
     database_name: str = DEFAULT_DATABASE_NAME,
+    storage_backend: WorkspaceStorageBackend | str = DEFAULT_WORKSPACE_STORAGE_BACKEND,
 ) -> Path:
-    """Return the SQLite database path for a local workspace root."""
+    """Return the local database path for a workspace root.
+
+    SQLite remains the built-in backend. The explicit ``storage_backend``
+    argument makes the storage boundary visible at call sites and gives future
+    backends a stable place to integrate without changing the workflow API.
+    """
+    _require_sqlite_storage(storage_backend)
     clean_workspace_dir = _clean_name(workspace_dir, field_name="workspace_dir")
     clean_database_name = _clean_name(database_name, field_name="database_name")
     return Path(root).resolve() / clean_workspace_dir / clean_database_name
@@ -939,10 +967,16 @@ def init_workspace(
     workspace_dir: str = DEFAULT_WORKSPACE_DIR,
     database_name: str = DEFAULT_DATABASE_NAME,
     reset: bool = False,
+    storage_backend: WorkspaceStorageBackend | str = DEFAULT_WORKSPACE_STORAGE_BACKEND,
 ) -> WorkspaceState:
-    """Create a local SQLite workspace and return its state handle."""
+    """Create a local workspace and return its SQLite-backed store handle."""
     root_path = Path(root).resolve()
-    db_path = workspace_path(root_path, workspace_dir=workspace_dir, database_name=database_name)
+    db_path = workspace_path(
+        root_path,
+        workspace_dir=workspace_dir,
+        database_name=database_name,
+        storage_backend=storage_backend,
+    )
     if reset and db_path.exists():
         db_path.unlink()
     state = WorkspaceState(root=root_path, db_path=db_path)
@@ -956,10 +990,16 @@ def open_workspace(
     workspace_dir: str = DEFAULT_WORKSPACE_DIR,
     database_name: str = DEFAULT_DATABASE_NAME,
     create: bool = True,
+    storage_backend: WorkspaceStorageBackend | str = DEFAULT_WORKSPACE_STORAGE_BACKEND,
 ) -> WorkspaceState:
-    """Open a local SQLite workspace, creating it by default."""
+    """Open a local workspace, creating the SQLite store by default."""
     root_path = Path(root).resolve()
-    db_path = workspace_path(root_path, workspace_dir=workspace_dir, database_name=database_name)
+    db_path = workspace_path(
+        root_path,
+        workspace_dir=workspace_dir,
+        database_name=database_name,
+        storage_backend=storage_backend,
+    )
     state = WorkspaceState(root=root_path, db_path=db_path)
     if not db_path.exists():
         if not create:
