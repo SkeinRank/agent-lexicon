@@ -170,7 +170,7 @@ The server exposes six tools: `resolve_term`, `check_language`, `guard_tool_call
 
 ### Repository scan config
 
-`agent-lexicon init` creates `.agent-lexicon/config.yaml` so common repository scans do not need long CLI commands. By default, `agent-lexicon scan` reads `README.md`, `docs`, and `src`, with include/exclude rules for docs and source files.
+`agent-lexicon init` creates `.agent-lexicon/config.yaml` so common repository scans do not need long CLI commands. By default, `agent-lexicon scan` starts from documentation and common source roots, applies language-aware include globs for popular stacks, and respects the repository `.gitignore`.
 
 ```yaml
 scan:
@@ -178,20 +178,39 @@ scan:
     - README.md
     - docs
     - src
+    - app
+    - packages
+    - lib
+    - services
   include:
     - "docs/**/*.md"
-    - "src/**/*.py"
+    - "docs/**/*.txt"
+    - "**/*.py"
+    - "**/*.ts"
+    - "**/*.tsx"
+    - "**/*.go"
+    - "**/*.rs"
+    - "**/*.java"
+    - "**/*.kt"
+    - "**/*.cs"
+    - "**/*.sql"
+    - "**/*.yaml"
   exclude:
     - ".venv/**"
     - "node_modules/**"
     - "dist/**"
+    - "**/generated/**"
+  respect_gitignore: true
   max_file_bytes: 1000000
 ```
+
+`.gitignore` is treated as the first line of repository-specific ignore behavior. Use `scan.exclude` for Agent Lexicon-specific rules such as generated fixtures that are still tracked in Git.
 
 CLI flags still win when you need a one-off run:
 
 ```bash
 agent-lexicon scan docs src --include "src/**/*.py" --exclude "src/generated/**"
+agent-lexicon scan --no-gitignore
 agent-lexicon check-merge --base main --head HEAD --exclude "docs/generated/**"
 ```
 

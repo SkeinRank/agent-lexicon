@@ -36,7 +36,7 @@ class IngestSourceKind(str, Enum):
     UNKNOWN = "unknown"
 
 
-DEFAULT_INCLUDE_GLOBS: tuple[str, ...] = (
+DEFAULT_DOCUMENTATION_GLOBS: tuple[str, ...] = (
     "README",
     "README.*",
     "AGENTS.md",
@@ -45,36 +45,96 @@ DEFAULT_INCLUDE_GLOBS: tuple[str, ...] = (
     "CHANGELOG",
     "CHANGELOG.*",
     "docs/*.md",
+    "docs/*.mdx",
+    "docs/*.rst",
     "docs/*.txt",
     "docs/*.json",
     "docs/*.yaml",
     "docs/*.yml",
     "docs/**/*.md",
+    "docs/**/*.mdx",
+    "docs/**/*.rst",
     "docs/**/*.txt",
     "docs/**/*.json",
     "docs/**/*.yaml",
     "docs/**/*.yml",
-    "src/*.py",
-    "src/*.pyi",
-    "src/*.js",
-    "src/*.jsx",
-    "src/*.ts",
-    "src/*.tsx",
-    "src/*.md",
-    "src/*.json",
-    "src/*.yaml",
-    "src/*.yml",
-    "src/**/*.py",
-    "src/**/*.pyi",
-    "src/**/*.js",
-    "src/**/*.jsx",
-    "src/**/*.ts",
-    "src/**/*.tsx",
-    "src/**/*.md",
-    "src/**/*.json",
-    "src/**/*.yaml",
-    "src/**/*.yml",
+)
+
+DEFAULT_LANGUAGE_GLOBS: tuple[str, ...] = (
+    # Python
+    "**/*.py",
+    "**/*.pyi",
+    # JavaScript / TypeScript
+    "**/*.js",
+    "**/*.jsx",
+    "**/*.mjs",
+    "**/*.cjs",
+    "**/*.ts",
+    "**/*.tsx",
+    # JVM
+    "**/*.java",
+    "**/*.kt",
+    "**/*.kts",
+    "**/*.scala",
+    # Go / Rust
+    "**/*.go",
+    "**/*.rs",
+    # C-family
+    "**/*.c",
+    "**/*.h",
+    "**/*.cc",
+    "**/*.cpp",
+    "**/*.cxx",
+    "**/*.hh",
+    "**/*.hpp",
+    "**/*.cs",
+    # Mobile / backend / scripting
+    "**/*.swift",
+    "**/*.m",
+    "**/*.mm",
+    "**/*.dart",
+    "**/*.rb",
+    "**/*.php",
+    "**/*.lua",
+    "**/*.r",
+    "**/*.pl",
+    "**/*.pm",
+    "**/*.ex",
+    "**/*.exs",
+    "**/*.erl",
+    "**/*.hrl",
+    "**/*.clj",
+    "**/*.cljs",
+    # Shell / SQL / infra / schemas
+    "**/*.sh",
+    "**/*.bash",
+    "**/*.zsh",
+    "**/*.sql",
+    "**/*.tf",
+    "**/*.hcl",
+    "**/*.graphql",
+    "**/*.gql",
+    "**/*.proto",
+    # Project config
+    "**/*.json",
+    "**/*.yaml",
+    "**/*.yml",
+    "**/*.toml",
+    "**/*.ini",
+    "**/*.cfg",
+    "**/*.conf",
+    "**/*.env",
+    "Dockerfile",
+    "Containerfile",
+    "Makefile",
+)
+
+DEFAULT_INCLUDE_GLOBS: tuple[str, ...] = (
+    *DEFAULT_DOCUMENTATION_GLOBS,
+    *DEFAULT_LANGUAGE_GLOBS,
     "*.md",
+    "*.mdx",
+    "*.rst",
     "*.txt",
     "*.json",
     "*.yaml",
@@ -117,7 +177,16 @@ DEFAULT_EXCLUDE_GLOBS: tuple[str, ...] = (
     "dist/**",
     "node_modules/**",
     "site-packages/**",
+    "target/**",
+    "coverage/**",
+    "vendor/**",
+    "**/generated/**",
+    "**/*.lock",
+    "**/*.min.js",
+    "**/*.map",
 )
+
+DEFAULT_RESPECT_GITIGNORE = True
 
 _TEXT_EXTENSIONS = {
     ".md",
@@ -128,8 +197,40 @@ _TEXT_EXTENSIONS = {
     ".pyi",
     ".js",
     ".jsx",
+    ".mjs",
+    ".cjs",
     ".ts",
     ".tsx",
+    ".java",
+    ".kt",
+    ".kts",
+    ".scala",
+    ".go",
+    ".rs",
+    ".c",
+    ".h",
+    ".cc",
+    ".cpp",
+    ".cxx",
+    ".hh",
+    ".hpp",
+    ".cs",
+    ".swift",
+    ".m",
+    ".mm",
+    ".dart",
+    ".rb",
+    ".php",
+    ".lua",
+    ".r",
+    ".pl",
+    ".pm",
+    ".ex",
+    ".exs",
+    ".erl",
+    ".hrl",
+    ".clj",
+    ".cljs",
     ".json",
     ".yaml",
     ".yml",
@@ -142,6 +243,11 @@ _TEXT_EXTENSIONS = {
     ".bash",
     ".zsh",
     ".sql",
+    ".tf",
+    ".hcl",
+    ".graphql",
+    ".gql",
+    ".proto",
 }
 
 
@@ -248,6 +354,34 @@ class LocalIngestReport:
         }
 
 
+
+@dataclass(frozen=True, slots=True)
+class GitIgnoreRule:
+    """One normalized rule from a repository .gitignore file."""
+
+    pattern: str
+    negated: bool = False
+    directory_only: bool = False
+    anchored: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "pattern", _clean_text(self.pattern, field_name="gitignore pattern"))
+        if not isinstance(self.negated, bool):
+            raise LocalIngestError("gitignore negated must be a boolean")
+        if not isinstance(self.directory_only, bool):
+            raise LocalIngestError("gitignore directory_only must be a boolean")
+        if not isinstance(self.anchored, bool):
+            raise LocalIngestError("gitignore anchored must be a boolean")
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return this gitignore rule as JSON-serializable data."""
+        return {
+            "pattern": self.pattern,
+            "negated": self.negated,
+            "directory_only": self.directory_only,
+            "anchored": self.anchored,
+        }
+
 def ingest_local_paths(
     paths: Iterable[str | Path],
     *,
@@ -256,6 +390,7 @@ def ingest_local_paths(
     exclude_dirs: Iterable[str] | None = None,
     exclude_globs: Iterable[str] | None = None,
     max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
+    respect_gitignore: bool = DEFAULT_RESPECT_GITIGNORE,
 ) -> LocalIngestReport:
     """Read local files and directories into a deterministic ingest report.
 
@@ -274,6 +409,7 @@ def ingest_local_paths(
         exclude_dirs=exclude_dirs,
         exclude_globs=exclude_globs,
         max_file_bytes=max_file_bytes,
+        respect_gitignore=respect_gitignore,
     )
     documents: list[IngestDocument] = []
     skipped_paths: list[str] = []
@@ -291,6 +427,8 @@ def ingest_local_paths(
             "exclude_dirs": list(exclude_dirs or DEFAULT_EXCLUDE_DIRS),
             "exclude_globs": list(exclude_globs or DEFAULT_EXCLUDE_GLOBS),
             "max_file_bytes": max_file_bytes,
+            "respect_gitignore": bool(respect_gitignore),
+            "gitignore_pattern_count": len(load_gitignore_rules(base_root)) if respect_gitignore else 0,
         },
     )
 
@@ -303,6 +441,7 @@ def discover_local_files(
     exclude_dirs: Iterable[str] | None = None,
     exclude_globs: Iterable[str] | None = None,
     max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
+    respect_gitignore: bool = DEFAULT_RESPECT_GITIGNORE,
 ) -> tuple[Path, ...]:
     """Return readable local files selected for ingestion."""
     if max_file_bytes < 1:
@@ -314,6 +453,7 @@ def discover_local_files(
     includes = tuple(include_globs or DEFAULT_INCLUDE_GLOBS)
     excludes = set(exclude_dirs or DEFAULT_EXCLUDE_DIRS)
     exclude_patterns = tuple(exclude_globs or DEFAULT_EXCLUDE_GLOBS)
+    gitignore_rules = load_gitignore_rules(base_root) if respect_gitignore else ()
 
     discovered: dict[str, Path] = {}
     for input_path in cleaned_paths:
@@ -321,13 +461,13 @@ def discover_local_files(
         if not path.exists():
             raise LocalIngestError(f"local ingest path does not exist: {input_path}")
         if path.is_file():
-            if _is_supported_file(path, base_root, includes, max_file_bytes, direct_file=True, exclude_globs=exclude_patterns):
+            if _is_supported_file(path, base_root, includes, max_file_bytes, direct_file=True, exclude_globs=exclude_patterns, gitignore_rules=gitignore_rules):
                 discovered[str(path)] = path
             continue
         if not path.is_dir():
             continue
         for file_path in _walk_files(path, exclude_dirs=excludes):
-            if _is_supported_file(file_path, base_root, includes, max_file_bytes, direct_file=False, exclude_globs=exclude_patterns):
+            if _is_supported_file(file_path, base_root, includes, max_file_bytes, direct_file=False, exclude_globs=exclude_patterns, gitignore_rules=gitignore_rules):
                 discovered[str(file_path)] = file_path
     return tuple(sorted(discovered.values(), key=lambda item: _relative_or_absolute(item, base_root)))
 
@@ -378,7 +518,7 @@ def classify_source_kind(path: str | Path) -> IngestSourceKind:
         return IngestSourceKind.PYTHON
     if suffix in {".ts", ".tsx"}:
         return IngestSourceKind.TYPESCRIPT
-    if suffix in {".js", ".jsx"}:
+    if suffix in {".js", ".jsx", ".mjs", ".cjs"}:
         return IngestSourceKind.JAVASCRIPT
     if suffix == ".json":
         return IngestSourceKind.JSON
@@ -420,10 +560,13 @@ def _is_supported_file(
     *,
     direct_file: bool,
     exclude_globs: tuple[str, ...] = (),
+    gitignore_rules: tuple[GitIgnoreRule, ...] = (),
 ) -> bool:
     if path.stat().st_size > max_file_bytes:
         return False
     if _path_matches_exclude_globs(path, root, exclude_globs):
+        return False
+    if path_matches_gitignore(path, root, gitignore_rules):
         return False
     if not _looks_like_text_path(path):
         return False
@@ -433,6 +576,120 @@ def _is_supported_file(
     normalized = relative.replace("\\", "/")
     return any(fnmatch.fnmatchcase(normalized, pattern) for pattern in include_globs)
 
+
+
+def load_gitignore_rules(root: str | Path = ".", *, filename: str = ".gitignore") -> tuple[GitIgnoreRule, ...]:
+    """Load normalized ignore rules from the repository .gitignore file."""
+    root_path = Path(root).expanduser().resolve()
+    gitignore_path = root_path / filename
+    if not gitignore_path.exists() or not gitignore_path.is_file():
+        return ()
+    try:
+        lines = gitignore_path.read_text(encoding="utf-8").splitlines()
+    except UnicodeDecodeError as exc:
+        raise LocalIngestError(f"gitignore file is not valid UTF-8: {gitignore_path}") from exc
+    rules: list[GitIgnoreRule] = []
+    for raw_line in lines:
+        rule = _parse_gitignore_rule(raw_line)
+        if rule is not None:
+            rules.append(rule)
+    return tuple(rules)
+
+
+def path_matches_gitignore(path: str | Path, root: str | Path, rules: Iterable[GitIgnoreRule]) -> bool:
+    """Return whether a path is ignored by the supplied gitignore rules."""
+    root_path = Path(root).expanduser().resolve()
+    path_obj = Path(path).expanduser()
+    if path_obj.is_absolute():
+        try:
+            relative = path_obj.resolve().relative_to(root_path).as_posix()
+        except ValueError:
+            relative = path_obj.name
+    else:
+        relative = path_obj.as_posix()
+    return relative_path_matches_gitignore(relative, rules)
+
+
+def relative_path_matches_gitignore(relative_path: str, rules: Iterable[GitIgnoreRule]) -> bool:
+    """Return whether a repository-relative path is ignored by gitignore rules."""
+    normalized = str(relative_path).strip().replace("\\", "/")
+    if not normalized:
+        return False
+    normalized = normalized.lstrip("./")
+    ignored = False
+    for rule in rules:
+        if _gitignore_rule_matches(normalized, rule):
+            ignored = not rule.negated
+    return ignored
+
+
+def _parse_gitignore_rule(raw_line: str) -> GitIgnoreRule | None:
+    line = raw_line.rstrip("\n")
+    if not line.strip():
+        return None
+    if line.lstrip().startswith("#"):
+        return None
+    if line.startswith("\\#") or line.startswith("\\!"):
+        line = line[1:]
+    negated = False
+    if line.startswith("!"):
+        negated = True
+        line = line[1:]
+    line = line.strip()
+    if not line:
+        return None
+    anchored = line.startswith("/")
+    if anchored:
+        line = line[1:]
+    directory_only = line.endswith("/")
+    if directory_only:
+        line = line.rstrip("/")
+    if not line:
+        return None
+    return GitIgnoreRule(
+        pattern=line.replace("\\", "/"),
+        negated=negated,
+        directory_only=directory_only,
+        anchored=anchored,
+    )
+
+
+def _gitignore_rule_matches(relative_path: str, rule: GitIgnoreRule) -> bool:
+    path = relative_path.strip("/")
+    if not path:
+        return False
+    pattern = rule.pattern.strip("/")
+    if not pattern:
+        return False
+    if rule.directory_only:
+        return _gitignore_directory_rule_matches(path, pattern, anchored=rule.anchored)
+    if rule.anchored or "/" in pattern:
+        return fnmatch.fnmatchcase(path, pattern) or fnmatch.fnmatchcase(path, f"{pattern}/**")
+    name = Path(path).name
+    if fnmatch.fnmatchcase(name, pattern):
+        return True
+    return any(fnmatch.fnmatchcase(part, pattern) for part in Path(path).parts)
+
+
+def _gitignore_directory_rule_matches(path: str, pattern: str, *, anchored: bool) -> bool:
+    parent_paths = _path_parent_prefixes(path)
+    if anchored or "/" in pattern:
+        return any(
+            parent == pattern
+            or parent.startswith(f"{pattern}/")
+            or fnmatch.fnmatchcase(parent, pattern)
+            or fnmatch.fnmatchcase(parent, f"{pattern}/**")
+            for parent in parent_paths
+        )
+    return any(fnmatch.fnmatchcase(part, pattern) for parent in parent_paths for part in Path(parent).parts)
+
+
+def _path_parent_prefixes(path: str) -> tuple[str, ...]:
+    parts = tuple(part for part in Path(path).parts if part not in {".", ""})
+    prefixes: list[str] = []
+    for index in range(1, len(parts)):
+        prefixes.append("/".join(parts[:index]))
+    return tuple(prefixes)
 
 def _path_matches_exclude_globs(path: Path, root: Path, exclude_globs: tuple[str, ...]) -> bool:
     if not exclude_globs:
@@ -458,7 +715,7 @@ def _path_matches_exclude_globs(path: Path, root: Path, exclude_globs: tuple[str
 def _looks_like_text_path(path: Path) -> bool:
     if path.suffix.lower() in _TEXT_EXTENSIONS:
         return True
-    return path.name in {"README", "CHANGELOG"}
+    return path.name in {"README", "CHANGELOG", "Dockerfile", "Containerfile", "Makefile"}
 
 
 def _looks_binary(raw: bytes) -> bool:
@@ -506,9 +763,13 @@ def _clean_text(value: str, *, field_name: str) -> str:
 
 __all__ = [
     "DEFAULT_EXCLUDE_DIRS",
+    "DEFAULT_DOCUMENTATION_GLOBS",
     "DEFAULT_EXCLUDE_GLOBS",
     "DEFAULT_INCLUDE_GLOBS",
+    "DEFAULT_LANGUAGE_GLOBS",
     "DEFAULT_MAX_FILE_BYTES",
+    "DEFAULT_RESPECT_GITIGNORE",
+    "GitIgnoreRule",
     "IngestDocument",
     "IngestSourceKind",
     "LocalIngestError",
@@ -516,5 +777,8 @@ __all__ = [
     "classify_source_kind",
     "discover_local_files",
     "ingest_local_paths",
+    "load_gitignore_rules",
+    "path_matches_gitignore",
     "read_local_document",
+    "relative_path_matches_gitignore",
 ]

@@ -25,6 +25,7 @@ from agent_lexicon.scout.near_miss import (
     discover_unknown_identifier_surfaces,
     suggest_near_misses,
 )
+from agent_lexicon.ingest.local import GitIgnoreRule, load_gitignore_rules, relative_path_matches_gitignore
 from agent_lexicon.scout.semantic import SemanticNearMissBackend
 from agent_lexicon.text import surface_fragments
 
@@ -443,6 +444,7 @@ def check_git_merge_terminology(
     include_deprecated: bool = True,
     include_globs: Sequence[str] | None = None,
     exclude_globs: Sequence[str] | None = None,
+    respect_gitignore: bool = True,
     max_suggestions_per_identifier: int = 3,
     min_confidence: float = 0.42,
     include_unresolved_unknowns: bool = False,
@@ -461,7 +463,13 @@ def check_git_merge_terminology(
         raise GitMergeCheckError(f"root does not exist: {root_path}")
     diff_ref = _diff_ref(base=base, head=head)
     diff_text = _run_git_diff(root_path, diff_ref=diff_ref, git_executable=git_executable)
-    added_lines = parse_git_added_lines(diff_text, include_globs=include_globs, exclude_globs=exclude_globs)
+    gitignore_rules = load_gitignore_rules(root_path) if respect_gitignore else ()
+    added_lines = parse_git_added_lines(
+        diff_text,
+        include_globs=include_globs,
+        exclude_globs=exclude_globs,
+        gitignore_rules=gitignore_rules,
+    )
     return build_git_merge_terminology_report(
         lexicon,
         added_lines,
@@ -476,7 +484,11 @@ def check_git_merge_terminology(
         min_confidence=min_confidence,
         include_unresolved_unknowns=include_unresolved_unknowns,
         semantic_backend=semantic_backend,
-        metadata={"source": "git_diff"},
+        metadata={
+            "source": "git_diff",
+            "respect_gitignore": bool(respect_gitignore),
+            "gitignore_pattern_count": len(gitignore_rules),
+        },
     )
 
 
@@ -597,12 +609,14 @@ def parse_git_added_lines(
     *,
     include_globs: Sequence[str] | None = None,
     exclude_globs: Sequence[str] | None = None,
+    gitignore_rules: Sequence[GitIgnoreRule] | None = None,
 ) -> tuple[GitDiffAddedLine, ...]:
     """Parse added lines from a unified git diff produced with or without context."""
     if not isinstance(diff_text, str):
         raise TypeError("diff_text must be a string")
     include_patterns = tuple(pattern.strip() for pattern in (include_globs or ()) if pattern.strip())
     exclude_patterns = tuple(pattern.strip() for pattern in (exclude_globs or ()) if pattern.strip())
+    ignore_rules = tuple(gitignore_rules or ())
     added_lines: list[GitDiffAddedLine] = []
     current_path: str | None = None
     current_new_line: int | None = None
@@ -625,7 +639,7 @@ def parse_git_added_lines(
         if not in_hunk or current_path is None or current_new_line is None:
             continue
         if raw_line.startswith("+") and not raw_line.startswith("+++"):
-            if _path_selected(current_path, include_patterns, exclude_patterns):
+            if _path_selected(current_path, include_patterns, exclude_patterns, gitignore_rules=ignore_rules):
                 added_lines.append(
                     GitDiffAddedLine(
                         path=current_path,
@@ -730,12 +744,22 @@ def _parse_new_file_path(path_token: str) -> str | None:
     return path or None
 
 
-def _path_selected(path: str, include_patterns: tuple[str, ...], exclude_patterns: tuple[str, ...]) -> bool:
+def _path_selected(
+    path: str,
+    include_patterns: tuple[str, ...],
+    exclude_patterns: tuple[str, ...],
+    *,
+    gitignore_rules: tuple[GitIgnoreRule, ...] = (),
+) -> bool:
     normalized = path.replace("\\", "/")
     included = True if not include_patterns else any(fnmatch.fnmatch(normalized, pattern) for pattern in include_patterns)
     if not included:
         return False
-    return not _path_excluded(normalized, exclude_patterns)
+    if _path_excluded(normalized, exclude_patterns):
+        return False
+    if gitignore_rules and relative_path_matches_gitignore(normalized, gitignore_rules):
+        return False
+    return True
 
 
 def _path_excluded(path: str, exclude_patterns: tuple[str, ...]) -> bool:

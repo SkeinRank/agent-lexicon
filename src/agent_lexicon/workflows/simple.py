@@ -20,6 +20,7 @@ from agent_lexicon.config import (
     effective_exclude_globs,
     effective_include_globs,
     effective_max_file_bytes,
+    effective_respect_gitignore,
     effective_scan_paths,
     init_project_config,
     load_project_config,
@@ -59,7 +60,7 @@ from agent_lexicon.scout import (
 from agent_lexicon.workspace import SnapshotPublishError, WorkspaceError, WorkspaceState, WorkspaceSummary, init_workspace, open_workspace, publish_local_snapshot
 
 
-DEFAULT_SCAN_PATHS = ("README.md", "docs", "src")
+DEFAULT_SCAN_PATHS = ("README.md", "docs", "src", "app", "packages", "lib", "services")
 
 
 class SimpleWorkflowError(ValueError):
@@ -309,6 +310,7 @@ def run_simple_scan(
     include_globs: Sequence[str] | None = None,
     exclude_globs: Sequence[str] | None = None,
     config_path: str | Path | None = None,
+    respect_gitignore: bool | None = None,
     min_score: float = 0.25,
     max_candidates: int = 20,
     context_lines: int = 1,
@@ -326,6 +328,7 @@ def run_simple_scan(
     effective_paths = effective_scan_paths(paths, config)
     effective_include = effective_include_globs(include_globs, config)
     effective_exclude = effective_exclude_globs(exclude_globs, config)
+    effective_gitignore = effective_respect_gitignore(respect_gitignore, config)
     effective_max_bytes = effective_max_file_bytes(max_file_bytes, config)
     resolved_paths = _resolve_scan_paths(effective_paths, root=root_path)
     resolved_lexicon_path = _resolve_default_lexicon_path(root_path, layout_dir=layout_dir, lexicon_path=lexicon_path)
@@ -337,6 +340,7 @@ def run_simple_scan(
             include_globs=effective_include,
             exclude_globs=effective_exclude,
             max_file_bytes=effective_max_bytes,
+            respect_gitignore=effective_gitignore,
         )
         safety = scan_documents_for_prompt_injection(ingest.documents)
         existing_surfaces = ()
@@ -388,6 +392,7 @@ def run_simple_scan(
             "include_globs": list(effective_include),
             "exclude_globs": list(effective_exclude),
             "max_file_bytes": effective_max_bytes,
+            "respect_gitignore": effective_gitignore,
             "config_path": config.path,
             "oov_tokenizer": oov_tokenizer,
         },

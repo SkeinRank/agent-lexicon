@@ -18,11 +18,15 @@ except Exception:  # pragma: no cover - dependency-free fallback path
 
 from agent_lexicon.core.files import atomic_write_text
 from agent_lexicon.core.loader import _load_basic_yaml
-from agent_lexicon.ingest.local import DEFAULT_INCLUDE_GLOBS, DEFAULT_MAX_FILE_BYTES
+from agent_lexicon.ingest.local import (
+    DEFAULT_INCLUDE_GLOBS,
+    DEFAULT_MAX_FILE_BYTES,
+    DEFAULT_RESPECT_GITIGNORE,
+)
 
 
 DEFAULT_CONFIG_PATH = ".agent-lexicon/config.yaml"
-DEFAULT_SCAN_PATHS: tuple[str, ...] = ("README.md", "docs", "src")
+DEFAULT_SCAN_PATHS: tuple[str, ...] = ("README.md", "docs", "src", "app", "packages", "lib", "services")
 DEFAULT_SCAN_EXCLUDE_GLOBS: tuple[str, ...] = (
     ".agent-lexicon/**",
     ".git/**",
@@ -39,6 +43,13 @@ DEFAULT_SCAN_EXCLUDE_GLOBS: tuple[str, ...] = (
     "dist/**",
     "node_modules/**",
     "site-packages/**",
+    "target/**",
+    "coverage/**",
+    "vendor/**",
+    "**/generated/**",
+    "**/*.lock",
+    "**/*.min.js",
+    "**/*.map",
 )
 
 DEFAULT_CONFIG_TEXT = """scan:
@@ -46,7 +57,12 @@ DEFAULT_CONFIG_TEXT = """scan:
     - README.md
     - docs
     - src
+    - app
+    - packages
+    - lib
+    - services
   include:
+    # Documentation and agent instructions
     - README
     - README.*
     - AGENTS.md
@@ -55,36 +71,82 @@ DEFAULT_CONFIG_TEXT = """scan:
     - CHANGELOG
     - CHANGELOG.*
     - docs/*.md
+    - docs/*.mdx
+    - docs/*.rst
     - docs/*.txt
     - docs/*.json
     - docs/*.yaml
     - docs/*.yml
     - docs/**/*.md
+    - docs/**/*.mdx
+    - docs/**/*.rst
     - docs/**/*.txt
     - docs/**/*.json
     - docs/**/*.yaml
     - docs/**/*.yml
-    - src/*.py
-    - src/*.pyi
-    - src/*.js
-    - src/*.jsx
-    - src/*.ts
-    - src/*.tsx
-    - src/*.md
-    - src/*.json
-    - src/*.yaml
-    - src/*.yml
-    - src/**/*.py
-    - src/**/*.pyi
-    - src/**/*.js
-    - src/**/*.jsx
-    - src/**/*.ts
-    - src/**/*.tsx
-    - src/**/*.md
-    - src/**/*.json
-    - src/**/*.yaml
-    - src/**/*.yml
+
+    # Common implementation languages and project config
+    - "**/*.py"
+    - "**/*.pyi"
+    - "**/*.js"
+    - "**/*.jsx"
+    - "**/*.mjs"
+    - "**/*.cjs"
+    - "**/*.ts"
+    - "**/*.tsx"
+    - "**/*.java"
+    - "**/*.kt"
+    - "**/*.kts"
+    - "**/*.scala"
+    - "**/*.go"
+    - "**/*.rs"
+    - "**/*.c"
+    - "**/*.h"
+    - "**/*.cc"
+    - "**/*.cpp"
+    - "**/*.cxx"
+    - "**/*.hh"
+    - "**/*.hpp"
+    - "**/*.cs"
+    - "**/*.swift"
+    - "**/*.m"
+    - "**/*.mm"
+    - "**/*.dart"
+    - "**/*.rb"
+    - "**/*.php"
+    - "**/*.lua"
+    - "**/*.r"
+    - "**/*.pl"
+    - "**/*.pm"
+    - "**/*.ex"
+    - "**/*.exs"
+    - "**/*.erl"
+    - "**/*.hrl"
+    - "**/*.clj"
+    - "**/*.cljs"
+    - "**/*.sh"
+    - "**/*.bash"
+    - "**/*.zsh"
+    - "**/*.sql"
+    - "**/*.tf"
+    - "**/*.hcl"
+    - "**/*.graphql"
+    - "**/*.gql"
+    - "**/*.proto"
+    - "**/*.json"
+    - "**/*.yaml"
+    - "**/*.yml"
+    - "**/*.toml"
+    - "**/*.ini"
+    - "**/*.cfg"
+    - "**/*.conf"
+    - "**/*.env"
+    - Dockerfile
+    - Containerfile
+    - Makefile
     - "*.md"
+    - "*.mdx"
+    - "*.rst"
     - "*.txt"
     - "*.json"
     - "*.yaml"
@@ -106,9 +168,16 @@ DEFAULT_CONFIG_TEXT = """scan:
     - dist/**
     - node_modules/**
     - site-packages/**
+    - target/**
+    - coverage/**
+    - vendor/**
+    - "**/generated/**"
+    - "**/*.lock"
+    - "**/*.min.js"
+    - "**/*.map"
+  respect_gitignore: true
   max_file_bytes: 1000000
 """
-
 
 class AgentLexiconConfigError(ValueError):
     """Raised when an Agent Lexicon repository config is invalid."""
@@ -121,12 +190,14 @@ class ScanConfig:
     paths: tuple[str, ...] = DEFAULT_SCAN_PATHS
     include: tuple[str, ...] = DEFAULT_INCLUDE_GLOBS
     exclude: tuple[str, ...] = DEFAULT_SCAN_EXCLUDE_GLOBS
+    respect_gitignore: bool = DEFAULT_RESPECT_GITIGNORE
     max_file_bytes: int = DEFAULT_MAX_FILE_BYTES
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "paths", _clean_string_tuple(self.paths, field_name="scan.paths"))
         object.__setattr__(self, "include", _clean_string_tuple(self.include, field_name="scan.include"))
         object.__setattr__(self, "exclude", _clean_string_tuple(self.exclude, field_name="scan.exclude"))
+        object.__setattr__(self, "respect_gitignore", _coerce_bool(self.respect_gitignore, field_name="scan.respect_gitignore"))
         max_file_bytes = int(self.max_file_bytes)
         if max_file_bytes < 1:
             raise AgentLexiconConfigError("scan.max_file_bytes must be greater than 0")
@@ -138,6 +209,7 @@ class ScanConfig:
             "paths": list(self.paths),
             "include": list(self.include),
             "exclude": list(self.exclude),
+            "respect_gitignore": self.respect_gitignore,
             "max_file_bytes": self.max_file_bytes,
         }
 
@@ -208,6 +280,7 @@ def load_project_config(root: str | Path = ".", *, config_path: str | Path | Non
         paths=_optional_string_sequence(scan_payload.get("paths"), default=DEFAULT_SCAN_PATHS, field_name="scan.paths"),
         include=_optional_string_sequence(scan_payload.get("include"), default=DEFAULT_INCLUDE_GLOBS, field_name="scan.include"),
         exclude=_optional_string_sequence(scan_payload.get("exclude"), default=DEFAULT_SCAN_EXCLUDE_GLOBS, field_name="scan.exclude"),
+        respect_gitignore=_optional_bool(scan_payload.get("respect_gitignore"), default=DEFAULT_RESPECT_GITIGNORE, field_name="scan.respect_gitignore"),
         max_file_bytes=int(scan_payload.get("max_file_bytes", DEFAULT_MAX_FILE_BYTES)),
     )
     return AgentLexiconConfig(scan=scan, path=str(path), metadata={"source": "file"})
@@ -243,6 +316,17 @@ def effective_exclude_globs(
     return config.scan.exclude
 
 
+
+
+def effective_respect_gitignore(
+    cli_value: bool | None,
+    config: AgentLexiconConfig,
+) -> bool:
+    """Return CLI gitignore behavior when provided, otherwise config default."""
+    if cli_value is not None:
+        return bool(cli_value)
+    return bool(config.scan.respect_gitignore)
+
 def effective_max_file_bytes(cli_value: int | None, config: AgentLexiconConfig) -> int:
     """Return CLI max-file-bytes when provided, otherwise config default."""
     return int(cli_value if cli_value is not None else config.scan.max_file_bytes)
@@ -275,6 +359,25 @@ def _optional_string_sequence(value: Any, *, default: tuple[str, ...], field_nam
     return _clean_string_tuple(tuple(str(item) for item in value), field_name=field_name)
 
 
+
+
+def _optional_bool(value: Any, *, default: bool, field_name: str) -> bool:
+    if value is None:
+        return bool(default)
+    return _coerce_bool(value, field_name=field_name)
+
+
+def _coerce_bool(value: Any, *, field_name: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "yes", "1", "on"}:
+            return True
+        if lowered in {"false", "no", "0", "off"}:
+            return False
+    raise AgentLexiconConfigError(f"{field_name} must be a boolean")
+
 def _clean_string_tuple(values: Iterable[str], *, field_name: str) -> tuple[str, ...]:
     cleaned: list[str] = []
     for value in values:
@@ -304,6 +407,7 @@ __all__ = [
     "effective_exclude_globs",
     "effective_include_globs",
     "effective_max_file_bytes",
+    "effective_respect_gitignore",
     "effective_scan_paths",
     "init_project_config",
     "load_project_config",

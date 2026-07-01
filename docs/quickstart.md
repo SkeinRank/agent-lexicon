@@ -16,7 +16,7 @@ Requires Python 3.10+. The core has no runtime dependencies.
 agent-lexicon init
 ```
 
-This creates a local dictionary-as-code layout under `lexicon/`, a local SQLite-backed workspace under `.agent-lexicon/`, and `.agent-lexicon/config.yaml` with default scan paths for `README.md`, `docs`, and `src`. The workspace is opened through a storage boundary, so local workflows stay lightweight while future shared storage can plug into the same review/provenance APIs.
+This creates a local dictionary-as-code layout under `lexicon/`, a local SQLite-backed workspace under `.agent-lexicon/`, and `.agent-lexicon/config.yaml` with default scan paths for `README.md`, `docs`, `src`, and common source roots. The workspace is opened through a storage boundary, so local workflows stay lightweight while future shared storage can plug into the same review/provenance APIs.
 
 ## 3. Discover candidate terms
 
@@ -42,17 +42,33 @@ scan:
     - README.md
     - docs
     - src
+    - app
+    - packages
+    - lib
+    - services
   include:
     - "docs/**/*.md"
-    - "src/**/*.py"
+    - "docs/**/*.txt"
+    - "**/*.py"
+    - "**/*.ts"
+    - "**/*.tsx"
+    - "**/*.go"
+    - "**/*.rs"
+    - "**/*.java"
+    - "**/*.kt"
+    - "**/*.cs"
+    - "**/*.sql"
+    - "**/*.yaml"
   exclude:
     - ".venv/**"
     - "node_modules/**"
     - "dist/**"
+    - "**/generated/**"
+  respect_gitignore: true
   max_file_bytes: 1000000
 ```
 
-CLI flags override config for one run.
+The generated config respects `.gitignore` by default. Set `scan.respect_gitignore: false` or run `agent-lexicon scan --no-gitignore` for a one-off audit that intentionally includes ignored files. CLI flags override config for one run.
 
 ## 4. Review
 

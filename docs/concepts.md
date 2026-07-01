@@ -43,7 +43,9 @@ This keeps the core workflow local-first while leaving a clear integration point
 
 ## Repository scan config
 
-Agent Lexicon treats repository files as terminology-bearing text. `.agent-lexicon/config.yaml` defines the default scan surface: which paths to read, which glob patterns to include, which paths to ignore, and the maximum file size. CLI flags can override these rules for a one-off scan, while the config keeps local runs and CI jobs consistent.
+Agent Lexicon treats repository files as terminology-bearing text. `.agent-lexicon/config.yaml` defines the default scan surface: which paths to read, which glob patterns to include, which paths to ignore, whether `.gitignore` should be respected, and the maximum file size. CLI flags can override these rules for a one-off scan, while the config keeps local runs and CI jobs consistent.
+
+Discovery is language-agnostic rather than AST-bound: it reads text from documentation, common source roots, and popular implementation/configuration file types, then lets the terminology layer detect known terms, likely aliases, and new term candidates. `.gitignore` removes local build outputs and private generated files from the scan by default; `scan.exclude` remains the project-specific layer for tracked generated code or folders that should not participate in terminology review.
 
 ## Unicode normalization
 

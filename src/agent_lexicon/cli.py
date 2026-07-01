@@ -13,6 +13,7 @@ from .config import (
     effective_exclude_globs,
     effective_include_globs,
     effective_max_file_bytes,
+    effective_respect_gitignore,
     load_project_config,
 )
 from .dictionary import (
@@ -176,6 +177,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional Agent Lexicon config path. Defaults to .agent-lexicon/config.yaml when present.",
     )
+    scan_parser.add_argument(
+        "--no-gitignore",
+        dest="respect_gitignore",
+        action="store_false",
+        default=None,
+        help="Do not apply .gitignore rules during discovery for this run.",
+    )
     scan_parser.add_argument("--min-score", type=float, default=0.25, help="Minimum candidate score from 0.0 to 1.0.")
     scan_parser.add_argument("--max-candidates", type=int, default=20, help="Maximum number of candidates to save.")
     scan_parser.add_argument(
@@ -338,6 +346,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--config",
         default=None,
         help="Optional Agent Lexicon config path. Defaults to .agent-lexicon/config.yaml when present.",
+    )
+    check_merge_parser.add_argument(
+        "--no-gitignore",
+        dest="respect_gitignore",
+        action="store_false",
+        default=None,
+        help="Do not apply .gitignore rules to the merge diff for this run.",
     )
     check_merge_parser.add_argument(
         "--exclude-deprecated",
@@ -1463,6 +1478,7 @@ def main(argv: list[str] | None = None) -> int:
             include_globs=args.include,
             exclude_globs=args.exclude,
             config_path=Path(args.config) if args.config else None,
+            respect_gitignore=args.respect_gitignore,
             include_deprecated=not args.exclude_deprecated,
             min_confidence=args.min_confidence,
             max_suggestions=args.max_suggestions,
@@ -1638,6 +1654,7 @@ def _simple_scan_command(args: argparse.Namespace) -> int:
             include_globs=args.include,
             exclude_globs=args.exclude,
             config_path=args.config,
+            respect_gitignore=args.respect_gitignore,
             min_score=args.min_score,
             max_candidates=args.max_candidates,
             oov_tokenizer=args.oov_tokenizer,
@@ -2080,6 +2097,7 @@ def _check_merge_command(
     include_globs: list[str] | None,
     exclude_globs: list[str] | None,
     config_path: Path | None,
+    respect_gitignore: bool | None,
     include_deprecated: bool,
     min_confidence: float,
     max_suggestions: int,
@@ -2098,6 +2116,7 @@ def _check_merge_command(
         return 1
     effective_include = effective_include_globs(include_globs, config)
     effective_exclude = effective_exclude_globs(exclude_globs, config)
+    effective_gitignore = effective_respect_gitignore(respect_gitignore, config)
     resolved_lexicon_path = lexicon_path or (root_path / "lexicon" / "lexicon.yaml")
     if not resolved_lexicon_path.is_absolute():
         resolved_lexicon_path = root_path / resolved_lexicon_path
@@ -2128,6 +2147,7 @@ def _check_merge_command(
             include_deprecated=include_deprecated,
             include_globs=effective_include,
             exclude_globs=effective_exclude,
+            respect_gitignore=effective_gitignore,
             max_suggestions_per_identifier=max_suggestions,
             min_confidence=min_confidence,
             include_unresolved_unknowns=include_unresolved_unknowns,

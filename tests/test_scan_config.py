@@ -29,8 +29,9 @@ def test_init_project_config_writes_default_scan_config(tmp_path: Path) -> None:
 
     config = load_project_config(tmp_path)
     assert config.path == str(config_path)
-    assert config.scan.paths == ("README.md", "docs", "src")
+    assert config.scan.paths == ("README.md", "docs", "src", "app", "packages", "lib", "services")
     assert "node_modules/**" in config.scan.exclude
+    assert config.scan.respect_gitignore is True
     assert config.scan.max_file_bytes == 1_000_000
 
 
