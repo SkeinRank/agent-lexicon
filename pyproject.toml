@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "agent-lexicon"
 version = "0.6.0"
-description = "A lightweight terminology memory layer for AI agents."
+description = "A deterministic terminology layer for AI agents."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
@@ -21,7 +21,7 @@ keywords = [
   "governance"
 ]
 classifiers = [
-  "Development Status :: 1 - Planning",
+  "Development Status :: 4 - Beta",
   "Intended Audience :: Developers",
   "License :: OSI Approved :: Apache Software License",
   "Programming Language :: Python :: 3",
@@ -59,6 +59,7 @@ include = [
   "/src",
   "/tests",
   "/examples",
+  "/docs",
   "/README.md",
   "/LICENSE",
   "/pyproject.toml",
