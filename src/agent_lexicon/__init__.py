@@ -2,6 +2,22 @@
 
 from __future__ import annotations
 
+from .config import (
+    AgentLexiconConfig,
+    AgentLexiconConfigError,
+    DEFAULT_CONFIG_PATH,
+    DEFAULT_CONFIG_TEXT,
+    DEFAULT_SCAN_EXCLUDE_GLOBS,
+    ScanConfig,
+    effective_exclude_globs,
+    effective_include_globs,
+    effective_max_file_bytes,
+    effective_scan_paths,
+    init_project_config,
+    load_project_config,
+    project_config_path,
+)
+
 from .core import (
     DEFAULT_RUNTIME_CACHE_SIZE,
     AgentLexiconLoadError,
@@ -232,6 +248,7 @@ from .scout import (
 )
 from .ingest import (
     DEFAULT_EXCLUDE_DIRS,
+    DEFAULT_EXCLUDE_GLOBS,
     DEFAULT_INCLUDE_GLOBS,
     DEFAULT_MAX_FILE_BYTES,
     IngestDocument,
@@ -316,6 +333,19 @@ from .mcp import (
 
 __all__ = [
 
+    "AgentLexiconConfig",
+    "AgentLexiconConfigError",
+    "DEFAULT_CONFIG_PATH",
+    "DEFAULT_CONFIG_TEXT",
+    "DEFAULT_SCAN_EXCLUDE_GLOBS",
+    "ScanConfig",
+    "effective_exclude_globs",
+    "effective_include_globs",
+    "effective_max_file_bytes",
+    "effective_scan_paths",
+    "init_project_config",
+    "load_project_config",
+    "project_config_path",
     "atomic_write_text",
     "DEFAULT_OOV_TOKENIZER",
     "OovScorerError",
@@ -546,6 +576,7 @@ __all__ = [
     "DEFAULT_MAX_FILE_BYTES",
     "DEFAULT_INCLUDE_GLOBS",
     "DEFAULT_EXCLUDE_DIRS",
+    "DEFAULT_EXCLUDE_GLOBS",
     "EvalQuery",
     "BehaviorMetrics",
     "EvalQueryResult",

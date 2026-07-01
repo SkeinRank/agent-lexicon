@@ -16,17 +16,43 @@ Requires Python 3.10+. The core has no runtime dependencies.
 agent-lexicon init
 ```
 
-This creates a local dictionary-as-code layout under `lexicon/`, with a starter `lexicon.yaml` you will grow over time.
+This creates a local dictionary-as-code layout under `lexicon/`, a local workspace under `.agent-lexicon/`, and `.agent-lexicon/config.yaml` with default scan paths for `README.md`, `docs`, and `src`.
 
 ## 3. Discover candidate terms
 
-Point `scan` at the files where your terminology lives — docs, READMEs, source:
+Run `scan` with the repository defaults from `.agent-lexicon/config.yaml`:
+
+```bash
+agent-lexicon scan
+```
+
+You can still override paths for a one-off run:
 
 ```bash
 agent-lexicon scan README.md docs src
 ```
 
-Scan reads the files, runs prompt-safety checks on them, discovers candidate terms, builds line-numbered evidence for each, scores their quality, and saves everything to the local workspace. Add `--quality-report` to see how candidates were prioritized.
+Scan reads the configured files, applies include/exclude rules, runs prompt-safety checks, discovers candidate terms, builds line-numbered evidence for each, scores their quality, and saves everything to the local workspace. Add `--quality-report` to see how candidates were prioritized.
+
+Repository scan behavior lives in `.agent-lexicon/config.yaml`:
+
+```yaml
+scan:
+  paths:
+    - README.md
+    - docs
+    - src
+  include:
+    - "docs/**/*.md"
+    - "src/**/*.py"
+  exclude:
+    - ".venv/**"
+    - "node_modules/**"
+    - "dist/**"
+  max_file_bytes: 1000000
+```
+
+CLI flags override config for one run.
 
 ## 4. Review
 

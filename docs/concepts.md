@@ -22,6 +22,10 @@ Resolution is deterministic. The same text against the same lexicon always retur
 
 Agents write terminology as code, not just prose. Agent Lexicon resolves identifier forms of a known surface — `accessToken`, `access_token`, `ACCESS_TOKEN` all resolve to the term whose surface is `access token`. This is what lets drift detection see terminology inside real source, not only in comments.
 
+## Repository scan config
+
+Agent Lexicon treats repository files as terminology-bearing text. `.agent-lexicon/config.yaml` defines the default scan surface: which paths to read, which glob patterns to include, which paths to ignore, and the maximum file size. CLI flags can override these rules for a one-off scan, while the config keeps local runs and CI jobs consistent.
+
 ## Unicode normalization
 
 Before matching, text is normalized: invisible separators, full-width characters, and ligatures are folded, and bidi-control characters are removed and reported. This means a term cannot be hidden from the matcher with invisible characters, and a guard decision cannot be steered to the wrong term by obfuscated text. Real accents and distinct letters are preserved — normalization makes lookalikes consistent without collapsing genuinely different words.

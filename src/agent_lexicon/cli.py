@@ -8,6 +8,13 @@ from pathlib import Path
 from typing import Mapping
 
 from . import __version__, about
+from .config import (
+    AgentLexiconConfigError,
+    effective_exclude_globs,
+    effective_include_globs,
+    effective_max_file_bytes,
+    load_project_config,
+)
 from .dictionary import (
     DictionaryLayoutError,
     SemanticDiffError,
@@ -155,7 +162,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--include",
         action="append",
         default=None,
-        help="Glob to include when scanning directories. Can be provided multiple times.",
+        help="Glob to include when scanning directories. Overrides scan.include from config when provided.",
+    )
+    scan_parser.add_argument(
+        "--exclude",
+        action="append",
+        default=None,
+        help="Glob to exclude when scanning directories. Overrides scan.exclude from config when provided.",
+    )
+    scan_parser.add_argument(
+        "--config",
+        default=None,
+        help="Optional Agent Lexicon config path. Defaults to .agent-lexicon/config.yaml when present.",
     )
     scan_parser.add_argument("--min-score", type=float, default=0.25, help="Minimum candidate score from 0.0 to 1.0.")
     scan_parser.add_argument("--max-candidates", type=int, default=20, help="Maximum number of candidates to save.")
@@ -167,7 +185,7 @@ def build_parser() -> argparse.ArgumentParser:
     scan_parser.add_argument("--context-lines", type=int, default=1, help="Context lines around each evidence match.")
     scan_parser.add_argument("--max-positive-snippets", type=int, default=3, help="Maximum positive snippets per candidate.")
     scan_parser.add_argument("--max-negative-snippets", type=int, default=3, help="Maximum negative snippets per candidate.")
-    scan_parser.add_argument("--max-file-bytes", type=int, default=1_000_000, help="Maximum file size to read.")
+    scan_parser.add_argument("--max-file-bytes", type=int, default=None, help="Maximum file size to read. Defaults to scan.max_file_bytes from config.")
     _add_local_policy_options(scan_parser)
     scan_parser.add_argument("--quality-report", action="store_true", help="Print Scout quality metrics after scanning.")
     scan_parser.add_argument("--json", action="store_true", help="Print the scan report as JSON.")
@@ -307,7 +325,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--include",
         action="append",
         default=None,
-        help="Limit checked paths with a git-style glob such as 'src/**'. Can be provided multiple times.",
+        help="Limit checked paths with a git-style glob such as 'src/**'. Overrides scan.include from config when provided.",
+    )
+    check_merge_parser.add_argument(
+        "--exclude",
+        action="append",
+        default=None,
+        help="Exclude checked paths with a git-style glob such as 'dist/**'. Overrides scan.exclude from config when provided.",
+    )
+    check_merge_parser.add_argument(
+        "--config",
+        default=None,
+        help="Optional Agent Lexicon config path. Defaults to .agent-lexicon/config.yaml when present.",
     )
     check_merge_parser.add_argument(
         "--exclude-deprecated",
@@ -379,6 +408,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Glob to include when scanning directories. Can be provided multiple times.",
     )
     ingest_parser.add_argument(
+        "--exclude",
+        action="append",
+        default=None,
+        help="Glob to exclude when scanning directories. Can be provided multiple times.",
+    )
+    ingest_parser.add_argument(
         "--max-file-bytes",
         type=int,
         default=1_000_000,
@@ -409,6 +444,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=None,
         help="Glob to include when scanning directories. Can be provided multiple times.",
+    )
+    discover_candidates_parser.add_argument(
+        "--exclude",
+        action="append",
+        default=None,
+        help="Glob to exclude when scanning directories. Can be provided multiple times.",
     )
     discover_candidates_parser.add_argument(
         "--lexicon",
@@ -473,6 +514,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=None,
         help="Glob to include when scanning directories. Can be provided multiple times.",
+    )
+    build_evidence_parser.add_argument(
+        "--exclude",
+        action="append",
+        default=None,
+        help="Glob to exclude when scanning directories. Can be provided multiple times.",
     )
     build_evidence_parser.add_argument(
         "--lexicon",
@@ -560,6 +607,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=None,
         help="Glob to include when scanning directories. Can be provided multiple times.",
+    )
+    safety_scan_parser.add_argument(
+        "--exclude",
+        action="append",
+        default=None,
+        help="Glob to exclude when scanning directories. Can be provided multiple times.",
     )
     safety_scan_parser.add_argument(
         "--max-file-bytes",
@@ -1081,6 +1134,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Glob to include when scanning directories. Can be provided multiple times.",
     )
     workspace_sync_parser.add_argument(
+        "--exclude",
+        action="append",
+        default=None,
+        help="Glob to exclude when scanning directories. Can be provided multiple times.",
+    )
+    workspace_sync_parser.add_argument(
         "--lexicon",
         default=None,
         help="Optional lexicon document whose existing surfaces should be ignored.",
@@ -1374,6 +1433,8 @@ def main(argv: list[str] | None = None) -> int:
             head=args.head,
             scopes=args.scope,
             include_globs=args.include,
+            exclude_globs=args.exclude,
+            config_path=Path(args.config) if args.config else None,
             include_deprecated=not args.exclude_deprecated,
             min_confidence=args.min_confidence,
             max_suggestions=args.max_suggestions,
@@ -1390,6 +1451,7 @@ def main(argv: list[str] | None = None) -> int:
             paths=[Path(path) for path in args.paths],
             root=Path(args.root) if args.root is not None else None,
             include_globs=args.include,
+            exclude_globs=args.exclude,
             max_file_bytes=args.max_file_bytes,
             as_jsonl=args.jsonl,
         )
@@ -1399,6 +1461,7 @@ def main(argv: list[str] | None = None) -> int:
             paths=[Path(path) for path in args.paths],
             root=Path(args.root) if args.root is not None else None,
             include_globs=args.include,
+            exclude_globs=args.exclude,
             lexicon_path=Path(args.lexicon) if args.lexicon else None,
             min_score=args.min_score,
             max_candidates=args.max_candidates,
@@ -1414,6 +1477,7 @@ def main(argv: list[str] | None = None) -> int:
             paths=[Path(path) for path in args.paths],
             root=Path(args.root) if args.root is not None else None,
             include_globs=args.include,
+            exclude_globs=args.exclude,
             lexicon_path=Path(args.lexicon) if args.lexicon else None,
             min_score=args.min_score,
             max_candidates=args.max_candidates,
@@ -1522,7 +1586,8 @@ def _simple_init_command(args: argparse.Namespace) -> int:
     print(f"Dictionary: {report.dictionary.layout.layout_path}")
     print(f"Workspace: {report.workspace.db_path}")
     print(f"Policy: {report.policy_path} ({report.policy_mode})")
-    print("Next: agent-lexicon scan README.md docs src")
+    print(f"Config: {report.config_path}")
+    print("Next: agent-lexicon scan")
     return 0
 
 
@@ -1543,6 +1608,8 @@ def _simple_scan_command(args: argparse.Namespace) -> int:
             layout_dir=args.layout_dir,
             lexicon_path=Path(args.lexicon) if args.lexicon else None,
             include_globs=args.include,
+            exclude_globs=args.exclude,
+            config_path=args.config,
             min_score=args.min_score,
             max_candidates=args.max_candidates,
             oov_tokenizer=args.oov_tokenizer,
@@ -1983,6 +2050,8 @@ def _check_merge_command(
     head: str,
     scopes: list[str] | None,
     include_globs: list[str] | None,
+    exclude_globs: list[str] | None,
+    config_path: Path | None,
     include_deprecated: bool,
     min_confidence: float,
     max_suggestions: int,
@@ -1994,6 +2063,13 @@ def _check_merge_command(
     as_json: bool,
 ) -> int:
     root_path = root.resolve()
+    try:
+        config = load_project_config(root_path, config_path=config_path)
+    except AgentLexiconConfigError as exc:
+        print(f"Invalid Agent Lexicon config: {exc}")
+        return 1
+    effective_include = effective_include_globs(include_globs, config)
+    effective_exclude = effective_exclude_globs(exclude_globs, config)
     resolved_lexicon_path = lexicon_path or (root_path / "lexicon" / "lexicon.yaml")
     if not resolved_lexicon_path.is_absolute():
         resolved_lexicon_path = root_path / resolved_lexicon_path
@@ -2022,7 +2098,8 @@ def _check_merge_command(
             head=head,
             scopes=scopes,
             include_deprecated=include_deprecated,
-            include_globs=include_globs,
+            include_globs=effective_include,
+            exclude_globs=effective_exclude,
             max_suggestions_per_identifier=max_suggestions,
             min_confidence=min_confidence,
             include_unresolved_unknowns=include_unresolved_unknowns,
@@ -2054,6 +2131,7 @@ def _ingest_command(
     paths: list[Path],
     root: Path | None,
     include_globs: list[str] | None,
+    exclude_globs: list[str] | None,
     max_file_bytes: int,
     as_jsonl: bool,
 ) -> int:
@@ -2062,6 +2140,7 @@ def _ingest_command(
             paths,
             root=root,
             include_globs=include_globs,
+            exclude_globs=exclude_globs,
             max_file_bytes=max_file_bytes,
         )
     except LocalIngestError as exc:
@@ -2096,6 +2175,7 @@ def _discover_candidates_command(
     paths: list[Path],
     root: Path | None,
     include_globs: list[str] | None,
+    exclude_globs: list[str] | None,
     lexicon_path: Path | None,
     min_score: float,
     max_candidates: int,
@@ -2115,6 +2195,7 @@ def _discover_candidates_command(
             paths,
             root=root,
             include_globs=include_globs,
+            exclude_globs=exclude_globs,
             max_file_bytes=max_file_bytes,
         )
     except LocalIngestError as exc:
@@ -2182,6 +2263,7 @@ def _build_evidence_command(
     paths: list[Path],
     root: Path | None,
     include_globs: list[str] | None,
+    exclude_globs: list[str] | None,
     lexicon_path: Path | None,
     min_score: float,
     max_candidates: int,
@@ -2203,6 +2285,7 @@ def _build_evidence_command(
             paths,
             root=root,
             include_globs=include_globs,
+            exclude_globs=exclude_globs,
             max_file_bytes=max_file_bytes,
         )
     except LocalIngestError as exc:
@@ -2283,6 +2366,7 @@ def _safety_command(args: argparse.Namespace) -> int:
             paths=[Path(path) for path in args.paths],
             root=Path(args.root) if args.root is not None else None,
             include_globs=args.include,
+            exclude_globs=args.exclude,
             max_file_bytes=args.max_file_bytes,
             fail_on_high_risk=args.fail_on_high_risk,
             as_json=args.json,
@@ -2296,6 +2380,7 @@ def _safety_scan_command(
     paths: list[Path],
     root: Path | None,
     include_globs: list[str] | None,
+    exclude_globs: list[str] | None,
     max_file_bytes: int,
     fail_on_high_risk: bool,
     as_json: bool,
@@ -2305,6 +2390,7 @@ def _safety_scan_command(
             paths,
             root=root,
             include_globs=include_globs,
+            exclude_globs=exclude_globs,
             max_file_bytes=max_file_bytes,
         )
         report = scan_documents_for_prompt_injection(ingest_report.documents)
@@ -2756,6 +2842,7 @@ def _workspace_command(args: argparse.Namespace) -> int:
             paths=[Path(path) for path in args.paths],
             root=Path(args.root),
             include_globs=args.include,
+            exclude_globs=args.exclude,
             lexicon_path=Path(args.lexicon) if args.lexicon else None,
             min_score=args.min_score,
             max_candidates=args.max_candidates,
@@ -2801,6 +2888,7 @@ def _workspace_sync_command(
     paths: list[Path],
     root: Path,
     include_globs: list[str] | None,
+    exclude_globs: list[str] | None,
     lexicon_path: Path | None,
     min_score: float,
     max_candidates: int,
@@ -2829,6 +2917,7 @@ def _workspace_sync_command(
             paths,
             root=root,
             include_globs=include_globs,
+            exclude_globs=exclude_globs,
             max_file_bytes=max_file_bytes,
         )
     except LocalIngestError as exc:

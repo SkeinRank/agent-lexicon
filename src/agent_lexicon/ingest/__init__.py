@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from .local import (
     DEFAULT_EXCLUDE_DIRS,
+    DEFAULT_EXCLUDE_GLOBS,
     DEFAULT_INCLUDE_GLOBS,
     DEFAULT_MAX_FILE_BYTES,
     IngestDocument,
@@ -18,6 +19,7 @@ from .local import (
 
 __all__ = [
     "DEFAULT_EXCLUDE_DIRS",
+    "DEFAULT_EXCLUDE_GLOBS",
     "DEFAULT_INCLUDE_GLOBS",
     "DEFAULT_MAX_FILE_BYTES",
     "IngestDocument",

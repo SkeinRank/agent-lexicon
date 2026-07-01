@@ -125,8 +125,9 @@ Add `--fail-on-review` to make this a blocking CI check that returns a non-zero 
 **Command line** — the full local loop, no code required.
 
 ```bash
-agent-lexicon init                      # create a local dictionary-as-code layout
-agent-lexicon scan README.md docs src   # discover candidate terms with evidence
+agent-lexicon init                      # create lexicon/, workspace, policy, and scan config
+agent-lexicon scan                      # discover candidate terms from configured paths
+agent-lexicon scan README.md docs src   # or override paths explicitly
 agent-lexicon review                    # open the local web inbox to accept/reject
 agent-lexicon publish                   # publish accepted decisions as a snapshot
 agent-lexicon resolve <lexicon> "text"  # resolve terminology in any text
@@ -160,6 +161,33 @@ agent-lexicon mcp serve --root . --lexicon lexicon/lexicon.yaml
 ```
 
 The server exposes six tools: `resolve_term`, `check_language`, `guard_tool_call`, `find_evidence`, `submit_proposal`, and `get_snapshot`. List their full definitions with `agent-lexicon mcp tools`.
+
+### Repository scan config
+
+`agent-lexicon init` creates `.agent-lexicon/config.yaml` so common repository scans do not need long CLI commands. By default, `agent-lexicon scan` reads `README.md`, `docs`, and `src`, with include/exclude rules for docs and source files.
+
+```yaml
+scan:
+  paths:
+    - README.md
+    - docs
+    - src
+  include:
+    - "docs/**/*.md"
+    - "src/**/*.py"
+  exclude:
+    - ".venv/**"
+    - "node_modules/**"
+    - "dist/**"
+  max_file_bytes: 1000000
+```
+
+CLI flags still win when you need a one-off run:
+
+```bash
+agent-lexicon scan docs src --include "src/**/*.py" --exclude "src/generated/**"
+agent-lexicon check-merge --base main --head HEAD --exclude "docs/generated/**"
+```
 
 ---
 

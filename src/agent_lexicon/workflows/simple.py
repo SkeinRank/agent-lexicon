@@ -15,6 +15,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from agent_lexicon.config import (
+    AgentLexiconConfigError,
+    effective_exclude_globs,
+    effective_include_globs,
+    effective_max_file_bytes,
+    effective_scan_paths,
+    init_project_config,
+    load_project_config,
+)
 from agent_lexicon.core import AgentLexiconLoadError, load_lexicon
 from agent_lexicon.dictionary import (
     DEFAULT_DICTIONARY_DIR,
@@ -64,6 +73,7 @@ class SimpleInitReport:
     dictionary: DictionaryLayoutSummary
     workspace: WorkspaceSummary
     policy_path: str
+    config_path: str
     policy_mode: str
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
@@ -73,6 +83,7 @@ class SimpleInitReport:
             "dictionary": self.dictionary.to_dict(),
             "workspace": self.workspace.to_dict(),
             "policy_path": self.policy_path,
+            "config_path": self.config_path,
             "policy_mode": self.policy_mode,
             "metadata": dict(self.metadata),
         }
@@ -276,12 +287,14 @@ def run_simple_init(
             policy = init_local_policy(root_path, mode=policy_mode, actor=actor, role=role, force=force)
         else:
             policy = load_local_policy(root_path, mode=policy_mode)
-    except (DictionaryLayoutError, WorkspaceError, LocalPolicyError) as exc:
+        config_file = init_project_config(root_path, force=force)
+    except (DictionaryLayoutError, WorkspaceError, LocalPolicyError, AgentLexiconConfigError) as exc:
         raise SimpleWorkflowError(str(exc)) from exc
     return SimpleInitReport(
         dictionary=dictionary,
         workspace=workspace.summary(),
         policy_path=str(policy_file),
+        config_path=str(config_file),
         policy_mode=policy.mode.value,
         metadata={"root": str(root_path), "layout_dir": layout_dir},
     )
@@ -294,25 +307,36 @@ def run_simple_scan(
     layout_dir: str = DEFAULT_DICTIONARY_DIR,
     lexicon_path: str | Path | None = None,
     include_globs: Sequence[str] | None = None,
+    exclude_globs: Sequence[str] | None = None,
+    config_path: str | Path | None = None,
     min_score: float = 0.25,
     max_candidates: int = 20,
     context_lines: int = 1,
     max_positive_snippets: int = 3,
     max_negative_snippets: int = 3,
-    max_file_bytes: int = 1_000_000,
+    max_file_bytes: int | None = None,
     oov_tokenizer: str | None = None,
 ) -> SimpleScanReport:
     """Run local ingest, safety scan, candidate discovery, evidence, and workspace sync."""
     root_path = Path(root).expanduser().resolve()
-    resolved_paths = _resolve_scan_paths(paths, root=root_path)
+    try:
+        config = load_project_config(root_path, config_path=config_path)
+    except AgentLexiconConfigError as exc:
+        raise SimpleWorkflowError(str(exc)) from exc
+    effective_paths = effective_scan_paths(paths, config)
+    effective_include = effective_include_globs(include_globs, config)
+    effective_exclude = effective_exclude_globs(exclude_globs, config)
+    effective_max_bytes = effective_max_file_bytes(max_file_bytes, config)
+    resolved_paths = _resolve_scan_paths(effective_paths, root=root_path)
     resolved_lexicon_path = _resolve_default_lexicon_path(root_path, layout_dir=layout_dir, lexicon_path=lexicon_path)
 
     try:
         ingest = ingest_local_paths(
             resolved_paths,
             root=root_path,
-            include_globs=tuple(include_globs) if include_globs is not None else None,
-            max_file_bytes=max_file_bytes,
+            include_globs=effective_include,
+            exclude_globs=effective_exclude,
+            max_file_bytes=effective_max_bytes,
         )
         safety = scan_documents_for_prompt_injection(ingest.documents)
         existing_surfaces = ()
@@ -358,7 +382,15 @@ def run_simple_scan(
         workspace=state.summary(),
         quality_report=quality_report,
         lexicon_path=str(resolved_lexicon_path) if resolved_lexicon_path is not None else None,
-        metadata={"root": str(root_path), "paths": [str(path) for path in resolved_paths], "oov_tokenizer": oov_tokenizer},
+        metadata={
+            "root": str(root_path),
+            "paths": [str(path) for path in resolved_paths],
+            "include_globs": list(effective_include),
+            "exclude_globs": list(effective_exclude),
+            "max_file_bytes": effective_max_bytes,
+            "config_path": config.path,
+            "oov_tokenizer": oov_tokenizer,
+        },
     )
 
 

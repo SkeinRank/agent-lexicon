@@ -101,6 +101,24 @@ DEFAULT_EXCLUDE_DIRS: tuple[str, ...] = (
 
 DEFAULT_MAX_FILE_BYTES = 1_000_000
 
+DEFAULT_EXCLUDE_GLOBS: tuple[str, ...] = (
+    ".agent-lexicon/**",
+    ".git/**",
+    ".hg/**",
+    ".mypy_cache/**",
+    ".pytest_cache/**",
+    ".ruff_cache/**",
+    ".tox/**",
+    ".venv/**",
+    "venv/**",
+    "__pycache__/**",
+    "**/__pycache__/**",
+    "build/**",
+    "dist/**",
+    "node_modules/**",
+    "site-packages/**",
+)
+
 _TEXT_EXTENSIONS = {
     ".md",
     ".mdx",
@@ -236,6 +254,7 @@ def ingest_local_paths(
     root: str | Path | None = None,
     include_globs: Iterable[str] | None = None,
     exclude_dirs: Iterable[str] | None = None,
+    exclude_globs: Iterable[str] | None = None,
     max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
 ) -> LocalIngestReport:
     """Read local files and directories into a deterministic ingest report.
@@ -253,6 +272,7 @@ def ingest_local_paths(
         root=base_root,
         include_globs=include_globs,
         exclude_dirs=exclude_dirs,
+        exclude_globs=exclude_globs,
         max_file_bytes=max_file_bytes,
     )
     documents: list[IngestDocument] = []
@@ -269,6 +289,7 @@ def ingest_local_paths(
             "root": str(base_root),
             "include_globs": list(include_globs or DEFAULT_INCLUDE_GLOBS),
             "exclude_dirs": list(exclude_dirs or DEFAULT_EXCLUDE_DIRS),
+            "exclude_globs": list(exclude_globs or DEFAULT_EXCLUDE_GLOBS),
             "max_file_bytes": max_file_bytes,
         },
     )
@@ -280,6 +301,7 @@ def discover_local_files(
     root: str | Path | None = None,
     include_globs: Iterable[str] | None = None,
     exclude_dirs: Iterable[str] | None = None,
+    exclude_globs: Iterable[str] | None = None,
     max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
 ) -> tuple[Path, ...]:
     """Return readable local files selected for ingestion."""
@@ -291,6 +313,7 @@ def discover_local_files(
     base_root = Path(root).resolve() if root is not None else _common_root(cleaned_paths)
     includes = tuple(include_globs or DEFAULT_INCLUDE_GLOBS)
     excludes = set(exclude_dirs or DEFAULT_EXCLUDE_DIRS)
+    exclude_patterns = tuple(exclude_globs or DEFAULT_EXCLUDE_GLOBS)
 
     discovered: dict[str, Path] = {}
     for input_path in cleaned_paths:
@@ -298,13 +321,13 @@ def discover_local_files(
         if not path.exists():
             raise LocalIngestError(f"local ingest path does not exist: {input_path}")
         if path.is_file():
-            if _is_supported_file(path, base_root, includes, max_file_bytes, direct_file=True):
+            if _is_supported_file(path, base_root, includes, max_file_bytes, direct_file=True, exclude_globs=exclude_patterns):
                 discovered[str(path)] = path
             continue
         if not path.is_dir():
             continue
         for file_path in _walk_files(path, exclude_dirs=excludes):
-            if _is_supported_file(file_path, base_root, includes, max_file_bytes, direct_file=False):
+            if _is_supported_file(file_path, base_root, includes, max_file_bytes, direct_file=False, exclude_globs=exclude_patterns):
                 discovered[str(file_path)] = file_path
     return tuple(sorted(discovered.values(), key=lambda item: _relative_or_absolute(item, base_root)))
 
@@ -396,8 +419,11 @@ def _is_supported_file(
     max_file_bytes: int,
     *,
     direct_file: bool,
+    exclude_globs: tuple[str, ...] = (),
 ) -> bool:
     if path.stat().st_size > max_file_bytes:
+        return False
+    if _path_matches_exclude_globs(path, root, exclude_globs):
         return False
     if not _looks_like_text_path(path):
         return False
@@ -406,6 +432,27 @@ def _is_supported_file(
     relative = _relative_or_absolute(path, root)
     normalized = relative.replace("\\", "/")
     return any(fnmatch.fnmatchcase(normalized, pattern) for pattern in include_globs)
+
+
+def _path_matches_exclude_globs(path: Path, root: Path, exclude_globs: tuple[str, ...]) -> bool:
+    if not exclude_globs:
+        return False
+    relative = _relative_or_absolute(path, root).replace("\\", "/")
+    name = path.name
+    parts = set(path.parts)
+    for raw_pattern in exclude_globs:
+        pattern = str(raw_pattern).strip().replace("\\", "/")
+        if not pattern:
+            continue
+        if pattern.startswith("/"):
+            pattern = pattern[1:]
+        if pattern.endswith("/"):
+            pattern = pattern + "**"
+        if fnmatch.fnmatchcase(relative, pattern) or fnmatch.fnmatchcase(name, pattern):
+            return True
+        if "/" not in pattern and not any(char in pattern for char in "*?[") and pattern in parts:
+            return True
+    return False
 
 
 def _looks_like_text_path(path: Path) -> bool:
@@ -459,6 +506,7 @@ def _clean_text(value: str, *, field_name: str) -> str:
 
 __all__ = [
     "DEFAULT_EXCLUDE_DIRS",
+    "DEFAULT_EXCLUDE_GLOBS",
     "DEFAULT_INCLUDE_GLOBS",
     "DEFAULT_MAX_FILE_BYTES",
     "IngestDocument",
