@@ -3176,6 +3176,7 @@ def _resolve_command(
     print(f"Action: {decision.action.value}")
     if decision.message:
         print(f"Message: {decision.message}")
+    _print_lexicon_snapshot(decision.metadata)
     if decision.metadata.get("unicode_findings"):
         print("Unicode findings:")
         for finding in decision.metadata.get("unicode_findings", []):
@@ -3200,6 +3201,12 @@ def _resolve_command(
         )
     return 0
 
+
+
+def _print_lexicon_snapshot(metadata: Mapping[str, object]) -> None:
+    snapshot_ref = metadata.get("lexicon_snapshot_ref") if metadata else None
+    if isinstance(snapshot_ref, str) and snapshot_ref:
+        print(f"Lexicon snapshot: {snapshot_ref}")
 
 
 def _print_near_miss_suggestions(metadata: Mapping[str, object]) -> None:
@@ -3283,6 +3290,7 @@ def _guard_command(
     print(f"Allowed: {'yes' if decision.is_allowed else 'no'}")
     print(f"Reason: {decision.reason}")
     print(f"Resolution: {decision.resolution.status.value}")
+    _print_lexicon_snapshot(decision.metadata)
     if decision.metadata.get("unicode_findings"):
         print("Unicode findings:")
         for finding in decision.metadata.get("unicode_findings", []):

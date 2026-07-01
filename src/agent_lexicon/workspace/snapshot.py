@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-from agent_lexicon.core import EvidenceKind, EvidenceSpan, Lexicon, Term
+from agent_lexicon.core import EvidenceKind, EvidenceSpan, Lexicon, Term, lexicon_runtime_metadata
 from agent_lexicon.core.files import atomic_write_text
 
 from .state import ReviewDecisionStatus, WorkspaceError, WorkspaceReviewItem, WorkspaceState
@@ -171,6 +171,10 @@ def publish_local_snapshot(
         json.dumps(lexicon.to_dict(), indent=2, ensure_ascii=False, sort_keys=True) + "\n",
     )
 
+    snapshot_runtime_metadata = lexicon_runtime_metadata(lexicon, source_path=resolved_output_path)
+    if base_lexicon is not None:
+        snapshot_runtime_metadata["base_lexicon_snapshot"] = lexicon_runtime_metadata(base_lexicon)
+
     snapshot = PublishedSnapshot(
         snapshot_id=resolved_snapshot_id,
         created_at=created_at,
@@ -180,7 +184,7 @@ def publish_local_snapshot(
         generated_term_count=len(generated_terms),
         skipped_count=len(skipped_surfaces),
         skipped_surfaces=tuple(skipped_surfaces),
-        metadata={"base_term_count": len(base_terms)},
+        metadata={"base_term_count": len(base_terms), **snapshot_runtime_metadata},
     )
     try:
         state.store_snapshot_record(snapshot)

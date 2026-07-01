@@ -44,6 +44,7 @@ $ agent-lexicon resolve examples/customer_limits/lexicon.yaml "please raise the 
 Status: ambiguous
 Action: ask_clarification
 Message: Found 2 possible canonical terms.
+Lexicon snapshot: sha256:98b7c5324a20c58926ea8e3413f87851c6d8c354e93197a69c56f1e142ea962e
 Candidates:
 - api.rate_limit (rate limit) scopes=api matches='limit'
 - billing.credit_limit (credit limit) scopes=billing matches='limit'
@@ -56,6 +57,7 @@ $ agent-lexicon resolve examples/customer_limits/lexicon.yaml "please raise the 
 Status: resolved
 Action: use_terms
 Message: Resolved to billing.credit_limit.
+Lexicon snapshot: sha256:98b7c5324a20c58926ea8e3413f87851c6d8c354e93197a69c56f1e142ea962e
 Candidates:
 - billing.credit_limit (credit limit) scopes=billing matches='limit'
 ```
@@ -68,6 +70,8 @@ Status: blocked
 Action: block
 Allowed: no
 Reason: Requested tool is not allowed for the resolved terminology.
+Resolution: resolved
+Lexicon snapshot: sha256:98b7c5324a20c58926ea8e3413f87851c6d8c354e93197a69c56f1e142ea962e
 Matched terms:
 - billing.credit_limit
 Allowed tools:
@@ -106,6 +110,8 @@ Three pieces, each doing one job.
 $ agent-lexicon check-merge --root . --base main --head feature-branch --include 'src/**'
 Git merge terminology check: 1 files, 6 added lines
 Range: main...feature-branch
+Lexicon: lexicon/lexicon.yaml
+Lexicon snapshot: sha256:98b7c5324a20c58926ea8e3413f87851c6d8c354e93197a69c56f1e142ea962e
 Summary: known=2, likely_alias=0, likely_new_term=3, unresolved_unknown=0, hidden_unresolved=1
 Known terminology:
 - auth.py:2 'authToken' -> auth.access_token (access token) scopes=auth
@@ -218,7 +224,7 @@ terms:
       - surface: requests per minute
 ```
 
-Because it is just a file in the repo, the vocabulary versions, diffs, and reviews the same way your code does. A built-in linter warns when a surface is broad enough to over-trigger or to affect a guard decision:
+Because it is just a file in the repo, the vocabulary versions, diffs, and reviews the same way your code does. Runtime decisions also carry a content-addressed snapshot reference (`sha256:<digest>`), so the same text can be replayed later against the exact same vocabulary content. A built-in linter warns when a surface is broad enough to over-trigger or to affect a guard decision:
 
 ```console
 $ agent-lexicon lint lexicon/lexicon.yaml
@@ -247,7 +253,8 @@ This is deliberately a **suggestion to a human, marked as non-deterministic**, n
 
 These hold on the deterministic runtime and local review paths:
 
-- **Deterministic.** The same text against the same lexicon version always produces the same decision. No model, no embedding, no randomness on the resolve and guard paths.
+- **Deterministic.** The same text against the same immutable lexicon snapshot always produces the same decision. No model, no embedding, no randomness on the resolve and guard paths.
+- **Reproducible.** Runtime and merge reports include a content-addressed `lexicon_snapshot_ref` (`sha256:<digest>`), so a decision can be replayed later against the exact same vocabulary content.
 - **Auditable.** Every decision reports its reason — which surface matched, at which span, in which scope, and why a tool was allowed or blocked.
 - **Dependency-free core.** The resolver and matcher have zero runtime dependencies and run entirely in memory. Optional extras are opt-in and never touch the hot path.
 - **Safe by construction.** Local writes are atomic (a reader sees a complete file or none), and the workspace database is configured for concurrent access without torn reads.
@@ -263,7 +270,7 @@ These hold on the deterministic runtime and local review paths:
 
 ## Status
 
-Agent Lexicon is an early, actively developed project (0.6.x). The core — resolve, guard, near-miss, dictionary-as-code, and merge-time drift detection — is well tested (261 passing tests) and used through the CLI, the Python API, and the local MCP server. Scaling it across many processes or a networked deployment is on the roadmap, not yet proven in production.
+Agent Lexicon is an early, actively developed project (0.6.x). The core — resolve, guard, near-miss, dictionary-as-code, and merge-time drift detection — is well tested (272 passing tests) and used through the CLI, the Python API, and the local MCP server. Scaling it across many processes or a networked deployment is on the roadmap, not yet proven in production.
 
 If terminology consistency across long, multi-agent sessions is a real cost for you — especially in regulated domains where decisions must be reproducible and auditable — this is built for exactly that.
 

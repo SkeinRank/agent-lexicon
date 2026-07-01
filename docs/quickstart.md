@@ -68,7 +68,7 @@ This opens a local web inbox in your browser. Each candidate shows its evidence;
 agent-lexicon publish
 ```
 
-Accepted decisions become a versioned lexicon snapshot. This snapshot is the canonical vocabulary your agents read from.
+Accepted decisions become a versioned lexicon snapshot. The publish summary includes immutable snapshot metadata, including a `lexicon_snapshot_ref` (`sha256:<digest>`), so later runtime and review decisions can point back to the exact vocabulary content they used.
 
 ## 6. Use it at runtime
 
@@ -76,6 +76,12 @@ Resolve terminology in any text:
 
 ```bash
 agent-lexicon resolve lexicon/lexicon.yaml "please raise the limit" --scope billing
+```
+
+The output includes the immutable lexicon snapshot reference used for the decision:
+
+```text
+Lexicon snapshot: sha256:<digest>
 ```
 
 Gate a tool call:
@@ -92,7 +98,7 @@ agent-lexicon mcp serve --root . --lexicon lexicon/lexicon.yaml
 
 ## 7. Catch drift at merge
 
-Before a branch lands, check what terminology it introduced:
+Before a branch lands, check what terminology it introduced. The report includes the lexicon snapshot reference used for the review:
 
 ```bash
 agent-lexicon check-merge --base main --head feature-branch --include 'src/**'

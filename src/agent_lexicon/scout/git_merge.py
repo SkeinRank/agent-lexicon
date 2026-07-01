@@ -18,6 +18,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from agent_lexicon.core.matcher import SurfaceMatcher
 from agent_lexicon.core.models import Lexicon
+from agent_lexicon.core.snapshots import lexicon_runtime_metadata
 from agent_lexicon.scout.near_miss import (
     NearMissError,
     NearMissSuggestion,
@@ -339,6 +340,7 @@ class GitMergeTerminologyReport:
             f"{self.scanned_file_count} files, {self.added_line_count} added lines",
             f"Range: {self.diff_ref}",
             f"Lexicon: {self.lexicon_path}",
+            f"Lexicon snapshot: {self.metadata.get('lexicon_snapshot_ref', 'unknown')}",
             "Summary: "
             f"known={self.known_occurrence_count}, "
             f"likely_alias={self.likely_alias_count}, "
@@ -573,6 +575,7 @@ def build_git_merge_terminology_report(
             )
 
     report_metadata: dict[str, Any] = dict(metadata or {})
+    report_metadata.update(lexicon_runtime_metadata(lexicon, source_path=lexicon_path))
     report_metadata["include_unresolved_unknowns"] = include_unresolved_unknowns
     report_metadata["hidden_unresolved_count"] = hidden_unresolved_count
 

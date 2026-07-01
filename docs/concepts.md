@@ -16,7 +16,13 @@ A **scope** is a namespace. The same word can mean different things in different
 - **ambiguous** — the text could mean more than one term (for example, `limit` with no scope). The agent should ask for clarification rather than guess.
 - **unknown** — no known terminology was found.
 
-Resolution is deterministic. The same text against the same lexicon always returns the same state, with the same matched spans and reasons.
+Resolution is deterministic. The same text against the same immutable lexicon snapshot always returns the same state, with the same matched spans and reasons. Runtime decisions include a `lexicon_snapshot_ref` such as `sha256:<digest>` so the exact vocabulary content used for a decision can be identified later.
+
+## Immutable lexicon snapshots
+
+A loaded lexicon is treated as immutable runtime input. Agent Lexicon computes a stable content fingerprint for that input and exposes it as `lexicon_snapshot_ref` (`sha256:<digest>`) in resolver decisions, guard decisions, merge reports, and published snapshot metadata.
+
+This keeps reproducibility independent from mutable files on disk: the guarantee is not "whatever `lexicon.yaml` contains today", but "this text was resolved against this exact lexicon content".
 
 ## Code-style identifiers
 
