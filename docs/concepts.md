@@ -70,3 +70,8 @@ In a long multi-agent session, branches accumulate independent naming decisions.
 Everything that **decides** is deterministic: resolution, guarding, and the heuristic drift classification. Optional semantic reranking only **suggests** — it points a human reviewer at the most likely canonical neighbour for a gray-zone identifier, marked as non-deterministic, and never commits a decision on its own.
 
 This boundary is deliberate. It is what lets every committed decision be reproduced and audited later, while still letting the suggestion layer be as smart as you want.
+
+## CI merge gate
+
+The GitHub Actions workflow keeps local review and pull-request review aligned. It uses the repository scan configuration, validates the dictionary, and runs `check-merge` against the PR diff. By default it reports drift without failing the PR; teams can turn on `--fail-on-review` once their lexicon review process is ready to become a merge requirement.
+

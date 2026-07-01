@@ -197,6 +197,37 @@ agent-lexicon check-merge --base main --head HEAD --exclude "docs/generated/**"
 
 ---
 
+## GitHub Actions workflow
+
+The repository includes a terminology review workflow for pull requests. It validates the tracked lexicon and runs merge-time drift detection against the PR diff:
+
+```yaml
+name: Agent Lexicon Terminology Review
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  terminology-review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install --upgrade poetry==2.1.1
+      - run: poetry install --with dev
+      - run: poetry run agent-lexicon validate lexicon/lexicon.yaml --lint --strict-lint
+      - run: poetry run agent-lexicon check-merge --root . --base origin/${{ github.base_ref }} --head HEAD
+```
+
+The checked-in workflow is review-first by default: it prints terminology drift without blocking every PR. Set `base_ref`, `head_ref`, and `fail_on_review=true` for an on-demand blocking run, or add `--fail-on-review` when your team is ready to make terminology review a required merge gate.
+
+---
+
 ## The dictionary is code
 
 The canonical vocabulary lives in a git-tracked YAML file. A term has a canonical form, aliases, the scopes it belongs to, and optionally the tools that are allowed to act on it.

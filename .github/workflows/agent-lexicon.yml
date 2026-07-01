@@ -1,0 +1,82 @@
+name: Agent Lexicon Terminology Review
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      base_ref:
+        description: "Base git ref used for manual terminology review."
+        required: false
+        default: "origin/main"
+      head_ref:
+        description: "Head git ref used for manual terminology review."
+        required: false
+        default: "HEAD"
+      fail_on_review:
+        description: "Return a failing status when merge terminology review finds unresolved drift."
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+permissions:
+  contents: read
+
+jobs:
+  terminology-review:
+    name: Terminology review
+    runs-on: ubuntu-latest
+
+    env:
+      AGENT_LEXICON_FAIL_ON_REVIEW: ${{ github.event.inputs.fail_on_review || 'false' }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Poetry
+        run: python -m pip install --upgrade poetry==2.1.1
+
+      - name: Install Agent Lexicon
+        run: poetry install --with dev
+
+      - name: Validate dictionary
+        run: poetry run agent-lexicon validate lexicon/lexicon.yaml --lint --strict-lint
+
+      - name: Review terminology drift
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          args=(
+            --root .
+            --base "origin/${{ github.base_ref }}"
+            --head HEAD
+          )
+          if [ "${AGENT_LEXICON_FAIL_ON_REVIEW}" = "true" ]; then
+            args+=(--fail-on-review)
+          fi
+          poetry run agent-lexicon check-merge "${args[@]}"
+
+      - name: Review terminology drift on demand
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          args=(
+            --root .
+            --base "${{ github.event.inputs.base_ref || 'origin/main' }}"
+            --head "${{ github.event.inputs.head_ref || 'HEAD' }}"
+          )
+          if [ "${AGENT_LEXICON_FAIL_ON_REVIEW}" = "true" ]; then
+            args+=(--fail-on-review)
+          fi
+          poetry run agent-lexicon check-merge "${args[@]}"
