@@ -39,7 +39,18 @@ class ReviewEventType(str, Enum):
     DECISION_SAVED = "review_decision_saved"
 
 
-SCHEMA_VERSION = 4
+class WorkspaceDecisionAction(str, Enum):
+    """Append-only provenance action recorded in the workspace decision log."""
+
+    REVIEW_DECISION_SAVED = "review_decision_saved"
+    SNAPSHOT_PUBLISHED = "snapshot_published"
+    RUNTIME_RESOLVE = "runtime_resolve"
+    TOOL_GUARD = "tool_guard"
+    MERGE_REVIEW = "merge_review"
+    POLICY_DECISION = "policy_decision"
+
+
+SCHEMA_VERSION = 5
 DEFAULT_WORKSPACE_DIR = ".agent-lexicon"
 DEFAULT_DATABASE_NAME = "agent_lexicon.db"
 DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 30_000
@@ -61,6 +72,7 @@ class WorkspaceSummary:
     review_decision_count: int = 0
     review_event_count: int = 0
     snapshot_count: int = 0
+    decision_record_count: int = 0
 
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-serializable workspace summary."""
@@ -74,6 +86,7 @@ class WorkspaceSummary:
             "review_decision_count": self.review_decision_count,
             "review_event_count": self.review_event_count,
             "snapshot_count": self.snapshot_count,
+            "decision_record_count": self.decision_record_count,
         }
 
 
@@ -106,6 +119,68 @@ class WorkspaceReviewDecision:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceDecisionRecord:
+    """Append-only provenance record for a deterministic workspace decision.
+
+    The record is intentionally self-contained: it stores the actor, action,
+    input, result, rule identifier, and the immutable lexicon snapshot metadata
+    that was available when the decision was made.
+    """
+
+    decision_id: str
+    created_at: str
+    actor: str
+    action: WorkspaceDecisionAction
+    subject: str
+    input_text: str
+    result: str
+    rule_id: str
+    lexicon_snapshot_ref: str = ""
+    lexicon_fingerprint: str = ""
+    payload: Mapping[str, Any] = field(default_factory=dict)
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "decision_id", _clean_text(self.decision_id, field_name="decision_id"))
+        object.__setattr__(self, "created_at", _clean_text(self.created_at, field_name="created_at"))
+        object.__setattr__(self, "actor", _clean_text(self.actor, field_name="actor"))
+        object.__setattr__(self, "action", WorkspaceDecisionAction(self.action.value if isinstance(self.action, WorkspaceDecisionAction) else str(self.action)))
+        object.__setattr__(self, "subject", _clean_text(self.subject, field_name="subject"))
+        object.__setattr__(self, "input_text", str(self.input_text))
+        object.__setattr__(self, "result", _clean_text(self.result, field_name="result"))
+        object.__setattr__(self, "rule_id", _clean_text(self.rule_id, field_name="rule_id"))
+        object.__setattr__(self, "lexicon_snapshot_ref", str(self.lexicon_snapshot_ref).strip())
+        object.__setattr__(self, "lexicon_fingerprint", str(self.lexicon_fingerprint).strip())
+        if not isinstance(self.payload, Mapping):
+            raise WorkspaceError("payload must be a mapping")
+        if not isinstance(self.metadata, Mapping):
+            raise WorkspaceError("metadata must be a mapping")
+        object.__setattr__(self, "payload", dict(self.payload))
+        object.__setattr__(self, "metadata", {str(key): value for key, value in self.metadata.items()})
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-serializable provenance record."""
+        return {
+            "decision_id": self.decision_id,
+            "created_at": self.created_at,
+            "actor": self.actor,
+            "action": self.action.value,
+            "subject": self.subject,
+            "input_text": self.input_text,
+            "result": self.result,
+            "rule_id": self.rule_id,
+            "lexicon_snapshot_ref": self.lexicon_snapshot_ref,
+            "lexicon_fingerprint": self.lexicon_fingerprint,
+            "payload": dict(self.payload),
+            "metadata": dict(self.metadata),
+        }
+
+    def to_json_line(self) -> str:
+        """Return this provenance record as one JSONL row."""
+        return json.dumps(self.to_dict(), ensure_ascii=False, sort_keys=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -303,6 +378,7 @@ class WorkspaceState:
                 review_decision_count=_table_count(connection, "review_decisions"),
                 review_event_count=_table_count(connection, "review_events"),
                 snapshot_count=_table_count(connection, "snapshots"),
+                decision_record_count=_table_count(connection, "decision_records"),
             )
 
     def store_documents(self, documents: Iterable[IngestDocument]) -> int:
@@ -511,6 +587,25 @@ class WorkspaceState:
                     _json_dumps(event.to_dict()),
                 ),
             )
+            provenance = WorkspaceDecisionRecord(
+                decision_id=f"decision_{uuid.uuid4().hex}",
+                created_at=now,
+                actor=reviewer_value,
+                action=WorkspaceDecisionAction.REVIEW_DECISION_SAVED,
+                subject=normalized,
+                input_text=normalized,
+                result=status.value,
+                rule_id="human_review",
+                payload={
+                    "review_event_id": event.event_id,
+                    "review_decision": status.value,
+                    "note": note_value,
+                    "candidate_snapshot": event.candidate_snapshot,
+                    "evidence_snapshot": event.evidence_snapshot,
+                },
+                metadata={"workspace_schema_version": SCHEMA_VERSION},
+            )
+            _insert_decision_record(connection, provenance)
         return WorkspaceReviewDecision(
             normalized_surface=normalized,
             decision=status,
@@ -519,6 +614,96 @@ class WorkspaceState:
             created_at=created_at,
             updated_at=now,
         )
+
+    def append_decision_record(
+        self,
+        *,
+        actor: str,
+        action: WorkspaceDecisionAction | str,
+        subject: str,
+        input_text: str,
+        result: str,
+        rule_id: str,
+        lexicon_snapshot_ref: str = "",
+        lexicon_fingerprint: str = "",
+        payload: Mapping[str, Any] | None = None,
+        metadata: Mapping[str, Any] | None = None,
+        decision_id: str | None = None,
+        created_at: str | None = None,
+    ) -> WorkspaceDecisionRecord:
+        """Append one self-contained decision provenance record."""
+        record = WorkspaceDecisionRecord(
+            decision_id=_clean_text(decision_id, field_name="decision_id") if decision_id else f"decision_{uuid.uuid4().hex}",
+            created_at=_clean_text(created_at, field_name="created_at") if created_at else _utc_now(),
+            actor=actor,
+            action=action,
+            subject=subject,
+            input_text=input_text,
+            result=result,
+            rule_id=rule_id,
+            lexicon_snapshot_ref=lexicon_snapshot_ref,
+            lexicon_fingerprint=lexicon_fingerprint,
+            payload=payload or {},
+            metadata=metadata or {},
+        )
+        self.ensure_schema()
+        with _connect(self.db_path) as connection:
+            _insert_decision_record(connection, record)
+        return record
+
+    def list_decision_records(
+        self,
+        *,
+        action: WorkspaceDecisionAction | str | None = None,
+        actor: str | None = None,
+        limit: int | None = None,
+    ) -> tuple[WorkspaceDecisionRecord, ...]:
+        """Return append-only decision provenance records in chronological order."""
+        if limit is not None and limit < 1:
+            raise WorkspaceError("limit must be greater than 0")
+        action_value: str | None = None
+        if action is not None:
+            action_value = WorkspaceDecisionAction(action.value if isinstance(action, WorkspaceDecisionAction) else str(action)).value
+        actor_value = actor.strip() if isinstance(actor, str) and actor.strip() else None
+        self.ensure_schema()
+        query = """
+            SELECT payload_json
+            FROM decision_records
+        """
+        clauses: list[str] = []
+        params: list[object] = []
+        if action_value is not None:
+            clauses.append("action = ?")
+            params.append(action_value)
+        if actor_value is not None:
+            clauses.append("actor = ?")
+            params.append(actor_value)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY created_at ASC, rowid ASC"
+        if limit is not None:
+            query += " LIMIT ?"
+            params.append(limit)
+        with _connect(self.db_path) as connection:
+            rows = connection.execute(query, params).fetchall()
+        return tuple(_decision_record_from_payload(str(row[0])) for row in rows)
+
+    def export_decision_records_jsonl(
+        self,
+        output_path: str | Path | None = None,
+        *,
+        action: WorkspaceDecisionAction | str | None = None,
+        actor: str | None = None,
+    ) -> str:
+        """Export decision provenance records as JSONL and optionally write them to a file."""
+        records = self.list_decision_records(action=action, actor=actor)
+        content = "".join(f"{record.to_json_line()}\n" for record in records)
+        if output_path is not None:
+            path = Path(output_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+        return content
+
 
     def list_review_decisions(self) -> tuple[WorkspaceReviewDecision, ...]:
         """Return saved local review decisions ordered by update time."""
@@ -620,6 +805,26 @@ class WorkspaceState:
                     _json_dumps(record.to_dict()),
                 ),
             )
+            snapshot_metadata = dict(getattr(snapshot, "metadata", {}) or {})
+            runtime_snapshot = snapshot_metadata.get("lexicon_snapshot", {}) if isinstance(snapshot_metadata.get("lexicon_snapshot", {}), Mapping) else {}
+            provenance = WorkspaceDecisionRecord(
+                decision_id=f"decision_{uuid.uuid4().hex}",
+                created_at=record.created_at,
+                actor="workspace",
+                action=WorkspaceDecisionAction.SNAPSHOT_PUBLISHED,
+                subject=record.snapshot_id,
+                input_text=record.output_path,
+                result="published",
+                rule_id="publish_local_snapshot",
+                lexicon_snapshot_ref=str(snapshot_metadata.get("lexicon_snapshot_ref", "")),
+                lexicon_fingerprint=str(snapshot_metadata.get("lexicon_fingerprint", "")),
+                payload={
+                    "snapshot": record.to_dict(),
+                    "lexicon_snapshot": runtime_snapshot,
+                },
+                metadata={"workspace_schema_version": SCHEMA_VERSION},
+            )
+            _insert_decision_record(connection, provenance)
         return record
 
     def list_snapshots(self, *, limit: int = 20) -> tuple[WorkspaceSnapshotRecord, ...]:
@@ -810,6 +1015,57 @@ def export_review_events_jsonl(
     return state.export_review_events_jsonl(output_path, decision=decision)
 
 
+def append_decision_record(
+    state: WorkspaceState,
+    *,
+    actor: str,
+    action: WorkspaceDecisionAction | str,
+    subject: str,
+    input_text: str,
+    result: str,
+    rule_id: str,
+    lexicon_snapshot_ref: str = "",
+    lexicon_fingerprint: str = "",
+    payload: Mapping[str, Any] | None = None,
+    metadata: Mapping[str, Any] | None = None,
+) -> WorkspaceDecisionRecord:
+    """Append one decision provenance record in a workspace."""
+    return state.append_decision_record(
+        actor=actor,
+        action=action,
+        subject=subject,
+        input_text=input_text,
+        result=result,
+        rule_id=rule_id,
+        lexicon_snapshot_ref=lexicon_snapshot_ref,
+        lexicon_fingerprint=lexicon_fingerprint,
+        payload=payload,
+        metadata=metadata,
+    )
+
+
+def list_decision_records(
+    state: WorkspaceState,
+    *,
+    action: WorkspaceDecisionAction | str | None = None,
+    actor: str | None = None,
+    limit: int | None = None,
+) -> tuple[WorkspaceDecisionRecord, ...]:
+    """Return append-only decision provenance records from a workspace."""
+    return state.list_decision_records(action=action, actor=actor, limit=limit)
+
+
+def export_decision_records_jsonl(
+    state: WorkspaceState,
+    output_path: str | Path | None = None,
+    *,
+    action: WorkspaceDecisionAction | str | None = None,
+    actor: str | None = None,
+) -> str:
+    """Export decision provenance records from a workspace as JSONL."""
+    return state.export_decision_records_jsonl(output_path, action=action, actor=actor)
+
+
 def list_snapshots(state: WorkspaceState, *, limit: int = 20) -> tuple[WorkspaceSnapshotRecord, ...]:
     """Return local snapshot records from a workspace."""
     return state.list_snapshots(limit=limit)
@@ -913,6 +1169,24 @@ def _create_schema(connection: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_review_events_decision ON review_events (decision);
         CREATE INDEX IF NOT EXISTS idx_review_events_created_at ON review_events (created_at ASC);
 
+        CREATE TABLE IF NOT EXISTS decision_records (
+            decision_id TEXT PRIMARY KEY,
+            created_at TEXT NOT NULL,
+            actor TEXT NOT NULL,
+            action TEXT NOT NULL,
+            subject TEXT NOT NULL,
+            result TEXT NOT NULL,
+            rule_id TEXT NOT NULL,
+            lexicon_snapshot_ref TEXT NOT NULL,
+            lexicon_fingerprint TEXT NOT NULL,
+            payload_json TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_decision_records_action ON decision_records (action);
+        CREATE INDEX IF NOT EXISTS idx_decision_records_actor ON decision_records (actor);
+        CREATE INDEX IF NOT EXISTS idx_decision_records_snapshot_ref ON decision_records (lexicon_snapshot_ref);
+        CREATE INDEX IF NOT EXISTS idx_decision_records_created_at ON decision_records (created_at ASC);
+
         CREATE TABLE IF NOT EXISTS snapshots (
             snapshot_id TEXT PRIMARY KEY,
             created_at TEXT NOT NULL,
@@ -937,7 +1211,7 @@ def _read_schema_version(connection: sqlite3.Connection) -> int:
 
 
 def _table_count(connection: sqlite3.Connection, table_name: str) -> int:
-    if table_name not in {"documents", "candidates", "evidence_packs", "review_decisions", "review_events", "snapshots"}:
+    if table_name not in {"documents", "candidates", "evidence_packs", "review_decisions", "review_events", "snapshots", "decision_records"}:
         raise WorkspaceError(f"unsupported workspace table: {table_name}")
     row = connection.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()
     return int(row[0]) if row is not None else 0
@@ -1014,6 +1288,57 @@ def _build_review_event(
         candidate_snapshot=candidate_snapshot,
         evidence_snapshot=evidence_snapshot,
         metadata={"workspace_schema_version": SCHEMA_VERSION},
+    )
+
+
+def _insert_decision_record(connection: sqlite3.Connection, record: WorkspaceDecisionRecord) -> None:
+    connection.execute(
+        """
+        INSERT INTO decision_records (
+            decision_id,
+            created_at,
+            actor,
+            action,
+            subject,
+            result,
+            rule_id,
+            lexicon_snapshot_ref,
+            lexicon_fingerprint,
+            payload_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            record.decision_id,
+            record.created_at,
+            record.actor,
+            record.action.value,
+            record.subject,
+            record.result,
+            record.rule_id,
+            record.lexicon_snapshot_ref,
+            record.lexicon_fingerprint,
+            _json_dumps(record.to_dict()),
+        ),
+    )
+
+
+def _decision_record_from_payload(payload: str) -> WorkspaceDecisionRecord:
+    data = _json_loads_mapping(payload)
+    payload_data = data.get("payload", {})
+    metadata = data.get("metadata", {})
+    return WorkspaceDecisionRecord(
+        decision_id=str(data.get("decision_id", "")),
+        created_at=str(data.get("created_at", "")),
+        actor=str(data.get("actor", "")),
+        action=str(data.get("action", WorkspaceDecisionAction.REVIEW_DECISION_SAVED.value)),
+        subject=str(data.get("subject", "")),
+        input_text=str(data.get("input_text", "")),
+        result=str(data.get("result", "")),
+        rule_id=str(data.get("rule_id", "")),
+        lexicon_snapshot_ref=str(data.get("lexicon_snapshot_ref", "")),
+        lexicon_fingerprint=str(data.get("lexicon_fingerprint", "")),
+        payload=payload_data if isinstance(payload_data, Mapping) else {},
+        metadata=metadata if isinstance(metadata, Mapping) else {},
     )
 
 

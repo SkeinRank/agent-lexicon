@@ -91,6 +91,7 @@ from .workflows import (
 )
 from .workspace import (
     ReviewDecisionStatus,
+    WorkspaceDecisionAction,
     SnapshotPublishError,
     WorkspaceError,
     init_workspace,
@@ -1212,6 +1213,33 @@ def build_parser() -> argparse.ArgumentParser:
         choices=tuple(status.value for status in ReviewDecisionStatus),
         default=None,
         help="Export only events with a specific review decision.",
+    )
+
+    workspace_export_decision_log_parser = workspace_subparsers.add_parser(
+        "export-decision-log",
+        help="Export append-only decision provenance records as JSONL.",
+    )
+    workspace_export_decision_log_parser.add_argument(
+        "--root",
+        default=".",
+        help="Project root where .agent-lexicon/ is stored.",
+    )
+    workspace_export_decision_log_parser.add_argument(
+        "--output",
+        default=None,
+        help="Optional output path. If omitted, JSONL is printed to stdout.",
+    )
+    _add_local_policy_options(workspace_export_decision_log_parser)
+    workspace_export_decision_log_parser.add_argument(
+        "--action",
+        choices=tuple(action.value for action in WorkspaceDecisionAction),
+        default=None,
+        help="Export only provenance records with a specific action.",
+    )
+    workspace_export_decision_log_parser.add_argument(
+        "--decision-actor",
+        default=None,
+        help="Export only provenance records created by this actor. This is separate from --actor used for local policy checks.",
     )
 
     workspace_publish_snapshot_parser = workspace_subparsers.add_parser(
@@ -2832,6 +2860,7 @@ def _workspace_command(args: argparse.Namespace) -> int:
             f"{summary.evidence_pack_count} evidence packs, "
             f"{summary.review_decision_count} review decisions, "
             f"{summary.review_event_count} review events, "
+            f"{summary.decision_record_count} decision records, "
             f"{summary.snapshot_count} snapshots"
         )
         print(f"Database: {summary.db_path}")
@@ -2867,6 +2896,17 @@ def _workspace_command(args: argparse.Namespace) -> int:
             policy_mode=args.policy_mode,
         )
 
+    if args.workspace_command == "export-decision-log":
+        return _workspace_export_decision_log_command(
+            root=Path(args.root),
+            output_path=Path(args.output) if args.output else None,
+            action=args.action,
+            actor_filter=args.decision_actor,
+            actor=args.actor,
+            role=args.role,
+            policy_mode=args.policy_mode,
+        )
+
     if args.workspace_command == "publish-snapshot":
         return _workspace_publish_snapshot_command(
             root=Path(args.root),
@@ -2879,7 +2919,7 @@ def _workspace_command(args: argparse.Namespace) -> int:
             policy_mode=args.policy_mode,
         )
 
-    print("Workspace command required: init, status, sync, export-review-events, or publish-snapshot")
+    print("Workspace command required: init, status, sync, export-review-events, export-decision-log, or publish-snapshot")
     return 1
 
 
@@ -3006,6 +3046,42 @@ def _workspace_export_review_events_command(
     print(f"Review events exported: {event_count} events -> {output_path}")
     return 0
 
+
+
+def _workspace_export_decision_log_command(
+    *,
+    root: Path,
+    output_path: Path | None,
+    action: str | None,
+    actor_filter: str | None,
+    actor: str,
+    role: str | None,
+    policy_mode: str | None,
+) -> int:
+    policy_exit_code = _check_policy_or_print(
+        root=root,
+        action=PolicyAction.EXPORT_REVIEW_EVENTS,
+        actor=actor,
+        role=role,
+        policy_mode=policy_mode,
+    )
+    if policy_exit_code != 0:
+        return policy_exit_code
+
+    try:
+        state = open_workspace(root, create=False)
+        content = state.export_decision_records_jsonl(output_path, action=action, actor=actor_filter)
+    except WorkspaceError as exc:
+        print(f"Invalid workspace input: {exc}")
+        return 1
+
+    if output_path is None:
+        print(content, end="")
+        return 0
+
+    record_count = content.count("\n") if content else 0
+    print(f"Decision log exported: {record_count} records -> {output_path}")
+    return 0
 
 
 def _workspace_publish_snapshot_command(

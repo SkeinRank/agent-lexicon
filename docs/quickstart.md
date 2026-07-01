@@ -62,6 +62,12 @@ agent-lexicon review
 
 This opens a local web inbox in your browser. Each candidate shows its evidence; you accept, reject, or mark it ambiguous. Nothing leaves your machine.
 
+Each saved review decision is also appended to the workspace decision provenance log. Export it when you want an auditable JSONL trail of who decided what and why:
+
+```bash
+agent-lexicon workspace export-decision-log --action review_decision_saved
+```
+
 ## 5. Publish a snapshot
 
 ```bash

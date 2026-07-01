@@ -24,6 +24,12 @@ A loaded lexicon is treated as immutable runtime input. Agent Lexicon computes a
 
 This keeps reproducibility independent from mutable files on disk: the guarantee is not "whatever `lexicon.yaml` contains today", but "this text was resolved against this exact lexicon content".
 
+## Decision provenance log
+
+The local workspace keeps an append-only decision provenance log. Human review decisions, snapshot publication decisions, and future deterministic policy decisions can be stored as self-contained records with actor, action, subject, input, result, rule identifier, payload, and lexicon snapshot metadata.
+
+This is different from the current review state. The current state answers "what is the latest decision for this candidate?" The provenance log answers "what decisions were made, in what order, by whom or by which policy rule, against which vocabulary content?"
+
 ## Code-style identifiers
 
 Agents write terminology as code, not just prose. Agent Lexicon resolves identifier forms of a known surface — `accessToken`, `access_token`, `ACCESS_TOKEN` all resolve to the term whose surface is `access token`. This is what lets drift detection see terminology inside real source, not only in comments.
