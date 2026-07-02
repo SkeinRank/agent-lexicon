@@ -49,14 +49,26 @@ def test_review_inbox_html_renders_candidates_and_evidence(tmp_path: Path) -> No
 
     html = build_review_inbox_html(state, selected_surface="billing.update_credit_limit")
 
-    assert "Proposal Inbox" in html
-    assert "billing.update_credit_limit" in html
-    assert "Positive evidence" in html
-    assert "Negative evidence" in html
-    assert "Review decision" in html
-    assert "Export JSONL" in html
+    import json as _json
+
+    # The candidate data is embedded as a JSON payload the client app renders.
+    start = html.index('<script id="review-data" type="application/json">') + len(
+        '<script id="review-data" type="application/json">'
+    )
+    end = html.index("</script>", start)
+    payload = _json.loads(html[start:end])
+
+    assert html.count('id="review-data"') == 1
+    assert payload["items"], "expected at least one candidate"
+    surfaces = {item["surface"] for item in payload["items"]}
+    assert "billing.update_credit_limit" in surfaces
+    # Evidence travels in the payload, not in server-rendered HTML.
+    target = next(i for i in payload["items"] if i["surface"] == "billing.update_credit_limit")
+    assert isinstance(target["positive"], list)
+    # Client-side labels and controls are present in the page.
+    assert "Where it appears" in html
     assert "Accept" in html
-    assert "Needs split" in html
+    assert "Export JSONL" in html
 
 
 def test_review_inbox_html_renders_saved_decision(tmp_path: Path) -> None:
@@ -65,8 +77,17 @@ def test_review_inbox_html_renders_saved_decision(tmp_path: Path) -> None:
 
     html = build_review_inbox_html(state, selected_surface="billing.update_credit_limit")
 
-    assert "Ambiguous" in html
-    assert "Needs owner review" in html
+    import json as _json
+
+    start = html.index('<script id="review-data" type="application/json">') + len(
+        '<script id="review-data" type="application/json">'
+    )
+    end = html.index("</script>", start)
+    payload = _json.loads(html[start:end])
+
+    target = next(i for i in payload["items"] if i["surface"] == "billing.update_credit_limit")
+    assert target["decision"] == "ambiguous"
+    assert target["note"] == "Needs owner review"
 
 
 def test_review_cli_help_does_not_start_server() -> None:
@@ -92,6 +113,41 @@ def test_review_inbox_html_respects_read_only_policy(tmp_path: Path) -> None:
         policy_mode="locked",
     )
 
-    assert "policy: locked · reader" in html
+    import json as _json
+
+    # The "Read-only policy mode" notice is a client-side literal in the app script.
     assert "Read-only policy mode" in html
-    assert "disabled" in html
+
+    start = html.index('<script id="review-data" type="application/json">') + len(
+        '<script id="review-data" type="application/json">'
+    )
+    end = html.index("</script>", start)
+    payload = _json.loads(html[start:end])
+    assert payload["readOnly"] is True
+    assert payload["policy"] == "locked · reader"
+
+
+def test_review_inbox_includes_lexicon_terms(tmp_path: Path) -> None:
+    import json as _json
+    from agent_lexicon import init_dictionary_layout, init_workspace
+
+    # A published lexicon file makes the Lexicon tab non-empty.
+    init_dictionary_layout(tmp_path)
+    state = init_workspace(tmp_path)
+
+    html = build_review_inbox_html(state)
+    start = html.index('<script id="review-data" type="application/json">') + len(
+        '<script id="review-data" type="application/json">'
+    )
+    end = html.index("</script>", start)
+    payload = _json.loads(html[start:end])
+
+    assert "lexicon" in payload
+    assert isinstance(payload["lexicon"], list)
+    # The starter lexicon ships one example term.
+    ids = {t["id"] for t in payload["lexicon"]}
+    assert "project.example_term" in ids
+    # Lexicon tab button is present in the page.
+    assert 'data-view="lexicon"' in html
+    # Action bar is sticky and present for a writable policy.
+    assert "actionbar" in html
