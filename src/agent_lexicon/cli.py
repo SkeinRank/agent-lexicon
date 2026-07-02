@@ -225,6 +225,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_local_policy_options(analyze_parser)
     analyze_parser.add_argument("--quality-report", action="store_true", help="Print Scout quality metrics from the workspace.")
+    analyze_parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Show the full numeric breakdown for each candidate (scores, oov, cluster size).",
+    )
     analyze_parser.add_argument("--json", action="store_true", help="Print the analysis report as JSON.")
 
     publish_parser = subparsers.add_parser(
@@ -1443,6 +1448,38 @@ def _error(message: str) -> None:
     print(message, file=sys.stderr)
 
 
+# Machine reason codes -> short human phrases for the default analyze view.
+_REASON_PHRASES = {
+    "code_style_surface": "written like code",
+    "high_oov_proxy": "unusual word",
+    "high_oov_signal": "unusual word",
+    "tokenizer_oov_signal": "unusual word",
+    "high_surface_risk": "risky to match",
+    "high_jargon_score": "domain jargon",
+    "clustered_variants": "has spelling variants",
+    "identifier_variants": "has spelling variants",
+}
+
+
+def _humanize_reasons(reasons: list[str]) -> str:
+    """Turn machine reason codes into a short, de-duplicated human phrase."""
+    seen: list[str] = []
+    for code in reasons:
+        phrase = _REASON_PHRASES.get(code)
+        if phrase and phrase not in seen:
+            seen.append(phrase)
+    if not seen:
+        return "worth a look"
+    return ", ".join(seen[:3])
+
+
+def _priority_word(priority: str, priority_score: float) -> str:
+    """A plain-language priority label for the default analyze view."""
+    if priority == "important":
+        return "high" if priority_score >= 0.6 else "medium"
+    return "low"
+
+
 def _maybe_enable_completion(parser: argparse.ArgumentParser) -> None:
     """Enable shell tab-completion when the optional argcomplete extra is installed.
 
@@ -1836,19 +1873,24 @@ def _simple_analyze_command(args: argparse.Namespace) -> int:
     if not report.items:
         print("No workspace candidates found. Run: agent-lexicon scan README.md docs src")
         return 0
+    verbose = getattr(args, "verbose", False)
     for item in report.items:
-        label = "IMPORTANT" if item.priority == "important" else "LATER"
-        print(
-            f"[{label}] {item.surface} "
-            f"priority={item.priority_score:.3f} "
-            f"score={item.score:.3f} "
-            f"oov={item.oov_score:.3f} "
-            f"oov_source={item.oov_source} "
-            f"cluster={item.cluster_size} "
-            f"status={item.review_status}"
-        )
-        if item.priority_reasons:
-            print(f"  reasons={', '.join(item.priority_reasons[:4])}")
+        if verbose:
+            label = "IMPORTANT" if item.priority == "important" else "LATER"
+            print(
+                f"[{label}] {item.surface} "
+                f"priority={item.priority_score:.3f} "
+                f"score={item.score:.3f} "
+                f"oov={item.oov_score:.3f} "
+                f"oov_source={item.oov_source} "
+                f"cluster={item.cluster_size} "
+                f"status={item.review_status}"
+            )
+            if item.priority_reasons:
+                print(f"  reasons={', '.join(item.priority_reasons[:4])}")
+        else:
+            priority = _priority_word(item.priority, item.priority_score)
+            print(f"{item.surface}  ({priority} priority) — {_humanize_reasons(item.priority_reasons)}")
         if item.recommendation:
             print(f"  review-agent={item.recommendation}: {item.reviewer_note}")
         if item.consensus_status:
@@ -1857,6 +1899,8 @@ def _simple_analyze_command(args: argparse.Namespace) -> int:
                 f"agreement={item.agreement_ratio:.2f} "
                 f"confidence={item.consensus_confidence:.2f}"
             )
+    if not verbose:
+        print("(use --verbose for full scores)")
     print("Next: agent-lexicon review")
     return 0
 

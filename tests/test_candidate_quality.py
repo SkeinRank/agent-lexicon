@@ -76,5 +76,12 @@ def test_simple_analyze_priority_filter_reports_important_items(tmp_path: Path, 
     assert main(["analyze", "--root", str(tmp_path), "--priority", "important"]) == 0
     analyze_output = capsys.readouterr().out
     assert "Agent Lexicon analyze:" in analyze_output
-    assert "oov=" in analyze_output
-    assert "cluster=" in analyze_output
+    # Default view is human-readable: no raw score fields, a priority word instead.
+    assert "oov=" not in analyze_output
+    assert "cluster=" not in analyze_output
+    assert "priority)" in analyze_output
+
+    assert main(["analyze", "--root", str(tmp_path), "--priority", "important", "--verbose"]) == 0
+    verbose_output = capsys.readouterr().out
+    assert "oov=" in verbose_output
+    assert "cluster=" in verbose_output

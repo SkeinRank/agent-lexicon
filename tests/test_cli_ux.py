@@ -58,3 +58,29 @@ def test_scan_without_paths_gives_actionable_message(tmp_path: Path, capsys) -> 
     assert "Nothing to scan" in captured.err
     assert "agent-lexicon scan api.py" in captured.err
     assert captured.out == ""
+
+
+def test_analyze_default_is_human_readable(tmp_path: Path, capsys) -> None:
+    _make_repo(tmp_path, {"api.py": "def get_access_token(user):\n    return user.authToken\n"})
+    main(["init", "--root", str(tmp_path)])
+    main(["scan", "api.py", "--root", str(tmp_path)])
+    capsys.readouterr()
+
+    assert main(["analyze", "--root", str(tmp_path)]) == 0
+    out = capsys.readouterr().out
+    assert "priority)" in out          # plain-language priority label
+    assert "oov=" not in out           # no raw score fields by default
+    assert "use --verbose" in out      # discoverability hint
+
+
+def test_analyze_verbose_shows_scores(tmp_path: Path, capsys) -> None:
+    _make_repo(tmp_path, {"api.py": "def get_access_token(user):\n    return user.authToken\n"})
+    main(["init", "--root", str(tmp_path)])
+    main(["scan", "api.py", "--root", str(tmp_path)])
+    capsys.readouterr()
+
+    assert main(["analyze", "--root", str(tmp_path), "--verbose"]) == 0
+    out = capsys.readouterr().out
+    assert "oov=" in out
+    assert "cluster=" in out
+    assert "priority=" in out

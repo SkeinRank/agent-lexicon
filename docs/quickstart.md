@@ -4,6 +4,14 @@ This walks you from an empty project to a published terminology snapshot, then s
 
 ## 1. Install
 
+As a command-line tool (recommended), install with pipx so it is available everywhere:
+
+```bash
+pipx install agent-lexicon
+```
+
+Or with pip, to use it as a library inside a project:
+
 ```bash
 pip install agent-lexicon
 ```

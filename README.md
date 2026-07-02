@@ -25,6 +25,15 @@ When many agents work a long coding session, each one quietly invents its own na
 
 It is dependency-free, runs locally, and is deterministic by design: the same input always produces the same output, and every decision carries a reason you can audit.
 
+As a command-line tool, install it with [pipx](https://pipx.pypa.io) so `agent-lexicon` and the short `alex` alias are available in every project:
+
+```bash
+pipx install agent-lexicon
+pipx install "agent-lexicon[completion]"   # with shell tab-completion
+```
+
+To use it as a library inside a project, install it with pip into that project's environment instead:
+
 ```bash
 pip install agent-lexicon
 ```
@@ -336,7 +345,7 @@ Contributing, security, and community:
 
 ## Status
 
-Agent Lexicon is an early, actively developed project (0.7.x). The core — resolve, guard, near-miss, dictionary-as-code, and merge-time drift detection — is well tested (305 passing tests) and used through the CLI, the Python API, and the local MCP server. Scaling it across many processes or a networked deployment is on the roadmap, not yet proven in production.
+Agent Lexicon is an early, actively developed project (0.7.x). The core — resolve, guard, near-miss, dictionary-as-code, and merge-time drift detection — is well tested (307 passing tests) and used through the CLI, the Python API, and the local MCP server. Scaling it across many processes or a networked deployment is on the roadmap, not yet proven in production.
 
 If terminology consistency across long, multi-agent sessions is a real cost for you — especially in regulated domains where decisions must be reproducible and auditable — this is built for exactly that.
 
