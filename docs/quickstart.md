@@ -10,6 +10,19 @@ pip install agent-lexicon
 
 Requires Python 3.10+. The core has no runtime dependencies.
 
+Every command is also available under the short alias `alex` (for example,
+`alex scan` instead of `agent-lexicon scan`).
+
+Optional shell tab-completion for commands and flags:
+
+```bash
+pip install "agent-lexicon[completion]"
+activate-global-python-argcomplete   # once, to enable completion in your shell
+```
+
+Completion is opt-in; without the extra installed, the CLI works exactly the
+same, just without tab-completion.
+
 ## 2. Initialize a project
 
 ```bash

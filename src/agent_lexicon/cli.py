@@ -1,4 +1,5 @@
 """Command line entry point for Agent Lexicon."""
+# PYTHON_ARGCOMPLETE_OK
 
 from __future__ import annotations
 
@@ -1442,8 +1443,68 @@ def _error(message: str) -> None:
     print(message, file=sys.stderr)
 
 
+def _maybe_enable_completion(parser: argparse.ArgumentParser) -> None:
+    """Enable shell tab-completion when the optional argcomplete extra is installed.
+
+    Completion is opt-in via ``pip install "agent-lexicon[completion]"``. When
+    argcomplete is not installed this is a no-op, so the core stays
+    dependency-free.
+    """
+    try:
+        import argcomplete
+    except ImportError:
+        return
+    argcomplete.autocomplete(parser)
+
+
+# File extensions that the default scan reads. Kept small and local so the
+# CLI can give a helpful hint without importing the full ingest layer.
+_SCANNABLE_SUFFIXES = (
+    ".md", ".txt", ".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs",
+    ".java", ".kt", ".cs", ".sql", ".yaml", ".yml",
+)
+
+
+def _existing_default_scan_paths(root: Path) -> list[str]:
+    """Return the default scan paths that actually exist under ``root``."""
+    present: list[str] = []
+    for candidate in DEFAULT_SCAN_PATHS:
+        if (root / candidate).exists():
+            present.append(candidate)
+    return present
+
+
+def _nearby_scan_targets(root: Path, *, limit: int = 5) -> list[str]:
+    """Find scannable files in the repository root as fallback scan hints."""
+    targets: list[str] = []
+    try:
+        entries = sorted(p for p in root.iterdir() if p.is_file())
+    except OSError:
+        return targets
+    for path in entries:
+        if path.name.startswith("."):
+            continue
+        if path.suffix.lower() in _SCANNABLE_SUFFIXES:
+            targets.append(path.name)
+        if len(targets) >= limit:
+            break
+    return targets
+
+
+def _scan_hint_for_root(root: Path) -> str:
+    """Build a ``scan`` command hint tailored to what is in the repository."""
+    present = _existing_default_scan_paths(root)
+    if present:
+        return "agent-lexicon scan"
+    nearby = _nearby_scan_targets(root)
+    if nearby:
+        return "agent-lexicon scan " + " ".join(nearby)
+    return "agent-lexicon scan <files or directories>"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
+    _maybe_enable_completion(parser)
     args = parser.parse_args(argv)
 
     if args.version:
@@ -1655,7 +1716,7 @@ def _simple_init_command(args: argparse.Namespace) -> int:
     print(f"Workspace: {report.workspace.db_path}")
     print(f"Policy: {report.policy_path} ({report.policy_mode})")
     print(f"Config: {report.config_path}")
-    print("Next: agent-lexicon scan")
+    print(f"Next: {_scan_hint_for_root(Path(args.root))}")
     return 0
 
 
@@ -1688,7 +1749,23 @@ def _simple_scan_command(args: argparse.Namespace) -> int:
             max_file_bytes=args.max_file_bytes,
         )
     except SimpleWorkflowError as exc:
-        _error(f"Invalid scan input: {exc}")
+        message = str(exc)
+        if "no scan paths exist" in message and not args.paths:
+            root = Path(args.root)
+            nearby = _nearby_scan_targets(root)
+            _error(
+                "Nothing to scan: none of the default paths "
+                f"({', '.join(DEFAULT_SCAN_PATHS)}) exist in this project."
+            )
+            if nearby:
+                _error("Found these files you can scan instead:")
+                for name in nearby:
+                    _error(f"  {name}")
+                _error(f"Try: agent-lexicon scan {' '.join(nearby)}")
+            else:
+                _error("Pass files or directories explicitly, e.g. agent-lexicon scan <path>")
+            return 1
+        _error(f"Invalid scan input: {message}")
         return 1
     if args.json:
         print(json.dumps(report.to_dict(), indent=2, sort_keys=True))

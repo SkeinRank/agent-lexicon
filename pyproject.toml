@@ -42,6 +42,9 @@ oov = [
 semantic = [
   "sentence-transformers>=2.6,<4.0"
 ]
+completion = [
+  "argcomplete>=3.0,<4.0"
+]
 
 [project.urls]
 Homepage = "https://github.com/SkeinRank/agent-lexicon"
@@ -50,6 +53,7 @@ Issues = "https://github.com/SkeinRank/agent-lexicon/issues"
 
 [project.scripts]
 agent-lexicon = "agent_lexicon.cli:main"
+alex = "agent_lexicon.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_lexicon"]

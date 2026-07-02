@@ -348,6 +348,11 @@ def build_review_inbox_html(
     return _render_page(items=items, selected=selected, root=str(state.root), policy_decision=policy_decision)
 
 
+def _is_unreviewed(item: WorkspaceReviewItem) -> bool:
+    """True when a review item has no saved decision yet."""
+    return getattr(item, "review_decision", None) is None
+
+
 def run_review_inbox(
     root: str | Path = ".",
     *,
@@ -366,10 +371,19 @@ def run_review_inbox(
     state = open_workspace(root, create=True)
     policy = load_local_policy(state.root, mode=policy_mode)
     policy_decision = check_local_policy(policy, PolicyAction.REVIEW_CANDIDATE, actor=actor, role=role)
+
+    items = state.list_review_items(limit=1000)
+    if not items:
+        print("Nothing to review yet. Run a scan first, for example:")
+        print("  agent-lexicon scan README.md docs src")
+        return
+    unreviewed = sum(1 for item in items if _is_unreviewed(item))
+
     handler = _handler_for_state(state, actor=actor, policy_decision=policy_decision)
     server = ThreadingHTTPServer((host, port), handler)
     url = f"http://{host}:{port}"
     print(f"Review inbox: {url}")
+    print(f"{unreviewed} of {len(items)} candidates waiting for review.")
     print("Press Ctrl+C to stop.")
     if open_browser:
         webbrowser.open(url)

@@ -128,7 +128,7 @@ Add `--fail-on-review` to make this a blocking CI check that returns a non-zero 
 
 ## Three ways to use it
 
-**Command line** — the full local loop, no code required.
+**Command line** — the full local loop, no code required. Every command is also available under the short alias `alex`, so `alex resolve …` works the same as `agent-lexicon resolve …`.
 
 ```bash
 agent-lexicon init                      # create lexicon/, workspace, policy, and scan config
@@ -336,7 +336,7 @@ Contributing, security, and community:
 
 ## Status
 
-Agent Lexicon is an early, actively developed project (0.7.x). The core — resolve, guard, near-miss, dictionary-as-code, and merge-time drift detection — is well tested (300 passing tests) and used through the CLI, the Python API, and the local MCP server. Scaling it across many processes or a networked deployment is on the roadmap, not yet proven in production.
+Agent Lexicon is an early, actively developed project (0.7.x). The core — resolve, guard, near-miss, dictionary-as-code, and merge-time drift detection — is well tested (305 passing tests) and used through the CLI, the Python API, and the local MCP server. Scaling it across many processes or a networked deployment is on the roadmap, not yet proven in production.
 
 If terminology consistency across long, multi-agent sessions is a real cost for you — especially in regulated domains where decisions must be reproducible and auditable — this is built for exactly that.
 
