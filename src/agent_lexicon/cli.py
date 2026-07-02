@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 from typing import Mapping
 
@@ -1339,6 +1340,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Return the longest non-overlapping surface matches.",
     )
+    match_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the matches as a JSON document on stdout.",
+    )
 
     resolve_parser = subparsers.add_parser(
         "resolve",
@@ -1373,6 +1379,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_BGE_SEMANTIC_THRESHOLD,
         help="Minimum semantic similarity used with --semantic-near-miss.",
     )
+    resolve_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the resolution decision as a JSON document on stdout.",
+    )
 
     guard_parser = subparsers.add_parser(
         "guard",
@@ -1401,6 +1412,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Do not block tool calls when bidi-control Unicode characters are found after normalization.",
     )
+    guard_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the guard decision as a JSON document on stdout.",
+    )
     return parser
 
 
@@ -1419,6 +1435,11 @@ def _add_local_policy_options(parser: argparse.ArgumentParser) -> None:
         help="Temporarily override the local policy mode.",
     )
 
+
+
+def _error(message: str) -> None:
+    """Print a diagnostic message to stderr."""
+    print(message, file=sys.stderr)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1580,6 +1601,7 @@ def main(argv: list[str] | None = None) -> int:
             scopes=args.scope,
             include_deprecated=not args.exclude_deprecated,
             longest_only=args.longest_only,
+            as_json=args.json,
         )
 
     if args.command == "resolve":
@@ -1591,6 +1613,7 @@ def main(argv: list[str] | None = None) -> int:
             semantic_near_miss=args.semantic_near_miss,
             semantic_model=args.semantic_model,
             semantic_threshold=args.semantic_threshold,
+            as_json=args.json,
         )
 
     if args.command == "guard":
@@ -1601,10 +1624,11 @@ def main(argv: list[str] | None = None) -> int:
             scopes=args.scope,
             include_deprecated=not args.exclude_deprecated,
             block_on_unicode_risk=not args.allow_risky_unicode,
+            as_json=args.json,
         )
 
-    print(about())
-    return 0
+    parser.print_help(sys.stderr)
+    return 1
 
 
 
@@ -1621,7 +1645,7 @@ def _simple_init_command(args: argparse.Namespace) -> int:
             reset_workspace=args.reset_workspace,
         )
     except SimpleWorkflowError as exc:
-        print(f"Invalid init input: {exc}")
+        _error(f"Invalid init input: {exc}")
         return 1
     if args.json:
         print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
@@ -1664,7 +1688,7 @@ def _simple_scan_command(args: argparse.Namespace) -> int:
             max_file_bytes=args.max_file_bytes,
         )
     except SimpleWorkflowError as exc:
-        print(f"Invalid scan input: {exc}")
+        _error(f"Invalid scan input: {exc}")
         return 1
     if args.json:
         print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
@@ -1719,7 +1743,7 @@ def _simple_analyze_command(args: argparse.Namespace) -> int:
             priority=args.priority,
         )
     except SimpleWorkflowError as exc:
-        print(f"Invalid analyze input: {exc}")
+        _error(f"Invalid analyze input: {exc}")
         return 1
     if args.json:
         print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
@@ -1779,7 +1803,7 @@ def _simple_publish_command(args: argparse.Namespace) -> int:
             snapshot_id=args.snapshot_id,
         )
     except SimpleWorkflowError as exc:
-        print(f"Invalid publish input: {exc}")
+        _error(f"Invalid publish input: {exc}")
         return 1
     if args.json:
         print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
@@ -1797,7 +1821,7 @@ def _simple_publish_command(args: argparse.Namespace) -> int:
 
 def _review_agent_command(args: argparse.Namespace) -> int:
     if args.review_agent_command not in {"prompt", "assess", "consensus", "dataset"}:
-        print("Review agent command required: prompt, assess, consensus, or dataset")
+        _error("Review agent command required: prompt, assess, consensus, or dataset")
         return 1
 
     if args.review_agent_command == "dataset":
@@ -1962,7 +1986,7 @@ def _mcp_command(args: argparse.Namespace) -> int:
             print(f"MCP server error: {exc}")
             return 1
 
-    print("MCP command required: serve or tools")
+    _error("MCP command required: serve or tools")
     return 1
 
 
@@ -1977,7 +2001,7 @@ def _validate_command(
     try:
         lexicon = load_lexicon(path, document_format=document_format)
     except AgentLexiconLoadError as exc:
-        print(f"Invalid lexicon: {exc}")
+        _error(f"Invalid lexicon: {exc}")
         return 1
 
     print(
@@ -2002,7 +2026,7 @@ def _lint_command(
     try:
         report = lint_lexicon_file(path, document_format=document_format)
     except AgentLexiconLoadError as exc:
-        print(f"Invalid lexicon: {exc}")
+        _error(f"Invalid lexicon: {exc}")
         return 1
     if as_json:
         print(report.to_json())
@@ -2015,7 +2039,7 @@ def _validate_queries_command(*, path: Path) -> int:
     try:
         queries = load_eval_queries(path)
     except EvalDatasetError as exc:
-        print(f"Invalid eval dataset: {exc}")
+        _error(f"Invalid eval dataset: {exc}")
         return 1
 
     tool_call_count = sum(len(query.tool_calls) for query in queries)
@@ -2039,12 +2063,12 @@ def _check_command(
     try:
         lexicon = load_lexicon(lexicon_path)
     except AgentLexiconLoadError as exc:
-        print(f"Invalid lexicon: {exc}")
+        _error(f"Invalid lexicon: {exc}")
         return 1
     try:
         queries = load_eval_queries(queries_path)
     except EvalDatasetError as exc:
-        print(f"Invalid eval dataset: {exc}")
+        _error(f"Invalid eval dataset: {exc}")
         return 1
 
     report = run_behavior_eval(lexicon, queries, include_deprecated=include_deprecated)
@@ -2112,7 +2136,7 @@ def _check_merge_command(
     try:
         config = load_project_config(root_path, config_path=config_path)
     except AgentLexiconConfigError as exc:
-        print(f"Invalid Agent Lexicon config: {exc}")
+        _error(f"Invalid Agent Lexicon config: {exc}")
         return 1
     effective_include = effective_include_globs(include_globs, config)
     effective_exclude = effective_exclude_globs(exclude_globs, config)
@@ -2123,7 +2147,7 @@ def _check_merge_command(
     try:
         lexicon = load_lexicon(resolved_lexicon_path)
     except AgentLexiconLoadError as exc:
-        print(f"Invalid lexicon: {exc}")
+        _error(f"Invalid lexicon: {exc}")
         return 1
 
     try:
@@ -2133,7 +2157,7 @@ def _check_merge_command(
             min_semantic_score=semantic_threshold,
         )
     except SemanticNearMissError as exc:
-        print(f"Invalid semantic near-miss input: {exc}")
+        _error(f"Invalid semantic near-miss input: {exc}")
         return 1
 
     try:
@@ -2154,10 +2178,10 @@ def _check_merge_command(
             semantic_backend=semantic_backend,
         )
     except GitMergeCheckError as exc:
-        print(f"Invalid merge check input: {exc}")
+        _error(f"Invalid merge check input: {exc}")
         return 1
     except SemanticNearMissError as exc:
-        print(f"Invalid semantic near-miss input: {exc}")
+        _error(f"Invalid semantic near-miss input: {exc}")
         return 1
 
     if as_json:
@@ -2192,7 +2216,7 @@ def _ingest_command(
             max_file_bytes=max_file_bytes,
         )
     except LocalIngestError as exc:
-        print(f"Invalid local ingest input: {exc}")
+        _error(f"Invalid local ingest input: {exc}")
         return 1
 
     if as_jsonl:
@@ -2234,7 +2258,7 @@ def _discover_candidates_command(
     quality_report: bool = False,
 ) -> int:
     if as_json and as_jsonl:
-        print("Invalid candidate discovery input: choose either --json or --jsonl")
+        _error("Invalid candidate discovery input: choose either --json or --jsonl")
         return 1
 
 
@@ -2247,7 +2271,7 @@ def _discover_candidates_command(
             max_file_bytes=max_file_bytes,
         )
     except LocalIngestError as exc:
-        print(f"Invalid local ingest input: {exc}")
+        _error(f"Invalid local ingest input: {exc}")
         return 1
 
     existing_surfaces: tuple[str, ...] = ()
@@ -2255,7 +2279,7 @@ def _discover_candidates_command(
         try:
             lexicon = load_lexicon(lexicon_path)
         except AgentLexiconLoadError as exc:
-            print(f"Invalid lexicon: {exc}")
+            _error(f"Invalid lexicon: {exc}")
             return 1
         existing_surfaces = existing_surfaces_from_lexicon(lexicon)
 
@@ -2268,7 +2292,7 @@ def _discover_candidates_command(
             oov_tokenizer=oov_tokenizer,
         )
     except ScoutCandidateError as exc:
-        print(f"Invalid candidate discovery input: {exc}")
+        _error(f"Invalid candidate discovery input: {exc}")
         return 1
 
     if as_json:
@@ -2325,7 +2349,7 @@ def _build_evidence_command(
     as_jsonl: bool,
 ) -> int:
     if as_json and as_jsonl:
-        print("Invalid evidence input: choose either --json or --jsonl")
+        _error("Invalid evidence input: choose either --json or --jsonl")
         return 1
 
     try:
@@ -2337,7 +2361,7 @@ def _build_evidence_command(
             max_file_bytes=max_file_bytes,
         )
     except LocalIngestError as exc:
-        print(f"Invalid local ingest input: {exc}")
+        _error(f"Invalid local ingest input: {exc}")
         return 1
 
     existing_surfaces: tuple[str, ...] = ()
@@ -2345,7 +2369,7 @@ def _build_evidence_command(
         try:
             lexicon = load_lexicon(lexicon_path)
         except AgentLexiconLoadError as exc:
-            print(f"Invalid lexicon: {exc}")
+            _error(f"Invalid lexicon: {exc}")
             return 1
         existing_surfaces = existing_surfaces_from_lexicon(lexicon)
 
@@ -2366,7 +2390,7 @@ def _build_evidence_command(
             include_prompt_safety=include_prompt_safety,
         )
     except (ScoutCandidateError, EvidencePackError) as exc:
-        print(f"Invalid evidence input: {exc}")
+        _error(f"Invalid evidence input: {exc}")
         return 1
 
     if as_json:
@@ -2419,7 +2443,7 @@ def _safety_command(args: argparse.Namespace) -> int:
             fail_on_high_risk=args.fail_on_high_risk,
             as_json=args.json,
         )
-    print("Safety command required: scan")
+    _error("Safety command required: scan")
     return 1
 
 
@@ -2443,7 +2467,7 @@ def _safety_scan_command(
         )
         report = scan_documents_for_prompt_injection(ingest_report.documents)
     except (LocalIngestError, PromptSafetyError) as exc:
-        print(f"Invalid prompt-safety input: {exc}")
+        _error(f"Invalid prompt-safety input: {exc}")
         return 1
 
     if as_json:
@@ -2482,7 +2506,7 @@ def _policy_command(args: argparse.Namespace) -> int:
                 force=args.force,
             )
         except LocalPolicyError as exc:
-            print(f"Invalid local policy input: {exc}")
+            _error(f"Invalid local policy input: {exc}")
             return 1
         if args.json:
             print(policy.to_json())
@@ -2502,7 +2526,7 @@ def _policy_command(args: argparse.Namespace) -> int:
                 role=args.role,
             )
         except LocalPolicyError as exc:
-            print(f"Invalid local policy input: {exc}")
+            _error(f"Invalid local policy input: {exc}")
             return 1
         if args.json:
             print(json.dumps({"policy": policy.to_dict(), "effective_role": decision.role.value, "path": str(policy_path(args.root))}, indent=2, sort_keys=True))
@@ -2518,7 +2542,7 @@ def _policy_command(args: argparse.Namespace) -> int:
             policy = load_local_policy(Path(args.root), mode=args.policy_mode)
             decision = check_local_policy(policy, args.action, actor=args.actor, role=args.role)
         except LocalPolicyError as exc:
-            print(f"Invalid local policy input: {exc}")
+            _error(f"Invalid local policy input: {exc}")
             return 1
         if args.json:
             print(decision.to_json())
@@ -2531,7 +2555,7 @@ def _policy_command(args: argparse.Namespace) -> int:
         print(f"Reason: {decision.reason}")
         return 0 if decision.is_allowed else 2
 
-    print("Policy command required: init, status, or check")
+    _error("Policy command required: init, status, or check")
     return 1
 
 
@@ -2547,7 +2571,7 @@ def _check_policy_or_print(
         policy = load_local_policy(root, mode=policy_mode)
         decision = check_local_policy(policy, action, actor=actor, role=role)
     except LocalPolicyError as exc:
-        print(f"Invalid local policy input: {exc}")
+        _error(f"Invalid local policy input: {exc}")
         return 1
     if decision.is_allowed:
         return 0
@@ -2564,7 +2588,7 @@ def _discover_migrations_command(
     as_jsonl: bool,
 ) -> int:
     if as_json and as_jsonl:
-        print("Invalid migration input: choose either --json or --jsonl")
+        _error("Invalid migration input: choose either --json or --jsonl")
         return 1
     try:
         lexicon = load_lexicon(path)
@@ -2574,10 +2598,10 @@ def _discover_migrations_command(
             max_candidates=max_candidates,
         )
     except AgentLexiconLoadError as exc:
-        print(f"Invalid lexicon: {exc}")
+        _error(f"Invalid lexicon: {exc}")
         return 1
     except CanonicalMigrationError as exc:
-        print(f"Invalid migration input: {exc}")
+        _error(f"Invalid migration input: {exc}")
         return 1
 
     if as_json:
@@ -2614,7 +2638,7 @@ def _dictionary_command(args: argparse.Namespace) -> int:
                 force=args.force,
             )
         except DictionaryLayoutError as exc:
-            print(f"Invalid dictionary layout input: {exc}")
+            _error(f"Invalid dictionary layout input: {exc}")
             return 1
         if args.json:
             print(json.dumps(summary.to_dict(), indent=2, sort_keys=True))
@@ -2627,7 +2651,7 @@ def _dictionary_command(args: argparse.Namespace) -> int:
         try:
             summary = inspect_dictionary_layout(Path(args.root), layout_dir=args.layout_dir)
         except DictionaryLayoutError as exc:
-            print(f"Invalid dictionary layout input: {exc}")
+            _error(f"Invalid dictionary layout input: {exc}")
             return 1
         if args.json:
             print(json.dumps(summary.to_dict(), indent=2, sort_keys=True))
@@ -2646,7 +2670,7 @@ def _dictionary_command(args: argparse.Namespace) -> int:
             if args.manifest:
                 write_dictionary_manifest(summary, Path(args.manifest))
         except (DictionaryLayoutError, AgentLexiconLoadError) as exc:
-            print(f"Invalid dictionary layout: {exc}")
+            _error(f"Invalid dictionary layout: {exc}")
             return 1
         if args.json:
             payload = summary.to_dict()
@@ -2693,7 +2717,7 @@ def _dictionary_command(args: argparse.Namespace) -> int:
             as_json=args.json,
         )
 
-    print("Dictionary command required: init, status, validate, diff, merge, or pr-check")
+    _error("Dictionary command required: init, status, validate, diff, merge, or pr-check")
     return 1
 
 
@@ -2707,7 +2731,7 @@ def _dictionary_diff_command(
     try:
         report = diff_lexicon_files(before_path, after_path)
     except SemanticDiffError as exc:
-        print(f"Invalid semantic diff input: {exc}")
+        _error(f"Invalid semantic diff input: {exc}")
         return 1
 
     if as_json:
@@ -2743,7 +2767,7 @@ def _dictionary_merge_command(
     try:
         report = merge_lexicon_files(base_path, ours_path, theirs_path)
     except SemanticMergeError as exc:
-        print(f"Invalid semantic merge input: {exc}")
+        _error(f"Invalid semantic merge input: {exc}")
         return 1
 
     if report.has_conflicts:
@@ -2766,7 +2790,7 @@ def _dictionary_merge_command(
         try:
             written_path = write_merged_lexicon_json(report, output_path)
         except SemanticMergeError as exc:
-            print(f"Invalid semantic merge output: {exc}")
+            _error(f"Invalid semantic merge output: {exc}")
             return 1
     else:
         written_path = None
@@ -2858,7 +2882,7 @@ def _workspace_command(args: argparse.Namespace) -> int:
         try:
             state = init_workspace(Path(args.root), reset=args.reset)
         except WorkspaceError as exc:
-            print(f"Invalid workspace input: {exc}")
+            _error(f"Invalid workspace input: {exc}")
             return 1
         print(f"Workspace initialized: {state.db_path}")
         return 0
@@ -2868,7 +2892,7 @@ def _workspace_command(args: argparse.Namespace) -> int:
             state = open_workspace(Path(args.root), create=False)
             summary = state.summary()
         except WorkspaceError as exc:
-            print(f"Invalid workspace input: {exc}")
+            _error(f"Invalid workspace input: {exc}")
             return 1
         if args.json:
             print(json.dumps(summary.to_dict(), indent=2, sort_keys=True))
@@ -2939,7 +2963,7 @@ def _workspace_command(args: argparse.Namespace) -> int:
             policy_mode=args.policy_mode,
         )
 
-    print("Workspace command required: init, status, sync, export-review-events, export-decision-log, or publish-snapshot")
+    _error("Workspace command required: init, status, sync, export-review-events, export-decision-log, or publish-snapshot")
     return 1
 
 
@@ -2981,7 +3005,7 @@ def _workspace_sync_command(
             max_file_bytes=max_file_bytes,
         )
     except LocalIngestError as exc:
-        print(f"Invalid local ingest input: {exc}")
+        _error(f"Invalid local ingest input: {exc}")
         return 1
 
     existing_surfaces: tuple[str, ...] = ()
@@ -2989,7 +3013,7 @@ def _workspace_sync_command(
         try:
             lexicon = load_lexicon(lexicon_path)
         except AgentLexiconLoadError as exc:
-            print(f"Invalid lexicon: {exc}")
+            _error(f"Invalid lexicon: {exc}")
             return 1
         existing_surfaces = existing_surfaces_from_lexicon(lexicon)
 
@@ -3014,7 +3038,7 @@ def _workspace_sync_command(
         state.store_evidence_report(evidence_report)
         summary = state.summary()
     except (ScoutCandidateError, EvidencePackError, WorkspaceError) as exc:
-        print(f"Invalid workspace input: {exc}")
+        _error(f"Invalid workspace input: {exc}")
         return 1
 
     if as_json:
@@ -3055,7 +3079,7 @@ def _workspace_export_review_events_command(
         state = open_workspace(root, create=False)
         content = state.export_review_events_jsonl(output_path, decision=decision)
     except WorkspaceError as exc:
-        print(f"Invalid workspace input: {exc}")
+        _error(f"Invalid workspace input: {exc}")
         return 1
 
     if output_path is None:
@@ -3092,7 +3116,7 @@ def _workspace_export_decision_log_command(
         state = open_workspace(root, create=False)
         content = state.export_decision_records_jsonl(output_path, action=action, actor=actor_filter)
     except WorkspaceError as exc:
-        print(f"Invalid workspace input: {exc}")
+        _error(f"Invalid workspace input: {exc}")
         return 1
 
     if output_path is None:
@@ -3128,7 +3152,7 @@ def _workspace_publish_snapshot_command(
     try:
         state = open_workspace(root, create=False)
     except WorkspaceError as exc:
-        print(f"Invalid workspace input: {exc}")
+        _error(f"Invalid workspace input: {exc}")
         return 1
 
     base_lexicon = None
@@ -3136,7 +3160,7 @@ def _workspace_publish_snapshot_command(
         try:
             base_lexicon = load_lexicon(lexicon_path)
         except AgentLexiconLoadError as exc:
-            print(f"Invalid lexicon: {exc}")
+            _error(f"Invalid lexicon: {exc}")
             return 1
 
     try:
@@ -3147,7 +3171,7 @@ def _workspace_publish_snapshot_command(
             snapshot_id=snapshot_id,
         )
     except (SnapshotPublishError, WorkspaceError) as exc:
-        print(f"Invalid snapshot publish input: {exc}")
+        _error(f"Invalid snapshot publish input: {exc}")
         return 1
 
     if as_json:
@@ -3188,7 +3212,7 @@ def _review_command(
             policy_mode=policy_mode,
         )
     except (ReviewInboxError, WorkspaceError, LocalPolicyError, OSError) as exc:
-        print(f"Invalid review inbox input: {exc}")
+        _error(f"Invalid review inbox input: {exc}")
         return 1
     return 0
 
@@ -3200,11 +3224,12 @@ def _match_command(
     scopes: list[str] | None,
     include_deprecated: bool,
     longest_only: bool,
+    as_json: bool = False,
 ) -> int:
     try:
         lexicon = load_lexicon(path)
     except AgentLexiconLoadError as exc:
-        print(f"Invalid lexicon: {exc}")
+        _error(f"Invalid lexicon: {exc}")
         return 1
 
     matches = find_surface_matches(
@@ -3214,6 +3239,9 @@ def _match_command(
         include_deprecated=include_deprecated,
         longest_only=longest_only,
     )
+    if as_json:
+        print(json.dumps({"matches": [match.to_dict() for match in matches]}, indent=2, sort_keys=True))
+        return 0
     if not matches:
         print("No matches")
         return 0
@@ -3240,11 +3268,12 @@ def _resolve_command(
     semantic_near_miss: bool,
     semantic_model: str,
     semantic_threshold: float,
+    as_json: bool = False,
 ) -> int:
     try:
         lexicon = load_lexicon(path)
     except AgentLexiconLoadError as exc:
-        print(f"Invalid lexicon: {exc}")
+        _error(f"Invalid lexicon: {exc}")
         return 1
 
     try:
@@ -3254,7 +3283,7 @@ def _resolve_command(
             min_semantic_score=semantic_threshold,
         )
     except SemanticNearMissError as exc:
-        print(f"Invalid semantic near-miss input: {exc}")
+        _error(f"Invalid semantic near-miss input: {exc}")
         return 1
 
     try:
@@ -3266,8 +3295,11 @@ def _resolve_command(
             near_miss_semantic_backend=semantic_backend,
         )
     except SemanticNearMissError as exc:
-        print(f"Invalid semantic near-miss input: {exc}")
+        _error(f"Invalid semantic near-miss input: {exc}")
         return 1
+    if as_json:
+        print(json.dumps(decision.to_dict(), indent=2, sort_keys=True))
+        return 0
     print(f"Status: {decision.status.value}")
     print(f"Action: {decision.action.value}")
     if decision.message:
@@ -3366,11 +3398,12 @@ def _guard_command(
     scopes: list[str] | None,
     include_deprecated: bool,
     block_on_unicode_risk: bool,
+    as_json: bool = False,
 ) -> int:
     try:
         lexicon = load_lexicon(path)
     except AgentLexiconLoadError as exc:
-        print(f"Invalid lexicon: {exc}")
+        _error(f"Invalid lexicon: {exc}")
         return 1
 
     decision = guard_tool_call(
@@ -3381,6 +3414,10 @@ def _guard_command(
         include_deprecated=include_deprecated,
         block_on_unicode_risk=block_on_unicode_risk,
     )
+    exit_code = 0 if decision.status in {ToolGuardStatus.ALLOWED, ToolGuardStatus.NO_MATCH} else 2
+    if as_json:
+        print(json.dumps(decision.to_dict(), indent=2, sort_keys=True))
+        return exit_code
     print(f"Status: {decision.status.value}")
     print(f"Action: {decision.action.value}")
     print(f"Allowed: {'yes' if decision.is_allowed else 'no'}")

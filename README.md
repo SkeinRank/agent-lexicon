@@ -336,7 +336,7 @@ Contributing, security, and community:
 
 ## Status
 
-Agent Lexicon is an early, actively developed project (0.7.x). The core — resolve, guard, near-miss, dictionary-as-code, and merge-time drift detection — is well tested (294 passing tests) and used through the CLI, the Python API, and the local MCP server. Scaling it across many processes or a networked deployment is on the roadmap, not yet proven in production.
+Agent Lexicon is an early, actively developed project (0.7.x). The core — resolve, guard, near-miss, dictionary-as-code, and merge-time drift detection — is well tested (300 passing tests) and used through the CLI, the Python API, and the local MCP server. Scaling it across many processes or a networked deployment is on the roadmap, not yet proven in production.
 
 If terminology consistency across long, multi-agent sessions is a real cost for you — especially in regulated domains where decisions must be reproducible and auditable — this is built for exactly that.
 

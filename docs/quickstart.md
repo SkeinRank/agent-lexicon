@@ -112,6 +112,11 @@ Gate a tool call:
 agent-lexicon guard lexicon/lexicon.yaml "raise the credit limit" --tool billing.update_credit_limit
 ```
 
+For scripting, add `--json` to `resolve`, `guard`, or `match` to get the full
+decision as a machine-readable JSON document on stdout. Exit codes are stable:
+`guard` returns `0` when a call is allowed, `2` when it is blocked or needs
+clarification. Diagnostics go to stderr, so they never pollute a piped result.
+
 Or expose everything to an MCP-compatible agent:
 
 ```bash
