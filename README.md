@@ -323,12 +323,20 @@ These hold on the deterministic runtime and local review paths:
 
 - [Quickstart](docs/quickstart.md) — local setup, scan, review, publish, and runtime usage.
 - [Concepts](docs/concepts.md) — terms, aliases, scopes, resolution, guard decisions, and merge-time drift detection.
+- [Python API reference](docs/api.md) — `load_lexicon`, `resolve_text`, `guard_tool_call`, and the decision and enum types they return.
+- [MCP server reference](docs/mcp.md) — the six MCP tools, their arguments, and their return values.
+
+Contributing, security, and community:
+
+- [Contributing](CONTRIBUTING.md) — development setup and how to send a change.
+- [Security policy](SECURITY.md) — how to report a vulnerability privately.
+- [Code of conduct](CODE_OF_CONDUCT.md) — community standards.
 
 ---
 
 ## Status
 
-Agent Lexicon is an early, actively developed project (0.6.x). The core — resolve, guard, near-miss, dictionary-as-code, and merge-time drift detection — is well tested (284 passing tests) and used through the CLI, the Python API, and the local MCP server. Scaling it across many processes or a networked deployment is on the roadmap, not yet proven in production.
+Agent Lexicon is an early, actively developed project (0.7.x). The core — resolve, guard, near-miss, dictionary-as-code, and merge-time drift detection — is well tested (294 passing tests) and used through the CLI, the Python API, and the local MCP server. Scaling it across many processes or a networked deployment is on the roadmap, not yet proven in production.
 
 If terminology consistency across long, multi-agent sessions is a real cost for you — especially in regulated domains where decisions must be reproducible and auditable — this is built for exactly that.
 
