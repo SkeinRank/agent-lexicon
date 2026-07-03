@@ -79,6 +79,8 @@ from .scout import (
     SemanticNearMissError,
     GitMergeCheckError,
     check_git_merge_terminology,
+    lint_working_diff,
+    LintDiffError,
     discover_canonical_migration_candidates,
     discover_scout_candidates,
     existing_surfaces_from_lexicon,
@@ -413,6 +415,75 @@ def build_parser() -> argparse.ArgumentParser:
         "--json",
         action="store_true",
         help="Print the merge terminology report as JSON.",
+    )
+
+    lint_diff_parser = subparsers.add_parser(
+        "lint-diff",
+        help="Lint a working diff (stdin, working tree, or staged) for terminology drift during a task.",
+    )
+    lint_diff_parser.add_argument("--root", default=".", help="Git repository root.")
+    lint_diff_parser.add_argument(
+        "--lexicon",
+        default=None,
+        help="Path to the lexicon file. Defaults to <root>/lexicon/lexicon.yaml.",
+    )
+    lint_diff_parser.add_argument(
+        "--stdin",
+        action="store_true",
+        help="Read the unified diff from stdin (e.g. `git diff | alex lint-diff --stdin`).",
+    )
+    lint_diff_parser.add_argument(
+        "--staged",
+        action="store_true",
+        help="Lint the staged index instead of the working tree.",
+    )
+    lint_diff_parser.add_argument(
+        "--scope",
+        action="append",
+        default=None,
+        help="Limit resolution to a scope. Can be provided multiple times.",
+    )
+    lint_diff_parser.add_argument("--include", action="append", default=None, help="Include glob. Can be repeated.")
+    lint_diff_parser.add_argument("--exclude", action="append", default=None, help="Exclude glob. Can be repeated.")
+    lint_diff_parser.add_argument("--config", default=None, help="Path to an Agent Lexicon config file.")
+    lint_diff_parser.add_argument(
+        "--no-gitignore",
+        dest="respect_gitignore",
+        action="store_false",
+        default=None,
+        help="Do not honor .gitignore when selecting diffed files.",
+    )
+    lint_diff_parser.add_argument(
+        "--min-confidence",
+        type=float,
+        default=0.42,
+        help="Minimum confidence for a near-miss to be reported.",
+    )
+    lint_diff_parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Treat near-miss warnings as failures (exit code 1).",
+    )
+    lint_diff_parser.add_argument(
+        "--semantic",
+        action="store_true",
+        help="Also surface optional semantic near-miss suggestions (suggestion-only; never changes exit code).",
+    )
+    lint_diff_parser.add_argument(
+        "--semantic-model",
+        default=DEFAULT_BGE_BASE_MODEL,
+        help="Semantic model name used with --semantic.",
+    )
+    lint_diff_parser.add_argument(
+        "--semantic-threshold",
+        type=float,
+        default=DEFAULT_BGE_SEMANTIC_THRESHOLD,
+        help="Minimum semantic similarity used with --semantic.",
+    )
+    lint_diff_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the lint report as JSON.",
     )
 
     ingest_parser = subparsers.add_parser(
@@ -1632,6 +1703,25 @@ def main(argv: list[str] | None = None) -> int:
             semantic_check=args.semantic_check,
         )
 
+    if args.command == "lint-diff":
+        return _lint_diff_command(
+            root=Path(args.root),
+            lexicon_path=Path(args.lexicon) if args.lexicon else None,
+            read_stdin=args.stdin,
+            staged=args.staged,
+            scopes=args.scope,
+            include_globs=args.include,
+            exclude_globs=args.exclude,
+            config_path=Path(args.config) if args.config else None,
+            respect_gitignore=args.respect_gitignore,
+            min_confidence=args.min_confidence,
+            strict=args.strict,
+            semantic=args.semantic,
+            semantic_model=args.semantic_model,
+            semantic_threshold=args.semantic_threshold,
+            as_json=args.json,
+        )
+
     if args.command == "ingest":
         return _ingest_command(
             paths=[Path(path) for path in args.paths],
@@ -2362,6 +2452,83 @@ def _check_merge_command(
     else:
         print(report.to_text())
     return 1 if fail_on_review and report.has_review_items else 0
+
+
+def _lint_diff_command(
+    *,
+    root: Path,
+    lexicon_path: Path | None,
+    read_stdin: bool,
+    staged: bool,
+    scopes: list[str] | None,
+    include_globs: list[str] | None,
+    exclude_globs: list[str] | None,
+    config_path: Path | None,
+    respect_gitignore: bool | None,
+    min_confidence: float,
+    strict: bool,
+    semantic: bool,
+    semantic_model: str,
+    semantic_threshold: float,
+    as_json: bool,
+) -> int:
+    root_path = root.resolve()
+    try:
+        config = load_project_config(root_path, config_path=config_path)
+    except AgentLexiconConfigError as exc:
+        _error(f"Invalid Agent Lexicon config: {exc}")
+        return 1
+    effective_include = effective_include_globs(include_globs, config)
+    effective_exclude = effective_exclude_globs(exclude_globs, config)
+    effective_gitignore = effective_respect_gitignore(respect_gitignore, config)
+    resolved_lexicon_path = lexicon_path or (root_path / "lexicon" / "lexicon.yaml")
+    if not resolved_lexicon_path.is_absolute():
+        resolved_lexicon_path = root_path / resolved_lexicon_path
+    try:
+        lexicon = load_lexicon(resolved_lexicon_path)
+    except AgentLexiconLoadError as exc:
+        _error(f"Invalid lexicon: {exc}")
+        return 1
+
+    diff_text: str | None = None
+    if read_stdin:
+        diff_text = sys.stdin.read()
+
+    try:
+        semantic_backend = _semantic_backend_from_cli(
+            enabled=semantic,
+            model_name=semantic_model,
+            min_semantic_score=semantic_threshold,
+        )
+    except SemanticNearMissError as exc:
+        _error(f"Invalid semantic input: {exc}")
+        return 1
+
+    try:
+        report = lint_working_diff(
+            lexicon,
+            diff_text=diff_text,
+            root=root_path,
+            staged=staged,
+            scopes=scopes,
+            include_globs=effective_include,
+            exclude_globs=effective_exclude,
+            respect_gitignore=effective_gitignore,
+            min_confidence=min_confidence,
+            semantic_backend=semantic_backend,
+        )
+    except LintDiffError as exc:
+        _error(f"Invalid lint-diff input: {exc}")
+        return 1
+    except SemanticNearMissError as exc:
+        _error(f"Invalid semantic input: {exc}")
+        return 1
+
+    if as_json:
+        print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+    else:
+        print(report.to_text(strict=strict))
+    return report.exit_code(strict=strict)
 
 
 def _print_metric(label: str, value: float | None) -> None:

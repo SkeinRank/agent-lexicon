@@ -148,6 +148,7 @@ agent-lexicon publish                   # publish accepted decisions as a snapsh
 agent-lexicon resolve <lexicon> "text"  # resolve terminology in any text
 agent-lexicon guard   <lexicon> "text" --tool <name>   # gate a tool call
 agent-lexicon context <lexicon>         # print the canonical vocabulary brief for an agent
+agent-lexicon lint-diff --stdin         # lint a working diff for terminology drift
 agent-lexicon check-merge --base main --head <branch>  # detect drift at merge
 agent-lexicon check-merge --base main --head <branch> --semantic-check  # CI-style pass/fail
 ```
@@ -167,6 +168,25 @@ agent-lexicon context lexicon/lexicon.yaml
 # Avoid:
 # - WorkspaceScope (use "ContextSpace" instead)
 ```
+
+**During a task** — check a working diff for terminology drift before it is committed, with layered severity:
+
+```bash
+git diff | agent-lexicon lint-diff --stdin
+# Terminology lint: 2 files, 18 added lines
+#
+# Deprecated terms (fail):
+# - src/session.py:14 WorkspaceScope -> use "ContextSpace"
+#
+# Possible typos / near-misses (warn):
+# - docs/api.md:7 ContextSapce -> did you mean "ContextSpace"?
+#
+# New project terms (info):
+# - src/memory.py:22 TaskMemoryProfile
+# (exit code 1: a deprecated term was used)
+```
+
+Level 1 (declared deprecated terms) fails the check. Level 2 (lexical near-misses) warns, or fails under `--strict`. Level 3 (unknown project terms) is reported for awareness only. An optional `--semantic` flag adds probabilistic suggestions but never changes the exit code — enforcement stays deterministic.
 
 **At merge / PR** — a deterministic terminology gate alongside your other CI checks:
 
@@ -375,7 +395,7 @@ Contributing, security, and community:
 
 ## Status
 
-Agent Lexicon is an early, actively developed project (0.7.x). The core — resolve, guard, near-miss, dictionary-as-code, and merge-time drift detection — is well tested (320 passing tests) and used through the CLI, the Python API, and the local MCP server. Scaling it across many processes or a networked deployment is on the roadmap, not yet proven in production.
+Agent Lexicon is an early, actively developed project (0.7.x). The core — resolve, guard, near-miss, dictionary-as-code, and merge-time drift detection — is well tested (326 passing tests) and used through the CLI, the Python API, and the local MCP server. Scaling it across many processes or a networked deployment is on the roadmap, not yet proven in production.
 
 If terminology consistency across long, multi-agent sessions is a real cost for you — especially in regulated domains where decisions must be reproducible and auditable — this is built for exactly that.
 
