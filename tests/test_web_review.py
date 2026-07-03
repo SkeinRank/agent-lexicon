@@ -151,3 +151,62 @@ def test_review_inbox_includes_lexicon_terms(tmp_path: Path) -> None:
     assert 'data-view="lexicon"' in html
     # Action bar is sticky and present for a writable policy.
     assert "actionbar" in html
+
+
+def _drive_post(state, body: bytes, headers: dict) -> str:
+    """Drive the review POST handler without a real socket; return status line."""
+    import io
+    from http.client import HTTPMessage
+    from agent_lexicon.web.review import _handler_for_state
+    from agent_lexicon.policy import load_local_policy, check_local_policy, PolicyAction
+
+    pd = check_local_policy(
+        load_local_policy(state.root), PolicyAction.REVIEW_CANDIDATE, actor="local", role=None
+    )
+    Handler = _handler_for_state(state, actor="local", policy_decision=pd)
+
+    class H(Handler):
+        def __init__(self, raw):
+            self.rfile = io.BytesIO(raw)
+            self.wfile = io.BytesIO()
+            self.client_address = ("127.0.0.1", 1)
+            self.path = "/decision"
+            self.command = "POST"
+            self.headers = HTTPMessage()
+            for k, v in headers.items():
+                self.headers[k] = v
+
+        def send_response(self, code, message=None):
+            self.wfile.write(f"STATUS {code}".encode())
+
+        def send_header(self, k, v):
+            pass
+
+        def end_headers(self):
+            pass
+
+    h = H(body)
+    h.do_POST()
+    return h.wfile.getvalue().decode(errors="replace").split("\n")[0]
+
+
+def test_post_rejects_non_numeric_content_length(tmp_path: Path) -> None:
+    state = _workspace_with_evidence(tmp_path)
+    # Regression: a malformed Content-Length used to crash the handler thread.
+    assert _drive_post(state, b"surface=x&decision=accepted", {"Content-Length": "abc"}) .startswith("STATUS 400")
+
+
+def test_post_rejects_negative_content_length(tmp_path: Path) -> None:
+    state = _workspace_with_evidence(tmp_path)
+    assert _drive_post(state, b"x", {"Content-Length": "-5"}) .startswith("STATUS 400")
+
+
+def test_post_rejects_non_utf8_body(tmp_path: Path) -> None:
+    state = _workspace_with_evidence(tmp_path)
+    # Regression: a non-UTF-8 body used to raise UnicodeDecodeError.
+    assert _drive_post(state, b"surface=\xff\xfe&decision=accepted", {"Content-Length": "20"}) .startswith("STATUS 400")
+
+
+def test_post_rejects_oversized_body(tmp_path: Path) -> None:
+    state = _workspace_with_evidence(tmp_path)
+    assert _drive_post(state, b"x", {"Content-Length": "99999999"}) .startswith("STATUS 413")

@@ -70,6 +70,9 @@ class ReviewInboxError(ValueError):
     """Raised when the local proposal inbox cannot be rendered or served."""
 
 
+_MAX_POST_BYTES = 1_048_576  # 1 MiB cap for review-decision POST bodies
+
+
 _STATUS_LABELS = {
     "unreviewed": "Unreviewed",
     ReviewDecisionStatus.ACCEPTED.value: "Accepted",
@@ -817,8 +820,23 @@ def _handler_for_state(
             if parsed.path != "/decision":
                 self._send_text("Not found\n", status=404)
                 return
-            length = int(self.headers.get("Content-Length", "0"))
-            payload = self.rfile.read(length).decode("utf-8")
+            raw_length = self.headers.get("Content-Length", "0")
+            try:
+                length = int(raw_length)
+            except (TypeError, ValueError):
+                self._send_text("Invalid Content-Length header\n", status=400)
+                return
+            if length < 0:
+                self._send_text("Invalid Content-Length header\n", status=400)
+                return
+            if length > _MAX_POST_BYTES:
+                self._send_text("Request body too large\n", status=413)
+                return
+            try:
+                payload = self.rfile.read(length).decode("utf-8")
+            except UnicodeDecodeError:
+                self._send_text("Request body must be UTF-8\n", status=400)
+                return
             form = parse_qs(payload)
             normalized_surface = form.get("surface", [""])[0]
             decision = form.get("decision", [""])[0]
