@@ -128,3 +128,13 @@ def test_default_exclude_dirs_include_lexicon() -> None:
     assert "lexicon" in DEFAULT_EXCLUDE_DIRS
     assert ".agent-lexicon" in DEFAULT_EXCLUDE_DIRS
     assert "lexicon/**" in DEFAULT_EXCLUDE_GLOBS
+
+
+def test_default_config_exclude_globs_include_lexicon() -> None:
+    # Regression: check-merge and scan share no exclude list; both must drop
+    # the tool's own lexicon/ dir so its README/queries don't pollute output.
+    from agent_lexicon.config import DEFAULT_SCAN_EXCLUDE_GLOBS, DEFAULT_CONFIG_TEXT
+
+    assert "lexicon/**" in DEFAULT_SCAN_EXCLUDE_GLOBS
+    assert ".agent-lexicon/**" in DEFAULT_SCAN_EXCLUDE_GLOBS
+    assert "lexicon/**" in DEFAULT_CONFIG_TEXT

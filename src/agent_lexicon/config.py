@@ -29,6 +29,7 @@ DEFAULT_CONFIG_PATH = ".agent-lexicon/config.yaml"
 DEFAULT_SCAN_PATHS: tuple[str, ...] = ("README.md", "docs", "src", "app", "packages", "lib", "services")
 DEFAULT_SCAN_EXCLUDE_GLOBS: tuple[str, ...] = (
     ".agent-lexicon/**",
+    "lexicon/**",
     ".git/**",
     ".hg/**",
     ".mypy_cache/**",
@@ -154,6 +155,7 @@ DEFAULT_CONFIG_TEXT = """scan:
     - "*.toml"
   exclude:
     - .agent-lexicon/**
+    - lexicon/**
     - .git/**
     - .hg/**
     - .mypy_cache/**
