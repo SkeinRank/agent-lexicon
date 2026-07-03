@@ -144,6 +144,7 @@ DEFAULT_INCLUDE_GLOBS: tuple[str, ...] = (
 
 DEFAULT_EXCLUDE_DIRS: tuple[str, ...] = (
     ".agent-lexicon",
+    "lexicon",
     ".git",
     ".hg",
     ".mypy_cache",
@@ -163,6 +164,7 @@ DEFAULT_MAX_FILE_BYTES = 1_000_000
 
 DEFAULT_EXCLUDE_GLOBS: tuple[str, ...] = (
     ".agent-lexicon/**",
+    "lexicon/**",
     ".git/**",
     ".hg/**",
     ".mypy_cache/**",

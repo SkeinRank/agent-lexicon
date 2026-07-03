@@ -102,3 +102,29 @@ def test_load_project_config_rejects_invalid_shape(tmp_path: Path) -> None:
         assert "scan.paths" in str(exc)
     else:  # pragma: no cover - defensive assertion
         raise AssertionError("expected AgentLexiconConfigError")
+
+
+def test_scan_excludes_lexicon_workspace_dir_when_present(tmp_path: Path) -> None:
+    # Regression: `scan .` used to ingest the tool's own lexicon/ folder,
+    # polluting the review queue with internal terms like "queries.jsonl".
+    _write(tmp_path / "code.py", "def get_access_token(user):\n    return user.authToken\n")
+    _write(tmp_path / "lexicon" / "README.md", "credential blob and bearer token\n")
+    _write(tmp_path / "lexicon" / "queries.jsonl", '{"q": "credential blob"}\n')
+
+    # Explicitly discover both a real source file and the lexicon dir; the
+    # lexicon dir must be dropped, the source file kept.
+    files = discover_local_files(
+        [tmp_path / "code.py", tmp_path / "lexicon"], root=tmp_path
+    )
+    relative = {path.relative_to(tmp_path).as_posix() for path in files}
+
+    assert "code.py" in relative
+    assert not any(p.startswith("lexicon/") for p in relative)
+
+
+def test_default_exclude_dirs_include_lexicon() -> None:
+    from agent_lexicon.ingest.local import DEFAULT_EXCLUDE_DIRS, DEFAULT_EXCLUDE_GLOBS
+
+    assert "lexicon" in DEFAULT_EXCLUDE_DIRS
+    assert ".agent-lexicon" in DEFAULT_EXCLUDE_DIRS
+    assert "lexicon/**" in DEFAULT_EXCLUDE_GLOBS
