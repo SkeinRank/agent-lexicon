@@ -108,27 +108,33 @@ a { color: inherit; text-decoration: none; }
 .shell {
   width: min(1180px, calc(100vw - 48px));
   margin: 0 auto;
-  padding: 32px 0 48px;
+  padding: 20px 0 48px;
 }
 .topbar {
   display: flex;
   justify-content: space-between;
   align-items: flex-end;
   gap: 24px;
-  margin-bottom: 24px;
+  margin-bottom: 14px;
 }
 .eyebrow {
-  margin: 0 0 6px;
+  margin: 0 0 3px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 11px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 h1 {
   margin: 0;
-  font-size: 30px;
+  font-size: 22px;
   line-height: 1.1;
-  letter-spacing: -0.035em;
+  letter-spacing: -0.03em;
+}
+.topbar .meta {
+  max-width: 560px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .summary {
   display: flex;
@@ -385,8 +391,7 @@ button.primary { background: var(--accent); color: #fff; border-color: var(--acc
 .tab { border: 0.5px solid transparent; border-radius: 999px; padding: 6px 14px; font-size: 13px; color: var(--muted); cursor: pointer; background: transparent; }
 .tab:hover { background: var(--soft); }
 .tab.active { background: var(--panel); border-color: var(--line); color: var(--text); }
-.actionbar { position: sticky; bottom: 0; background: var(--panel); border-top: 1px solid var(--line); padding: 14px 0 2px; margin-top: 18px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-.detail { max-height: 78vh; overflow-y: auto; }
+.actionbar { position: sticky; bottom: 0; z-index: 5; background: var(--panel); border-top: 1px solid var(--line); padding: 14px 24px; margin: 18px -24px -24px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; border-bottom-left-radius: var(--radius-lg); border-bottom-right-radius: var(--radius-lg); }
 .lex-term { border: 1px solid var(--line); border-radius: var(--radius-md); padding: 14px 16px; margin-bottom: 10px; background: var(--panel); }
 .lex-canonical { font-size: 16px; font-weight: 650; }
 .lex-id { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--muted); }
@@ -455,10 +460,11 @@ _APP_JS = r"""
   }
 
   function renderSidebar(){
-    var vis = visibleIndexes();
-    var groups = groupVisible(vis);
-    var h = '';
-    h += '<div class="toolbar">';
+    return renderToolbar() + '<div class="sidebar-list" id="sblist">' + renderListInner() + '</div>';
+  }
+
+  function renderToolbar(){
+    var h = '<div class="toolbar">';
     h += '<input class="search" id="q" placeholder="Search terms" value="'+esc(search)+'">';
     h += '<select class="filter" id="f">';
     h += '<option value="all"'+(filter==='all'?' selected':'')+'>All</option>';
@@ -466,7 +472,13 @@ _APP_JS = r"""
     h += '<option value="important"'+(filter==='important'?' selected':'')+'>Important</option>';
     h += '</select>';
     h += '</div>';
-    h += '<div class="sidebar-list">';
+    return h;
+  }
+
+  function renderListInner(){
+    var vis = visibleIndexes();
+    var groups = groupVisible(vis);
+    var h = '';
     if (vis.length === 0){ h += '<div class="meta" style="padding:16px">No terms match.</div>'; }
     groups.forEach(function(g){
       if (g.key === null){
@@ -482,7 +494,6 @@ _APP_JS = r"""
         if (open){ h += '<div class="cluster-body">'; g.idxs.forEach(function(i){ h += itemRow(i); }); h += '</div>'; }
       }
     });
-    h += '</div>';
     return h;
   }
 
@@ -527,6 +538,7 @@ _APP_JS = r"""
       h += '<button data-act="rejected">\u2717 Reject <span class="kbd">r</span></button>';
       h += '<button data-act="ambiguous">Ambiguous <span class="kbd">m</span></button>';
       h += '<button data-skip="1">Skip <span class="kbd">s</span></button>';
+      h += '<button data-undo="1">\u21a9 Undo <span class="kbd">u</span></button>';
       if (it.cluster_key && it.cluster_size > 1) h += '<button class="accept-cluster" data-cluster-accept="'+esc(it.cluster_key)+'">\u2713 Accept cluster <span class="kbd">A</span></button>';
       h += '</div>';
     } else {
@@ -555,7 +567,7 @@ _APP_JS = r"""
     return '<header class="topbar"><div>'
       + '<p class="eyebrow">Agent Lexicon</p><h1>'+(view==='review'?'Review':'Lexicon')+'</h1>'
       + '<div class="meta">Workspace root: '+esc(DATA.root)+'</div>'
-      + '<div style="margin-top:12px">'+tabs+'</div></div>'
+      + '<div style="margin-top:8px">'+tabs+'</div></div>'
       + '<div class="summary" style="align-items:center">'
       + right
       + '<span class="pill">policy: '+esc(DATA.policy)+'</span>'
@@ -614,20 +626,25 @@ _APP_JS = r"""
 
   function bind(){
     var q = document.getElementById('q');
-    if (q) q.oninput = function(){ search = q.value; var v=visibleIndexes(); if(v.indexOf(idx)===-1 && v.length) idx=v[0]; renderSidebarOnly(); };
+    if (q) q.oninput = function(){ search = q.value; var v=visibleIndexes(); if(v.indexOf(idx)===-1 && v.length) idx=v[0]; updateList(); };
     var f = document.getElementById('f');
-    if (f) f.onchange = function(){ filter = f.value; var v=visibleIndexes(); if(v.indexOf(idx)===-1 && v.length) idx=v[0]; render(); };
-    app.querySelectorAll('.item').forEach(function(a){ a.onclick = function(){ idx = parseInt(a.dataset.idx); render(); }; });
-    app.querySelectorAll('.cluster-head').forEach(function(c){ c.onclick = function(){ var k=c.dataset.cluster; collapsed[k]=!collapsed[k]; renderSidebarOnly(); }; });
+    if (f) f.onchange = function(){ filter = f.value; var v=visibleIndexes(); if(v.indexOf(idx)===-1 && v.length) idx=v[0]; updateList(); };
+    bindList();
     app.querySelectorAll('[data-act]').forEach(function(b){ b.onclick = function(){ decide(idx, b.dataset.act); }; });
     var sk = app.querySelector('[data-skip]'); if (sk) sk.onclick = function(){ next(); };
+    var un = app.querySelector('[data-undo]'); if (un) un.onclick = function(){ undo(); };
     var ca = app.querySelector('[data-cluster-accept]'); if (ca) ca.onclick = function(){ acceptCluster(ca.dataset.clusterAccept); };
   }
 
-  function renderSidebarOnly(){
-    var aside = app.querySelector('.sidebar');
-    if (aside) aside.innerHTML = renderSidebar();
-    bind();
+  function bindList(){
+    app.querySelectorAll('.item').forEach(function(a){ a.onclick = function(){ idx = parseInt(a.dataset.idx); render(); }; });
+    app.querySelectorAll('.cluster-head').forEach(function(c){ c.onclick = function(){ var k=c.dataset.cluster; collapsed[k]=!collapsed[k]; updateList(); }; });
+  }
+
+  function updateList(){
+    var listEl = document.getElementById('sblist');
+    if (listEl) listEl.innerHTML = renderListInner();
+    bindList();
   }
 
   function post(surface, decision){
@@ -635,18 +652,33 @@ _APP_JS = r"""
     return fetch('/decision', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body: body});
   }
 
+  var history = [];
+
   function decide(i, decision){
     if (DATA.readOnly) return;
     var it = items[i];
+    history.push({i:i, prev: it.decision || null});
     it.decision = decision;
     post(it.normalized_surface, decision);
     render();
     setTimeout(next, 100);
   }
 
+  function undo(){
+    if (DATA.readOnly || !history.length) return;
+    var last = history.pop();
+    var it = items[last.i];
+    it.decision = last.prev;
+    // Re-post the previous decision when there was one; otherwise leave the
+    // server's last record (decisions are append-only) and re-open locally.
+    if (last.prev) post(it.normalized_surface, last.prev);
+    idx = last.i;
+    render();
+  }
+
   function acceptCluster(key){
     if (DATA.readOnly) return;
-    items.forEach(function(it){ if (it.cluster_key === key){ it.decision='accepted'; post(it.normalized_surface,'accepted'); } });
+    items.forEach(function(it, i){ if (it.cluster_key === key){ history.push({i:i, prev: it.decision || null}); it.decision='accepted'; post(it.normalized_surface,'accepted'); } });
     render();
     setTimeout(next, 100);
   }
@@ -664,6 +696,7 @@ _APP_JS = r"""
     else if (k==='r'){ decide(idx,'rejected'); e.preventDefault(); }
     else if (k==='m'){ decide(idx,'ambiguous'); e.preventDefault(); }
     else if (k==='s'){ next(); e.preventDefault(); }
+    else if (k==='u'){ undo(); e.preventDefault(); }
     else if (k==='A'){ var it=items[idx]; if(it.cluster_key && it.cluster_size>1) acceptCluster(it.cluster_key); e.preventDefault(); }
   });
 
