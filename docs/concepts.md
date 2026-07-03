@@ -16,11 +16,36 @@ A **scope** is a namespace. The same word can mean different things in different
 - **ambiguous** — the text could mean more than one term (for example, `limit` with no scope). The agent should ask for clarification rather than guess.
 - **unknown** — no known terminology was found.
 
-Resolution is deterministic. The same text against the same lexicon always returns the same state, with the same matched spans and reasons.
+Resolution is deterministic. The same text against the same immutable lexicon snapshot always returns the same state, with the same matched spans and reasons. Runtime decisions include a `lexicon_snapshot_ref` such as `sha256:<digest>` so the exact vocabulary content used for a decision can be identified later.
+
+## Immutable lexicon snapshots
+
+A loaded lexicon is treated as immutable runtime input. Agent Lexicon computes a stable content fingerprint for that input and exposes it as `lexicon_snapshot_ref` (`sha256:<digest>`) in resolver decisions, guard decisions, merge reports, and published snapshot metadata.
+
+This keeps reproducibility independent from mutable files on disk: the guarantee is not "whatever `lexicon.yaml` contains today", but "this text was resolved against this exact lexicon content".
+
+## Decision provenance log
+
+The local workspace keeps an append-only decision provenance log. Human review decisions, snapshot publication decisions, and future deterministic policy decisions can be stored as self-contained records with actor, action, subject, input, result, rule identifier, payload, and lexicon snapshot metadata.
+
+This is different from the current review state. The current state answers "what is the latest decision for this candidate?" The provenance log answers "what decisions were made, in what order, by whom or by which policy rule, against which vocabulary content?"
 
 ## Code-style identifiers
 
 Agents write terminology as code, not just prose. Agent Lexicon resolves identifier forms of a known surface — `accessToken`, `access_token`, `ACCESS_TOKEN` all resolve to the term whose surface is `access token`. This is what lets drift detection see terminology inside real source, not only in comments.
+
+
+## Workspace storage boundary
+
+The default workspace store is SQLite because local CLI, review, and CI loops should work without a server. The workspace APIs now sit behind a `WorkspaceStore` boundary, with `SQLiteWorkspaceStore` as the built-in implementation.
+
+This keeps the core workflow local-first while leaving a clear integration point for future shared storage. The runtime resolver and guard should still operate from immutable in-memory lexicon snapshots; storage is for ingest, review, snapshot metadata, and provenance records, not for every hot-path resolve call.
+
+## Repository scan config
+
+Agent Lexicon treats repository files as terminology-bearing text. `.agent-lexicon/config.yaml` defines the default scan surface: which paths to read, which glob patterns to include, which paths to ignore, whether `.gitignore` should be respected, and the maximum file size. CLI flags can override these rules for a one-off scan, while the config keeps local runs and CI jobs consistent.
+
+Discovery is language-agnostic rather than AST-bound: it reads text from documentation, common source roots, and popular implementation/configuration file types, then lets the terminology layer detect known terms, likely aliases, and new term candidates. `.gitignore` removes local build outputs and private generated files from the scan by default; `scan.exclude` remains the project-specific layer for tracked generated code or folders that should not participate in terminology review.
 
 ## Unicode normalization
 
@@ -47,3 +72,8 @@ In a long multi-agent session, branches accumulate independent naming decisions.
 Everything that **decides** is deterministic: resolution, guarding, and the heuristic drift classification. Optional semantic reranking only **suggests** — it points a human reviewer at the most likely canonical neighbour for a gray-zone identifier, marked as non-deterministic, and never commits a decision on its own.
 
 This boundary is deliberate. It is what lets every committed decision be reproduced and audited later, while still letting the suggestion layer be as smart as you want.
+
+## CI merge gate
+
+The GitHub Actions workflow keeps local review and pull-request review aligned. It uses the repository scan configuration, validates the dictionary, and runs `check-merge` against the PR diff. By default it reports drift without failing the PR; teams can turn on `--fail-on-review` once their lexicon review process is ready to become a merge requirement.
+

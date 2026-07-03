@@ -1,13 +1,23 @@
 """Command line entry point for Agent Lexicon."""
+# PYTHON_ARGCOMPLETE_OK
 
 from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 from typing import Mapping
 
 from . import __version__, about
+from .config import (
+    AgentLexiconConfigError,
+    effective_exclude_globs,
+    effective_include_globs,
+    effective_max_file_bytes,
+    effective_respect_gitignore,
+    load_project_config,
+)
 from .dictionary import (
     DictionaryLayoutError,
     SemanticDiffError,
@@ -69,6 +79,8 @@ from .scout import (
     SemanticNearMissError,
     GitMergeCheckError,
     check_git_merge_terminology,
+    lint_working_diff,
+    LintDiffError,
     discover_canonical_migration_candidates,
     discover_scout_candidates,
     existing_surfaces_from_lexicon,
@@ -84,6 +96,7 @@ from .workflows import (
 )
 from .workspace import (
     ReviewDecisionStatus,
+    WorkspaceDecisionAction,
     SnapshotPublishError,
     WorkspaceError,
     init_workspace,
@@ -155,7 +168,25 @@ def build_parser() -> argparse.ArgumentParser:
         "--include",
         action="append",
         default=None,
-        help="Glob to include when scanning directories. Can be provided multiple times.",
+        help="Glob to include when scanning directories. Overrides scan.include from config when provided.",
+    )
+    scan_parser.add_argument(
+        "--exclude",
+        action="append",
+        default=None,
+        help="Glob to exclude when scanning directories. Overrides scan.exclude from config when provided.",
+    )
+    scan_parser.add_argument(
+        "--config",
+        default=None,
+        help="Optional Agent Lexicon config path. Defaults to .agent-lexicon/config.yaml when present.",
+    )
+    scan_parser.add_argument(
+        "--no-gitignore",
+        dest="respect_gitignore",
+        action="store_false",
+        default=None,
+        help="Do not apply .gitignore rules during discovery for this run.",
     )
     scan_parser.add_argument("--min-score", type=float, default=0.25, help="Minimum candidate score from 0.0 to 1.0.")
     scan_parser.add_argument("--max-candidates", type=int, default=20, help="Maximum number of candidates to save.")
@@ -167,7 +198,7 @@ def build_parser() -> argparse.ArgumentParser:
     scan_parser.add_argument("--context-lines", type=int, default=1, help="Context lines around each evidence match.")
     scan_parser.add_argument("--max-positive-snippets", type=int, default=3, help="Maximum positive snippets per candidate.")
     scan_parser.add_argument("--max-negative-snippets", type=int, default=3, help="Maximum negative snippets per candidate.")
-    scan_parser.add_argument("--max-file-bytes", type=int, default=1_000_000, help="Maximum file size to read.")
+    scan_parser.add_argument("--max-file-bytes", type=int, default=None, help="Maximum file size to read. Defaults to scan.max_file_bytes from config.")
     _add_local_policy_options(scan_parser)
     scan_parser.add_argument("--quality-report", action="store_true", help="Print Scout quality metrics after scanning.")
     scan_parser.add_argument("--json", action="store_true", help="Print the scan report as JSON.")
@@ -196,6 +227,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_local_policy_options(analyze_parser)
     analyze_parser.add_argument("--quality-report", action="store_true", help="Print Scout quality metrics from the workspace.")
+    analyze_parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Show the full numeric breakdown for each candidate (scores, oov, cluster size).",
+    )
     analyze_parser.add_argument("--json", action="store_true", help="Print the analysis report as JSON.")
 
     publish_parser = subparsers.add_parser(
@@ -307,7 +343,25 @@ def build_parser() -> argparse.ArgumentParser:
         "--include",
         action="append",
         default=None,
-        help="Limit checked paths with a git-style glob such as 'src/**'. Can be provided multiple times.",
+        help="Limit checked paths with a git-style glob such as 'src/**'. Overrides scan.include from config when provided.",
+    )
+    check_merge_parser.add_argument(
+        "--exclude",
+        action="append",
+        default=None,
+        help="Exclude checked paths with a git-style glob such as 'dist/**'. Overrides scan.exclude from config when provided.",
+    )
+    check_merge_parser.add_argument(
+        "--config",
+        default=None,
+        help="Optional Agent Lexicon config path. Defaults to .agent-lexicon/config.yaml when present.",
+    )
+    check_merge_parser.add_argument(
+        "--no-gitignore",
+        dest="respect_gitignore",
+        action="store_false",
+        default=None,
+        help="Do not apply .gitignore rules to the merge diff for this run.",
     )
     check_merge_parser.add_argument(
         "--exclude-deprecated",
@@ -330,6 +384,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--fail-on-review",
         action="store_true",
         help="Return exit code 1 when reviewable unknown identifiers are found.",
+    )
+    check_merge_parser.add_argument(
+        "--semantic-check",
+        action="store_true",
+        help="Print a compact CI-style semantic-conflict summary (non-canonical terms used in the diff) and exit non-zero on conflicts.",
     )
     check_merge_parser.add_argument(
         "--include-unresolved-unknowns",
@@ -358,6 +417,75 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print the merge terminology report as JSON.",
     )
 
+    lint_diff_parser = subparsers.add_parser(
+        "lint-diff",
+        help="Lint a working diff (stdin, working tree, or staged) for terminology drift during a task.",
+    )
+    lint_diff_parser.add_argument("--root", default=".", help="Git repository root.")
+    lint_diff_parser.add_argument(
+        "--lexicon",
+        default=None,
+        help="Path to the lexicon file. Defaults to <root>/lexicon/lexicon.yaml.",
+    )
+    lint_diff_parser.add_argument(
+        "--stdin",
+        action="store_true",
+        help="Read the unified diff from stdin (e.g. `git diff | alex lint-diff --stdin`).",
+    )
+    lint_diff_parser.add_argument(
+        "--staged",
+        action="store_true",
+        help="Lint the staged index instead of the working tree.",
+    )
+    lint_diff_parser.add_argument(
+        "--scope",
+        action="append",
+        default=None,
+        help="Limit resolution to a scope. Can be provided multiple times.",
+    )
+    lint_diff_parser.add_argument("--include", action="append", default=None, help="Include glob. Can be repeated.")
+    lint_diff_parser.add_argument("--exclude", action="append", default=None, help="Exclude glob. Can be repeated.")
+    lint_diff_parser.add_argument("--config", default=None, help="Path to an Agent Lexicon config file.")
+    lint_diff_parser.add_argument(
+        "--no-gitignore",
+        dest="respect_gitignore",
+        action="store_false",
+        default=None,
+        help="Do not honor .gitignore when selecting diffed files.",
+    )
+    lint_diff_parser.add_argument(
+        "--min-confidence",
+        type=float,
+        default=0.42,
+        help="Minimum confidence for a near-miss to be reported.",
+    )
+    lint_diff_parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Treat near-miss warnings as failures (exit code 1).",
+    )
+    lint_diff_parser.add_argument(
+        "--semantic",
+        action="store_true",
+        help="Also surface optional semantic near-miss suggestions (suggestion-only; never changes exit code).",
+    )
+    lint_diff_parser.add_argument(
+        "--semantic-model",
+        default=DEFAULT_BGE_BASE_MODEL,
+        help="Semantic model name used with --semantic.",
+    )
+    lint_diff_parser.add_argument(
+        "--semantic-threshold",
+        type=float,
+        default=DEFAULT_BGE_SEMANTIC_THRESHOLD,
+        help="Minimum semantic similarity used with --semantic.",
+    )
+    lint_diff_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the lint report as JSON.",
+    )
+
     ingest_parser = subparsers.add_parser(
         "ingest",
         help="Read local docs, README files, source files, and explicit local files.",
@@ -377,6 +505,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=None,
         help="Glob to include when scanning directories. Can be provided multiple times.",
+    )
+    ingest_parser.add_argument(
+        "--exclude",
+        action="append",
+        default=None,
+        help="Glob to exclude when scanning directories. Can be provided multiple times.",
     )
     ingest_parser.add_argument(
         "--max-file-bytes",
@@ -409,6 +543,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=None,
         help="Glob to include when scanning directories. Can be provided multiple times.",
+    )
+    discover_candidates_parser.add_argument(
+        "--exclude",
+        action="append",
+        default=None,
+        help="Glob to exclude when scanning directories. Can be provided multiple times.",
     )
     discover_candidates_parser.add_argument(
         "--lexicon",
@@ -473,6 +613,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=None,
         help="Glob to include when scanning directories. Can be provided multiple times.",
+    )
+    build_evidence_parser.add_argument(
+        "--exclude",
+        action="append",
+        default=None,
+        help="Glob to exclude when scanning directories. Can be provided multiple times.",
     )
     build_evidence_parser.add_argument(
         "--lexicon",
@@ -560,6 +706,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=None,
         help="Glob to include when scanning directories. Can be provided multiple times.",
+    )
+    safety_scan_parser.add_argument(
+        "--exclude",
+        action="append",
+        default=None,
+        help="Glob to exclude when scanning directories. Can be provided multiple times.",
     )
     safety_scan_parser.add_argument(
         "--max-file-bytes",
@@ -1081,6 +1233,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Glob to include when scanning directories. Can be provided multiple times.",
     )
     workspace_sync_parser.add_argument(
+        "--exclude",
+        action="append",
+        default=None,
+        help="Glob to exclude when scanning directories. Can be provided multiple times.",
+    )
+    workspace_sync_parser.add_argument(
         "--lexicon",
         default=None,
         help="Optional lexicon document whose existing surfaces should be ignored.",
@@ -1153,6 +1311,33 @@ def build_parser() -> argparse.ArgumentParser:
         choices=tuple(status.value for status in ReviewDecisionStatus),
         default=None,
         help="Export only events with a specific review decision.",
+    )
+
+    workspace_export_decision_log_parser = workspace_subparsers.add_parser(
+        "export-decision-log",
+        help="Export append-only decision provenance records as JSONL.",
+    )
+    workspace_export_decision_log_parser.add_argument(
+        "--root",
+        default=".",
+        help="Project root where .agent-lexicon/ is stored.",
+    )
+    workspace_export_decision_log_parser.add_argument(
+        "--output",
+        default=None,
+        help="Optional output path. If omitted, JSONL is printed to stdout.",
+    )
+    _add_local_policy_options(workspace_export_decision_log_parser)
+    workspace_export_decision_log_parser.add_argument(
+        "--action",
+        choices=tuple(action.value for action in WorkspaceDecisionAction),
+        default=None,
+        help="Export only provenance records with a specific action.",
+    )
+    workspace_export_decision_log_parser.add_argument(
+        "--decision-actor",
+        default=None,
+        help="Export only provenance records created by this actor. This is separate from --actor used for local policy checks.",
     )
 
     workspace_publish_snapshot_parser = workspace_subparsers.add_parser(
@@ -1237,6 +1422,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Return the longest non-overlapping surface matches.",
     )
+    match_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the matches as a JSON document on stdout.",
+    )
 
     resolve_parser = subparsers.add_parser(
         "resolve",
@@ -1271,6 +1461,28 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_BGE_SEMANTIC_THRESHOLD,
         help="Minimum semantic similarity used with --semantic-near-miss.",
     )
+    resolve_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the resolution decision as a JSON document on stdout.",
+    )
+
+    context_parser = subparsers.add_parser(
+        "context",
+        help="Print a compact canonical-vocabulary brief for an agent to use before a task.",
+    )
+    context_parser.add_argument("path", help="Path to a lexicon .json, .yaml, or .yml file.")
+    context_parser.add_argument(
+        "--scope",
+        action="append",
+        default=None,
+        help="Limit the brief to a scope. Can be provided multiple times.",
+    )
+    context_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the context brief as a JSON document on stdout.",
+    )
 
     guard_parser = subparsers.add_parser(
         "guard",
@@ -1299,6 +1511,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Do not block tool calls when bidi-control Unicode characters are found after normalization.",
     )
+    guard_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the guard decision as a JSON document on stdout.",
+    )
     return parser
 
 
@@ -1319,8 +1536,105 @@ def _add_local_policy_options(parser: argparse.ArgumentParser) -> None:
 
 
 
+def _error(message: str) -> None:
+    """Print a diagnostic message to stderr."""
+    print(message, file=sys.stderr)
+
+
+# Machine reason codes -> short human phrases for the default analyze view.
+_REASON_PHRASES = {
+    "code_style_surface": "written like code",
+    "high_oov_proxy": "unusual word",
+    "high_oov_signal": "unusual word",
+    "tokenizer_oov_signal": "unusual word",
+    "high_surface_risk": "risky to match",
+    "high_jargon_score": "domain jargon",
+    "clustered_variants": "has spelling variants",
+    "identifier_variants": "has spelling variants",
+}
+
+
+def _humanize_reasons(reasons: list[str]) -> str:
+    """Turn machine reason codes into a short, de-duplicated human phrase."""
+    seen: list[str] = []
+    for code in reasons:
+        phrase = _REASON_PHRASES.get(code)
+        if phrase and phrase not in seen:
+            seen.append(phrase)
+    if not seen:
+        return "worth a look"
+    return ", ".join(seen[:3])
+
+
+def _priority_word(priority: str, priority_score: float) -> str:
+    """A plain-language priority label for the default analyze view."""
+    if priority == "important":
+        return "high" if priority_score >= 0.6 else "medium"
+    return "low"
+
+
+def _maybe_enable_completion(parser: argparse.ArgumentParser) -> None:
+    """Enable shell tab-completion when the optional argcomplete extra is installed.
+
+    Completion is opt-in via ``pip install "agent-lexicon[completion]"``. When
+    argcomplete is not installed this is a no-op, so the core stays
+    dependency-free.
+    """
+    try:
+        import argcomplete
+    except ImportError:
+        return
+    argcomplete.autocomplete(parser)
+
+
+# File extensions that the default scan reads. Kept small and local so the
+# CLI can give a helpful hint without importing the full ingest layer.
+_SCANNABLE_SUFFIXES = (
+    ".md", ".txt", ".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs",
+    ".java", ".kt", ".cs", ".sql", ".yaml", ".yml",
+)
+
+
+def _existing_default_scan_paths(root: Path) -> list[str]:
+    """Return the default scan paths that actually exist under ``root``."""
+    present: list[str] = []
+    for candidate in DEFAULT_SCAN_PATHS:
+        if (root / candidate).exists():
+            present.append(candidate)
+    return present
+
+
+def _nearby_scan_targets(root: Path, *, limit: int = 5) -> list[str]:
+    """Find scannable files in the repository root as fallback scan hints."""
+    targets: list[str] = []
+    try:
+        entries = sorted(p for p in root.iterdir() if p.is_file())
+    except OSError:
+        return targets
+    for path in entries:
+        if path.name.startswith("."):
+            continue
+        if path.suffix.lower() in _SCANNABLE_SUFFIXES:
+            targets.append(path.name)
+        if len(targets) >= limit:
+            break
+    return targets
+
+
+def _scan_hint_for_root(root: Path) -> str:
+    """Build a ``scan`` command hint tailored to what is in the repository."""
+    present = _existing_default_scan_paths(root)
+    if present:
+        return "agent-lexicon scan"
+    nearby = _nearby_scan_targets(root)
+    if nearby:
+        return "agent-lexicon scan " + " ".join(nearby)
+    return "agent-lexicon scan <files or directories>"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
+    _maybe_enable_completion(parser)
     args = parser.parse_args(argv)
 
     if args.version:
@@ -1374,12 +1688,35 @@ def main(argv: list[str] | None = None) -> int:
             head=args.head,
             scopes=args.scope,
             include_globs=args.include,
+            exclude_globs=args.exclude,
+            config_path=Path(args.config) if args.config else None,
+            respect_gitignore=args.respect_gitignore,
             include_deprecated=not args.exclude_deprecated,
             min_confidence=args.min_confidence,
             max_suggestions=args.max_suggestions,
             fail_on_review=args.fail_on_review,
             include_unresolved_unknowns=args.include_unresolved_unknowns,
             semantic_near_miss=args.semantic_near_miss,
+            semantic_model=args.semantic_model,
+            semantic_threshold=args.semantic_threshold,
+            as_json=args.json,
+            semantic_check=args.semantic_check,
+        )
+
+    if args.command == "lint-diff":
+        return _lint_diff_command(
+            root=Path(args.root),
+            lexicon_path=Path(args.lexicon) if args.lexicon else None,
+            read_stdin=args.stdin,
+            staged=args.staged,
+            scopes=args.scope,
+            include_globs=args.include,
+            exclude_globs=args.exclude,
+            config_path=Path(args.config) if args.config else None,
+            respect_gitignore=args.respect_gitignore,
+            min_confidence=args.min_confidence,
+            strict=args.strict,
+            semantic=args.semantic,
             semantic_model=args.semantic_model,
             semantic_threshold=args.semantic_threshold,
             as_json=args.json,
@@ -1390,6 +1727,7 @@ def main(argv: list[str] | None = None) -> int:
             paths=[Path(path) for path in args.paths],
             root=Path(args.root) if args.root is not None else None,
             include_globs=args.include,
+            exclude_globs=args.exclude,
             max_file_bytes=args.max_file_bytes,
             as_jsonl=args.jsonl,
         )
@@ -1399,6 +1737,7 @@ def main(argv: list[str] | None = None) -> int:
             paths=[Path(path) for path in args.paths],
             root=Path(args.root) if args.root is not None else None,
             include_globs=args.include,
+            exclude_globs=args.exclude,
             lexicon_path=Path(args.lexicon) if args.lexicon else None,
             min_score=args.min_score,
             max_candidates=args.max_candidates,
@@ -1414,6 +1753,7 @@ def main(argv: list[str] | None = None) -> int:
             paths=[Path(path) for path in args.paths],
             root=Path(args.root) if args.root is not None else None,
             include_globs=args.include,
+            exclude_globs=args.exclude,
             lexicon_path=Path(args.lexicon) if args.lexicon else None,
             min_score=args.min_score,
             max_candidates=args.max_candidates,
@@ -1472,6 +1812,14 @@ def main(argv: list[str] | None = None) -> int:
             scopes=args.scope,
             include_deprecated=not args.exclude_deprecated,
             longest_only=args.longest_only,
+            as_json=args.json,
+        )
+
+    if args.command == "context":
+        return _context_command(
+            path=Path(args.path),
+            scopes=args.scope,
+            as_json=args.json,
         )
 
     if args.command == "resolve":
@@ -1483,6 +1831,7 @@ def main(argv: list[str] | None = None) -> int:
             semantic_near_miss=args.semantic_near_miss,
             semantic_model=args.semantic_model,
             semantic_threshold=args.semantic_threshold,
+            as_json=args.json,
         )
 
     if args.command == "guard":
@@ -1493,10 +1842,11 @@ def main(argv: list[str] | None = None) -> int:
             scopes=args.scope,
             include_deprecated=not args.exclude_deprecated,
             block_on_unicode_risk=not args.allow_risky_unicode,
+            as_json=args.json,
         )
 
-    print(about())
-    return 0
+    parser.print_help(sys.stderr)
+    return 1
 
 
 
@@ -1513,7 +1863,7 @@ def _simple_init_command(args: argparse.Namespace) -> int:
             reset_workspace=args.reset_workspace,
         )
     except SimpleWorkflowError as exc:
-        print(f"Invalid init input: {exc}")
+        _error(f"Invalid init input: {exc}")
         return 1
     if args.json:
         print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
@@ -1522,7 +1872,8 @@ def _simple_init_command(args: argparse.Namespace) -> int:
     print(f"Dictionary: {report.dictionary.layout.layout_path}")
     print(f"Workspace: {report.workspace.db_path}")
     print(f"Policy: {report.policy_path} ({report.policy_mode})")
-    print("Next: agent-lexicon scan README.md docs src")
+    print(f"Config: {report.config_path}")
+    print(f"Next: {_scan_hint_for_root(Path(args.root))}")
     return 0
 
 
@@ -1543,6 +1894,9 @@ def _simple_scan_command(args: argparse.Namespace) -> int:
             layout_dir=args.layout_dir,
             lexicon_path=Path(args.lexicon) if args.lexicon else None,
             include_globs=args.include,
+            exclude_globs=args.exclude,
+            config_path=args.config,
+            respect_gitignore=args.respect_gitignore,
             min_score=args.min_score,
             max_candidates=args.max_candidates,
             oov_tokenizer=args.oov_tokenizer,
@@ -1552,7 +1906,23 @@ def _simple_scan_command(args: argparse.Namespace) -> int:
             max_file_bytes=args.max_file_bytes,
         )
     except SimpleWorkflowError as exc:
-        print(f"Invalid scan input: {exc}")
+        message = str(exc)
+        if "no scan paths exist" in message and not args.paths:
+            root = Path(args.root)
+            nearby = _nearby_scan_targets(root)
+            _error(
+                "Nothing to scan: none of the default paths "
+                f"({', '.join(DEFAULT_SCAN_PATHS)}) exist in this project."
+            )
+            if nearby:
+                _error("Found these files you can scan instead:")
+                for name in nearby:
+                    _error(f"  {name}")
+                _error(f"Try: agent-lexicon scan {' '.join(nearby)}")
+            else:
+                _error("Pass files or directories explicitly, e.g. agent-lexicon scan <path>")
+            return 1
+        _error(f"Invalid scan input: {message}")
         return 1
     if args.json:
         print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
@@ -1607,7 +1977,7 @@ def _simple_analyze_command(args: argparse.Namespace) -> int:
             priority=args.priority,
         )
     except SimpleWorkflowError as exc:
-        print(f"Invalid analyze input: {exc}")
+        _error(f"Invalid analyze input: {exc}")
         return 1
     if args.json:
         print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
@@ -1623,19 +1993,24 @@ def _simple_analyze_command(args: argparse.Namespace) -> int:
     if not report.items:
         print("No workspace candidates found. Run: agent-lexicon scan README.md docs src")
         return 0
+    verbose = getattr(args, "verbose", False)
     for item in report.items:
-        label = "IMPORTANT" if item.priority == "important" else "LATER"
-        print(
-            f"[{label}] {item.surface} "
-            f"priority={item.priority_score:.3f} "
-            f"score={item.score:.3f} "
-            f"oov={item.oov_score:.3f} "
-            f"oov_source={item.oov_source} "
-            f"cluster={item.cluster_size} "
-            f"status={item.review_status}"
-        )
-        if item.priority_reasons:
-            print(f"  reasons={', '.join(item.priority_reasons[:4])}")
+        if verbose:
+            label = "IMPORTANT" if item.priority == "important" else "LATER"
+            print(
+                f"[{label}] {item.surface} "
+                f"priority={item.priority_score:.3f} "
+                f"score={item.score:.3f} "
+                f"oov={item.oov_score:.3f} "
+                f"oov_source={item.oov_source} "
+                f"cluster={item.cluster_size} "
+                f"status={item.review_status}"
+            )
+            if item.priority_reasons:
+                print(f"  reasons={', '.join(item.priority_reasons[:4])}")
+        else:
+            priority = _priority_word(item.priority, item.priority_score)
+            print(f"{item.surface}  ({priority} priority) — {_humanize_reasons(item.priority_reasons)}")
         if item.recommendation:
             print(f"  review-agent={item.recommendation}: {item.reviewer_note}")
         if item.consensus_status:
@@ -1644,6 +2019,8 @@ def _simple_analyze_command(args: argparse.Namespace) -> int:
                 f"agreement={item.agreement_ratio:.2f} "
                 f"confidence={item.consensus_confidence:.2f}"
             )
+    if not verbose:
+        print("(use --verbose for full scores)")
     print("Next: agent-lexicon review")
     return 0
 
@@ -1667,7 +2044,7 @@ def _simple_publish_command(args: argparse.Namespace) -> int:
             snapshot_id=args.snapshot_id,
         )
     except SimpleWorkflowError as exc:
-        print(f"Invalid publish input: {exc}")
+        _error(f"Invalid publish input: {exc}")
         return 1
     if args.json:
         print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
@@ -1685,7 +2062,7 @@ def _simple_publish_command(args: argparse.Namespace) -> int:
 
 def _review_agent_command(args: argparse.Namespace) -> int:
     if args.review_agent_command not in {"prompt", "assess", "consensus", "dataset"}:
-        print("Review agent command required: prompt, assess, consensus, or dataset")
+        _error("Review agent command required: prompt, assess, consensus, or dataset")
         return 1
 
     if args.review_agent_command == "dataset":
@@ -1850,7 +2227,7 @@ def _mcp_command(args: argparse.Namespace) -> int:
             print(f"MCP server error: {exc}")
             return 1
 
-    print("MCP command required: serve or tools")
+    _error("MCP command required: serve or tools")
     return 1
 
 
@@ -1865,7 +2242,7 @@ def _validate_command(
     try:
         lexicon = load_lexicon(path, document_format=document_format)
     except AgentLexiconLoadError as exc:
-        print(f"Invalid lexicon: {exc}")
+        _error(f"Invalid lexicon: {exc}")
         return 1
 
     print(
@@ -1890,7 +2267,7 @@ def _lint_command(
     try:
         report = lint_lexicon_file(path, document_format=document_format)
     except AgentLexiconLoadError as exc:
-        print(f"Invalid lexicon: {exc}")
+        _error(f"Invalid lexicon: {exc}")
         return 1
     if as_json:
         print(report.to_json())
@@ -1903,7 +2280,7 @@ def _validate_queries_command(*, path: Path) -> int:
     try:
         queries = load_eval_queries(path)
     except EvalDatasetError as exc:
-        print(f"Invalid eval dataset: {exc}")
+        _error(f"Invalid eval dataset: {exc}")
         return 1
 
     tool_call_count = sum(len(query.tool_calls) for query in queries)
@@ -1927,12 +2304,12 @@ def _check_command(
     try:
         lexicon = load_lexicon(lexicon_path)
     except AgentLexiconLoadError as exc:
-        print(f"Invalid lexicon: {exc}")
+        _error(f"Invalid lexicon: {exc}")
         return 1
     try:
         queries = load_eval_queries(queries_path)
     except EvalDatasetError as exc:
-        print(f"Invalid eval dataset: {exc}")
+        _error(f"Invalid eval dataset: {exc}")
         return 1
 
     report = run_behavior_eval(lexicon, queries, include_deprecated=include_deprecated)
@@ -1983,6 +2360,9 @@ def _check_merge_command(
     head: str,
     scopes: list[str] | None,
     include_globs: list[str] | None,
+    exclude_globs: list[str] | None,
+    config_path: Path | None,
+    respect_gitignore: bool | None,
     include_deprecated: bool,
     min_confidence: float,
     max_suggestions: int,
@@ -1992,15 +2372,24 @@ def _check_merge_command(
     semantic_model: str,
     semantic_threshold: float,
     as_json: bool,
+    semantic_check: bool = False,
 ) -> int:
     root_path = root.resolve()
+    try:
+        config = load_project_config(root_path, config_path=config_path)
+    except AgentLexiconConfigError as exc:
+        _error(f"Invalid Agent Lexicon config: {exc}")
+        return 1
+    effective_include = effective_include_globs(include_globs, config)
+    effective_exclude = effective_exclude_globs(exclude_globs, config)
+    effective_gitignore = effective_respect_gitignore(respect_gitignore, config)
     resolved_lexicon_path = lexicon_path or (root_path / "lexicon" / "lexicon.yaml")
     if not resolved_lexicon_path.is_absolute():
         resolved_lexicon_path = root_path / resolved_lexicon_path
     try:
         lexicon = load_lexicon(resolved_lexicon_path)
     except AgentLexiconLoadError as exc:
-        print(f"Invalid lexicon: {exc}")
+        _error(f"Invalid lexicon: {exc}")
         return 1
 
     try:
@@ -2010,7 +2399,7 @@ def _check_merge_command(
             min_semantic_score=semantic_threshold,
         )
     except SemanticNearMissError as exc:
-        print(f"Invalid semantic near-miss input: {exc}")
+        _error(f"Invalid semantic near-miss input: {exc}")
         return 1
 
     try:
@@ -2022,17 +2411,40 @@ def _check_merge_command(
             head=head,
             scopes=scopes,
             include_deprecated=include_deprecated,
-            include_globs=include_globs,
+            include_globs=effective_include,
+            exclude_globs=effective_exclude,
+            respect_gitignore=effective_gitignore,
             max_suggestions_per_identifier=max_suggestions,
             min_confidence=min_confidence,
             include_unresolved_unknowns=include_unresolved_unknowns,
             semantic_backend=semantic_backend,
         )
     except GitMergeCheckError as exc:
-        print(f"Invalid merge check input: {exc}")
+        _error(f"Invalid merge check input: {exc}")
         return 1
     except SemanticNearMissError as exc:
-        print(f"Invalid semantic near-miss input: {exc}")
+        _error(f"Invalid semantic near-miss input: {exc}")
+        return 1
+
+    if semantic_check:
+        conflicts: list[tuple[str, str]] = []
+        # A deprecated alias used in the diff where a canonical term exists.
+        for occ in report.known_occurrences:
+            if occ.deprecated and occ.matched_text != occ.canonical:
+                conflicts.append((occ.matched_text, occ.canonical))
+        # An unknown identifier that closely matches an existing canonical term.
+        for identifier in report.likely_aliases:
+            if identifier.suggestions:
+                conflicts.append((identifier.surface, identifier.suggestions[0].target_canonical))
+        print(f"Terminology check: {report.scanned_file_count} files, {report.added_line_count} added lines")
+        if not conflicts:
+            print("No semantic conflicts found.")
+            return 0
+        seen: set[tuple[str, str]] = set()
+        unique = [c for c in conflicts if not (c in seen or seen.add(c))]
+        print(f"Semantic conflicts detected ({len(unique)}):")
+        for used, canonical in unique:
+            print(f"- {used} vs {canonical} (use \"{canonical}\")")
         return 1
 
     if as_json:
@@ -2040,6 +2452,83 @@ def _check_merge_command(
     else:
         print(report.to_text())
     return 1 if fail_on_review and report.has_review_items else 0
+
+
+def _lint_diff_command(
+    *,
+    root: Path,
+    lexicon_path: Path | None,
+    read_stdin: bool,
+    staged: bool,
+    scopes: list[str] | None,
+    include_globs: list[str] | None,
+    exclude_globs: list[str] | None,
+    config_path: Path | None,
+    respect_gitignore: bool | None,
+    min_confidence: float,
+    strict: bool,
+    semantic: bool,
+    semantic_model: str,
+    semantic_threshold: float,
+    as_json: bool,
+) -> int:
+    root_path = root.resolve()
+    try:
+        config = load_project_config(root_path, config_path=config_path)
+    except AgentLexiconConfigError as exc:
+        _error(f"Invalid Agent Lexicon config: {exc}")
+        return 1
+    effective_include = effective_include_globs(include_globs, config)
+    effective_exclude = effective_exclude_globs(exclude_globs, config)
+    effective_gitignore = effective_respect_gitignore(respect_gitignore, config)
+    resolved_lexicon_path = lexicon_path or (root_path / "lexicon" / "lexicon.yaml")
+    if not resolved_lexicon_path.is_absolute():
+        resolved_lexicon_path = root_path / resolved_lexicon_path
+    try:
+        lexicon = load_lexicon(resolved_lexicon_path)
+    except AgentLexiconLoadError as exc:
+        _error(f"Invalid lexicon: {exc}")
+        return 1
+
+    diff_text: str | None = None
+    if read_stdin:
+        diff_text = sys.stdin.read()
+
+    try:
+        semantic_backend = _semantic_backend_from_cli(
+            enabled=semantic,
+            model_name=semantic_model,
+            min_semantic_score=semantic_threshold,
+        )
+    except SemanticNearMissError as exc:
+        _error(f"Invalid semantic input: {exc}")
+        return 1
+
+    try:
+        report = lint_working_diff(
+            lexicon,
+            diff_text=diff_text,
+            root=root_path,
+            staged=staged,
+            scopes=scopes,
+            include_globs=effective_include,
+            exclude_globs=effective_exclude,
+            respect_gitignore=effective_gitignore,
+            min_confidence=min_confidence,
+            semantic_backend=semantic_backend,
+        )
+    except LintDiffError as exc:
+        _error(f"Invalid lint-diff input: {exc}")
+        return 1
+    except SemanticNearMissError as exc:
+        _error(f"Invalid semantic input: {exc}")
+        return 1
+
+    if as_json:
+        print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+    else:
+        print(report.to_text(strict=strict))
+    return report.exit_code(strict=strict)
 
 
 def _print_metric(label: str, value: float | None) -> None:
@@ -2054,6 +2543,7 @@ def _ingest_command(
     paths: list[Path],
     root: Path | None,
     include_globs: list[str] | None,
+    exclude_globs: list[str] | None,
     max_file_bytes: int,
     as_jsonl: bool,
 ) -> int:
@@ -2062,10 +2552,11 @@ def _ingest_command(
             paths,
             root=root,
             include_globs=include_globs,
+            exclude_globs=exclude_globs,
             max_file_bytes=max_file_bytes,
         )
     except LocalIngestError as exc:
-        print(f"Invalid local ingest input: {exc}")
+        _error(f"Invalid local ingest input: {exc}")
         return 1
 
     if as_jsonl:
@@ -2096,6 +2587,7 @@ def _discover_candidates_command(
     paths: list[Path],
     root: Path | None,
     include_globs: list[str] | None,
+    exclude_globs: list[str] | None,
     lexicon_path: Path | None,
     min_score: float,
     max_candidates: int,
@@ -2106,7 +2598,7 @@ def _discover_candidates_command(
     quality_report: bool = False,
 ) -> int:
     if as_json and as_jsonl:
-        print("Invalid candidate discovery input: choose either --json or --jsonl")
+        _error("Invalid candidate discovery input: choose either --json or --jsonl")
         return 1
 
 
@@ -2115,10 +2607,11 @@ def _discover_candidates_command(
             paths,
             root=root,
             include_globs=include_globs,
+            exclude_globs=exclude_globs,
             max_file_bytes=max_file_bytes,
         )
     except LocalIngestError as exc:
-        print(f"Invalid local ingest input: {exc}")
+        _error(f"Invalid local ingest input: {exc}")
         return 1
 
     existing_surfaces: tuple[str, ...] = ()
@@ -2126,7 +2619,7 @@ def _discover_candidates_command(
         try:
             lexicon = load_lexicon(lexicon_path)
         except AgentLexiconLoadError as exc:
-            print(f"Invalid lexicon: {exc}")
+            _error(f"Invalid lexicon: {exc}")
             return 1
         existing_surfaces = existing_surfaces_from_lexicon(lexicon)
 
@@ -2139,7 +2632,7 @@ def _discover_candidates_command(
             oov_tokenizer=oov_tokenizer,
         )
     except ScoutCandidateError as exc:
-        print(f"Invalid candidate discovery input: {exc}")
+        _error(f"Invalid candidate discovery input: {exc}")
         return 1
 
     if as_json:
@@ -2182,6 +2675,7 @@ def _build_evidence_command(
     paths: list[Path],
     root: Path | None,
     include_globs: list[str] | None,
+    exclude_globs: list[str] | None,
     lexicon_path: Path | None,
     min_score: float,
     max_candidates: int,
@@ -2195,7 +2689,7 @@ def _build_evidence_command(
     as_jsonl: bool,
 ) -> int:
     if as_json and as_jsonl:
-        print("Invalid evidence input: choose either --json or --jsonl")
+        _error("Invalid evidence input: choose either --json or --jsonl")
         return 1
 
     try:
@@ -2203,10 +2697,11 @@ def _build_evidence_command(
             paths,
             root=root,
             include_globs=include_globs,
+            exclude_globs=exclude_globs,
             max_file_bytes=max_file_bytes,
         )
     except LocalIngestError as exc:
-        print(f"Invalid local ingest input: {exc}")
+        _error(f"Invalid local ingest input: {exc}")
         return 1
 
     existing_surfaces: tuple[str, ...] = ()
@@ -2214,7 +2709,7 @@ def _build_evidence_command(
         try:
             lexicon = load_lexicon(lexicon_path)
         except AgentLexiconLoadError as exc:
-            print(f"Invalid lexicon: {exc}")
+            _error(f"Invalid lexicon: {exc}")
             return 1
         existing_surfaces = existing_surfaces_from_lexicon(lexicon)
 
@@ -2235,7 +2730,7 @@ def _build_evidence_command(
             include_prompt_safety=include_prompt_safety,
         )
     except (ScoutCandidateError, EvidencePackError) as exc:
-        print(f"Invalid evidence input: {exc}")
+        _error(f"Invalid evidence input: {exc}")
         return 1
 
     if as_json:
@@ -2283,11 +2778,12 @@ def _safety_command(args: argparse.Namespace) -> int:
             paths=[Path(path) for path in args.paths],
             root=Path(args.root) if args.root is not None else None,
             include_globs=args.include,
+            exclude_globs=args.exclude,
             max_file_bytes=args.max_file_bytes,
             fail_on_high_risk=args.fail_on_high_risk,
             as_json=args.json,
         )
-    print("Safety command required: scan")
+    _error("Safety command required: scan")
     return 1
 
 
@@ -2296,6 +2792,7 @@ def _safety_scan_command(
     paths: list[Path],
     root: Path | None,
     include_globs: list[str] | None,
+    exclude_globs: list[str] | None,
     max_file_bytes: int,
     fail_on_high_risk: bool,
     as_json: bool,
@@ -2305,11 +2802,12 @@ def _safety_scan_command(
             paths,
             root=root,
             include_globs=include_globs,
+            exclude_globs=exclude_globs,
             max_file_bytes=max_file_bytes,
         )
         report = scan_documents_for_prompt_injection(ingest_report.documents)
     except (LocalIngestError, PromptSafetyError) as exc:
-        print(f"Invalid prompt-safety input: {exc}")
+        _error(f"Invalid prompt-safety input: {exc}")
         return 1
 
     if as_json:
@@ -2348,7 +2846,7 @@ def _policy_command(args: argparse.Namespace) -> int:
                 force=args.force,
             )
         except LocalPolicyError as exc:
-            print(f"Invalid local policy input: {exc}")
+            _error(f"Invalid local policy input: {exc}")
             return 1
         if args.json:
             print(policy.to_json())
@@ -2368,7 +2866,7 @@ def _policy_command(args: argparse.Namespace) -> int:
                 role=args.role,
             )
         except LocalPolicyError as exc:
-            print(f"Invalid local policy input: {exc}")
+            _error(f"Invalid local policy input: {exc}")
             return 1
         if args.json:
             print(json.dumps({"policy": policy.to_dict(), "effective_role": decision.role.value, "path": str(policy_path(args.root))}, indent=2, sort_keys=True))
@@ -2384,7 +2882,7 @@ def _policy_command(args: argparse.Namespace) -> int:
             policy = load_local_policy(Path(args.root), mode=args.policy_mode)
             decision = check_local_policy(policy, args.action, actor=args.actor, role=args.role)
         except LocalPolicyError as exc:
-            print(f"Invalid local policy input: {exc}")
+            _error(f"Invalid local policy input: {exc}")
             return 1
         if args.json:
             print(decision.to_json())
@@ -2397,7 +2895,7 @@ def _policy_command(args: argparse.Namespace) -> int:
         print(f"Reason: {decision.reason}")
         return 0 if decision.is_allowed else 2
 
-    print("Policy command required: init, status, or check")
+    _error("Policy command required: init, status, or check")
     return 1
 
 
@@ -2413,7 +2911,7 @@ def _check_policy_or_print(
         policy = load_local_policy(root, mode=policy_mode)
         decision = check_local_policy(policy, action, actor=actor, role=role)
     except LocalPolicyError as exc:
-        print(f"Invalid local policy input: {exc}")
+        _error(f"Invalid local policy input: {exc}")
         return 1
     if decision.is_allowed:
         return 0
@@ -2430,7 +2928,7 @@ def _discover_migrations_command(
     as_jsonl: bool,
 ) -> int:
     if as_json and as_jsonl:
-        print("Invalid migration input: choose either --json or --jsonl")
+        _error("Invalid migration input: choose either --json or --jsonl")
         return 1
     try:
         lexicon = load_lexicon(path)
@@ -2440,10 +2938,10 @@ def _discover_migrations_command(
             max_candidates=max_candidates,
         )
     except AgentLexiconLoadError as exc:
-        print(f"Invalid lexicon: {exc}")
+        _error(f"Invalid lexicon: {exc}")
         return 1
     except CanonicalMigrationError as exc:
-        print(f"Invalid migration input: {exc}")
+        _error(f"Invalid migration input: {exc}")
         return 1
 
     if as_json:
@@ -2480,7 +2978,7 @@ def _dictionary_command(args: argparse.Namespace) -> int:
                 force=args.force,
             )
         except DictionaryLayoutError as exc:
-            print(f"Invalid dictionary layout input: {exc}")
+            _error(f"Invalid dictionary layout input: {exc}")
             return 1
         if args.json:
             print(json.dumps(summary.to_dict(), indent=2, sort_keys=True))
@@ -2493,7 +2991,7 @@ def _dictionary_command(args: argparse.Namespace) -> int:
         try:
             summary = inspect_dictionary_layout(Path(args.root), layout_dir=args.layout_dir)
         except DictionaryLayoutError as exc:
-            print(f"Invalid dictionary layout input: {exc}")
+            _error(f"Invalid dictionary layout input: {exc}")
             return 1
         if args.json:
             print(json.dumps(summary.to_dict(), indent=2, sort_keys=True))
@@ -2512,7 +3010,7 @@ def _dictionary_command(args: argparse.Namespace) -> int:
             if args.manifest:
                 write_dictionary_manifest(summary, Path(args.manifest))
         except (DictionaryLayoutError, AgentLexiconLoadError) as exc:
-            print(f"Invalid dictionary layout: {exc}")
+            _error(f"Invalid dictionary layout: {exc}")
             return 1
         if args.json:
             payload = summary.to_dict()
@@ -2559,7 +3057,7 @@ def _dictionary_command(args: argparse.Namespace) -> int:
             as_json=args.json,
         )
 
-    print("Dictionary command required: init, status, validate, diff, merge, or pr-check")
+    _error("Dictionary command required: init, status, validate, diff, merge, or pr-check")
     return 1
 
 
@@ -2573,7 +3071,7 @@ def _dictionary_diff_command(
     try:
         report = diff_lexicon_files(before_path, after_path)
     except SemanticDiffError as exc:
-        print(f"Invalid semantic diff input: {exc}")
+        _error(f"Invalid semantic diff input: {exc}")
         return 1
 
     if as_json:
@@ -2609,7 +3107,7 @@ def _dictionary_merge_command(
     try:
         report = merge_lexicon_files(base_path, ours_path, theirs_path)
     except SemanticMergeError as exc:
-        print(f"Invalid semantic merge input: {exc}")
+        _error(f"Invalid semantic merge input: {exc}")
         return 1
 
     if report.has_conflicts:
@@ -2632,7 +3130,7 @@ def _dictionary_merge_command(
         try:
             written_path = write_merged_lexicon_json(report, output_path)
         except SemanticMergeError as exc:
-            print(f"Invalid semantic merge output: {exc}")
+            _error(f"Invalid semantic merge output: {exc}")
             return 1
     else:
         written_path = None
@@ -2724,7 +3222,7 @@ def _workspace_command(args: argparse.Namespace) -> int:
         try:
             state = init_workspace(Path(args.root), reset=args.reset)
         except WorkspaceError as exc:
-            print(f"Invalid workspace input: {exc}")
+            _error(f"Invalid workspace input: {exc}")
             return 1
         print(f"Workspace initialized: {state.db_path}")
         return 0
@@ -2734,7 +3232,7 @@ def _workspace_command(args: argparse.Namespace) -> int:
             state = open_workspace(Path(args.root), create=False)
             summary = state.summary()
         except WorkspaceError as exc:
-            print(f"Invalid workspace input: {exc}")
+            _error(f"Invalid workspace input: {exc}")
             return 1
         if args.json:
             print(json.dumps(summary.to_dict(), indent=2, sort_keys=True))
@@ -2746,6 +3244,7 @@ def _workspace_command(args: argparse.Namespace) -> int:
             f"{summary.evidence_pack_count} evidence packs, "
             f"{summary.review_decision_count} review decisions, "
             f"{summary.review_event_count} review events, "
+            f"{summary.decision_record_count} decision records, "
             f"{summary.snapshot_count} snapshots"
         )
         print(f"Database: {summary.db_path}")
@@ -2756,6 +3255,7 @@ def _workspace_command(args: argparse.Namespace) -> int:
             paths=[Path(path) for path in args.paths],
             root=Path(args.root),
             include_globs=args.include,
+            exclude_globs=args.exclude,
             lexicon_path=Path(args.lexicon) if args.lexicon else None,
             min_score=args.min_score,
             max_candidates=args.max_candidates,
@@ -2780,6 +3280,17 @@ def _workspace_command(args: argparse.Namespace) -> int:
             policy_mode=args.policy_mode,
         )
 
+    if args.workspace_command == "export-decision-log":
+        return _workspace_export_decision_log_command(
+            root=Path(args.root),
+            output_path=Path(args.output) if args.output else None,
+            action=args.action,
+            actor_filter=args.decision_actor,
+            actor=args.actor,
+            role=args.role,
+            policy_mode=args.policy_mode,
+        )
+
     if args.workspace_command == "publish-snapshot":
         return _workspace_publish_snapshot_command(
             root=Path(args.root),
@@ -2792,7 +3303,7 @@ def _workspace_command(args: argparse.Namespace) -> int:
             policy_mode=args.policy_mode,
         )
 
-    print("Workspace command required: init, status, sync, export-review-events, or publish-snapshot")
+    _error("Workspace command required: init, status, sync, export-review-events, export-decision-log, or publish-snapshot")
     return 1
 
 
@@ -2801,6 +3312,7 @@ def _workspace_sync_command(
     paths: list[Path],
     root: Path,
     include_globs: list[str] | None,
+    exclude_globs: list[str] | None,
     lexicon_path: Path | None,
     min_score: float,
     max_candidates: int,
@@ -2829,10 +3341,11 @@ def _workspace_sync_command(
             paths,
             root=root,
             include_globs=include_globs,
+            exclude_globs=exclude_globs,
             max_file_bytes=max_file_bytes,
         )
     except LocalIngestError as exc:
-        print(f"Invalid local ingest input: {exc}")
+        _error(f"Invalid local ingest input: {exc}")
         return 1
 
     existing_surfaces: tuple[str, ...] = ()
@@ -2840,7 +3353,7 @@ def _workspace_sync_command(
         try:
             lexicon = load_lexicon(lexicon_path)
         except AgentLexiconLoadError as exc:
-            print(f"Invalid lexicon: {exc}")
+            _error(f"Invalid lexicon: {exc}")
             return 1
         existing_surfaces = existing_surfaces_from_lexicon(lexicon)
 
@@ -2865,7 +3378,7 @@ def _workspace_sync_command(
         state.store_evidence_report(evidence_report)
         summary = state.summary()
     except (ScoutCandidateError, EvidencePackError, WorkspaceError) as exc:
-        print(f"Invalid workspace input: {exc}")
+        _error(f"Invalid workspace input: {exc}")
         return 1
 
     if as_json:
@@ -2906,7 +3419,7 @@ def _workspace_export_review_events_command(
         state = open_workspace(root, create=False)
         content = state.export_review_events_jsonl(output_path, decision=decision)
     except WorkspaceError as exc:
-        print(f"Invalid workspace input: {exc}")
+        _error(f"Invalid workspace input: {exc}")
         return 1
 
     if output_path is None:
@@ -2917,6 +3430,42 @@ def _workspace_export_review_events_command(
     print(f"Review events exported: {event_count} events -> {output_path}")
     return 0
 
+
+
+def _workspace_export_decision_log_command(
+    *,
+    root: Path,
+    output_path: Path | None,
+    action: str | None,
+    actor_filter: str | None,
+    actor: str,
+    role: str | None,
+    policy_mode: str | None,
+) -> int:
+    policy_exit_code = _check_policy_or_print(
+        root=root,
+        action=PolicyAction.EXPORT_REVIEW_EVENTS,
+        actor=actor,
+        role=role,
+        policy_mode=policy_mode,
+    )
+    if policy_exit_code != 0:
+        return policy_exit_code
+
+    try:
+        state = open_workspace(root, create=False)
+        content = state.export_decision_records_jsonl(output_path, action=action, actor=actor_filter)
+    except WorkspaceError as exc:
+        _error(f"Invalid workspace input: {exc}")
+        return 1
+
+    if output_path is None:
+        print(content, end="")
+        return 0
+
+    record_count = content.count("\n") if content else 0
+    print(f"Decision log exported: {record_count} records -> {output_path}")
+    return 0
 
 
 def _workspace_publish_snapshot_command(
@@ -2943,7 +3492,7 @@ def _workspace_publish_snapshot_command(
     try:
         state = open_workspace(root, create=False)
     except WorkspaceError as exc:
-        print(f"Invalid workspace input: {exc}")
+        _error(f"Invalid workspace input: {exc}")
         return 1
 
     base_lexicon = None
@@ -2951,7 +3500,7 @@ def _workspace_publish_snapshot_command(
         try:
             base_lexicon = load_lexicon(lexicon_path)
         except AgentLexiconLoadError as exc:
-            print(f"Invalid lexicon: {exc}")
+            _error(f"Invalid lexicon: {exc}")
             return 1
 
     try:
@@ -2962,7 +3511,7 @@ def _workspace_publish_snapshot_command(
             snapshot_id=snapshot_id,
         )
     except (SnapshotPublishError, WorkspaceError) as exc:
-        print(f"Invalid snapshot publish input: {exc}")
+        _error(f"Invalid snapshot publish input: {exc}")
         return 1
 
     if as_json:
@@ -3003,7 +3552,7 @@ def _review_command(
             policy_mode=policy_mode,
         )
     except (ReviewInboxError, WorkspaceError, LocalPolicyError, OSError) as exc:
-        print(f"Invalid review inbox input: {exc}")
+        _error(f"Invalid review inbox input: {exc}")
         return 1
     return 0
 
@@ -3015,11 +3564,12 @@ def _match_command(
     scopes: list[str] | None,
     include_deprecated: bool,
     longest_only: bool,
+    as_json: bool = False,
 ) -> int:
     try:
         lexicon = load_lexicon(path)
     except AgentLexiconLoadError as exc:
-        print(f"Invalid lexicon: {exc}")
+        _error(f"Invalid lexicon: {exc}")
         return 1
 
     matches = find_surface_matches(
@@ -3029,6 +3579,9 @@ def _match_command(
         include_deprecated=include_deprecated,
         longest_only=longest_only,
     )
+    if as_json:
+        print(json.dumps({"matches": [match.to_dict() for match in matches]}, indent=2, sort_keys=True))
+        return 0
     if not matches:
         print("No matches")
         return 0
@@ -3046,6 +3599,73 @@ def _match_command(
     return 0
 
 
+def _context_command(
+    *,
+    path: Path,
+    scopes: list[str] | None,
+    as_json: bool = False,
+) -> int:
+    try:
+        lexicon = load_lexicon(path)
+    except AgentLexiconLoadError as exc:
+        _error(f"Invalid lexicon: {exc}")
+        return 1
+
+    scope_filter = set(scopes) if scopes else None
+
+    def in_scope(term_scopes: tuple[str, ...]) -> bool:
+        if scope_filter is None:
+            return True
+        return any(s in scope_filter for s in term_scopes)
+
+    use_terms: list[dict[str, object]] = []
+    avoid_terms: list[dict[str, object]] = []
+    for term in lexicon.terms:
+        if not in_scope(term.scopes):
+            continue
+        if term.deprecated:
+            avoid_terms.append({"surface": term.canonical, "instead": "", "reason": "deprecated term"})
+            continue
+        use_terms.append(
+            {
+                "canonical": term.canonical,
+                "term_id": term.id,
+                "scopes": list(term.scopes),
+                "description": term.description or "",
+            }
+        )
+        for alias in term.aliases:
+            if alias.deprecated:
+                avoid_terms.append(
+                    {"surface": alias.surface, "instead": term.canonical, "reason": "deprecated alias"}
+                )
+
+    if as_json:
+        print(json.dumps({"use": use_terms, "avoid": avoid_terms}, indent=2, sort_keys=True))
+        return 0
+
+    if not use_terms and not avoid_terms:
+        print("No terminology defined in this lexicon yet.")
+        return 0
+
+    print("Use these canonical terms:")
+    if use_terms:
+        for term in use_terms:
+            scopes_note = f" [{', '.join(term['scopes'])}]" if term["scopes"] else ""
+            print(f"- {term['canonical']}{scopes_note}")
+    else:
+        print("- (none)")
+    if avoid_terms:
+        print("")
+        print("Avoid:")
+        for term in avoid_terms:
+            if term["instead"]:
+                print(f"- {term['surface']} (use \"{term['instead']}\" instead)")
+            else:
+                print(f"- {term['surface']} ({term['reason']})")
+    return 0
+
+
 def _resolve_command(
     *,
     path: Path,
@@ -3055,11 +3675,12 @@ def _resolve_command(
     semantic_near_miss: bool,
     semantic_model: str,
     semantic_threshold: float,
+    as_json: bool = False,
 ) -> int:
     try:
         lexicon = load_lexicon(path)
     except AgentLexiconLoadError as exc:
-        print(f"Invalid lexicon: {exc}")
+        _error(f"Invalid lexicon: {exc}")
         return 1
 
     try:
@@ -3069,7 +3690,7 @@ def _resolve_command(
             min_semantic_score=semantic_threshold,
         )
     except SemanticNearMissError as exc:
-        print(f"Invalid semantic near-miss input: {exc}")
+        _error(f"Invalid semantic near-miss input: {exc}")
         return 1
 
     try:
@@ -3081,12 +3702,16 @@ def _resolve_command(
             near_miss_semantic_backend=semantic_backend,
         )
     except SemanticNearMissError as exc:
-        print(f"Invalid semantic near-miss input: {exc}")
+        _error(f"Invalid semantic near-miss input: {exc}")
         return 1
+    if as_json:
+        print(json.dumps(decision.to_dict(), indent=2, sort_keys=True))
+        return 0
     print(f"Status: {decision.status.value}")
     print(f"Action: {decision.action.value}")
     if decision.message:
         print(f"Message: {decision.message}")
+    _print_lexicon_snapshot(decision.metadata)
     if decision.metadata.get("unicode_findings"):
         print("Unicode findings:")
         for finding in decision.metadata.get("unicode_findings", []):
@@ -3111,6 +3736,12 @@ def _resolve_command(
         )
     return 0
 
+
+
+def _print_lexicon_snapshot(metadata: Mapping[str, object]) -> None:
+    snapshot_ref = metadata.get("lexicon_snapshot_ref") if metadata else None
+    if isinstance(snapshot_ref, str) and snapshot_ref:
+        print(f"Lexicon snapshot: {snapshot_ref}")
 
 
 def _print_near_miss_suggestions(metadata: Mapping[str, object]) -> None:
@@ -3174,11 +3805,12 @@ def _guard_command(
     scopes: list[str] | None,
     include_deprecated: bool,
     block_on_unicode_risk: bool,
+    as_json: bool = False,
 ) -> int:
     try:
         lexicon = load_lexicon(path)
     except AgentLexiconLoadError as exc:
-        print(f"Invalid lexicon: {exc}")
+        _error(f"Invalid lexicon: {exc}")
         return 1
 
     decision = guard_tool_call(
@@ -3189,11 +3821,16 @@ def _guard_command(
         include_deprecated=include_deprecated,
         block_on_unicode_risk=block_on_unicode_risk,
     )
+    exit_code = 0 if decision.status in {ToolGuardStatus.ALLOWED, ToolGuardStatus.NO_MATCH} else 2
+    if as_json:
+        print(json.dumps(decision.to_dict(), indent=2, sort_keys=True))
+        return exit_code
     print(f"Status: {decision.status.value}")
     print(f"Action: {decision.action.value}")
     print(f"Allowed: {'yes' if decision.is_allowed else 'no'}")
     print(f"Reason: {decision.reason}")
     print(f"Resolution: {decision.resolution.status.value}")
+    _print_lexicon_snapshot(decision.metadata)
     if decision.metadata.get("unicode_findings"):
         print("Unicode findings:")
         for finding in decision.metadata.get("unicode_findings", []):

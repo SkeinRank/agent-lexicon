@@ -8,8 +8,6 @@ stable lexicon fingerprints, so cache hits never change matching semantics.
 
 from __future__ import annotations
 
-import hashlib
-import json
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,34 +17,9 @@ from typing import Any
 from .matcher import SurfaceMatcher, build_surface_matcher
 from .models import Lexicon
 from .resolver import LexiconResolver
+from .snapshots import LexiconFingerprint, fingerprint_lexicon
 
 DEFAULT_RUNTIME_CACHE_SIZE = 16
-_CACHE_ALGORITHM = "sha256"
-
-
-@dataclass(frozen=True, slots=True)
-class LexiconFingerprint:
-    """Stable digest for a loaded lexicon document."""
-
-    algorithm: str
-    value: str
-    version: str
-    term_count: int
-    scope_count: int
-    proposal_count: int
-    surface_count: int
-
-    def to_dict(self) -> dict[str, object]:
-        """Return a JSON-compatible fingerprint payload."""
-        return {
-            "algorithm": self.algorithm,
-            "value": self.value,
-            "version": self.version,
-            "term_count": self.term_count,
-            "scope_count": self.scope_count,
-            "proposal_count": self.proposal_count,
-            "surface_count": self.surface_count,
-        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -239,26 +212,6 @@ class LexiconRuntimeCache:
         while len(store) > self.max_size:
             store.popitem(last=False)
 
-
-def fingerprint_lexicon(lexicon: Lexicon) -> LexiconFingerprint:
-    """Return a stable fingerprint for a loaded lexicon."""
-    payload = json.dumps(
-        lexicon.to_dict(),
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-    )
-    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-    return LexiconFingerprint(
-        algorithm=_CACHE_ALGORITHM,
-        value=digest,
-        version=lexicon.version,
-        term_count=len(lexicon.terms),
-        scope_count=len(lexicon.scopes),
-        proposal_count=len(lexicon.proposals),
-        surface_count=sum(len(term.surfaces(include_deprecated=True)) for term in lexicon.terms),
-    )
 
 
 def load_cached_lexicon(

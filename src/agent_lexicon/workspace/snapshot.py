@@ -10,10 +10,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-from agent_lexicon.core import EvidenceKind, EvidenceSpan, Lexicon, Term
+from agent_lexicon.core import EvidenceKind, EvidenceSpan, Lexicon, Term, lexicon_runtime_metadata
 from agent_lexicon.core.files import atomic_write_text
 
-from .state import ReviewDecisionStatus, WorkspaceError, WorkspaceReviewItem, WorkspaceState
+from .state import ReviewDecisionStatus, WorkspaceError, WorkspaceReviewItem
+from .storage import WorkspaceStore
 
 
 class SnapshotPublishError(ValueError):
@@ -77,7 +78,7 @@ class PublishedSnapshot:
 
 
 def publish_local_snapshot(
-    state: WorkspaceState,
+    state: WorkspaceStore,
     *,
     output_path: str | Path | None = None,
     base_lexicon: Lexicon | None = None,
@@ -89,8 +90,8 @@ def publish_local_snapshot(
     needs-split items remain in the workspace but are not promoted into the
     published lexicon snapshot.
     """
-    if not isinstance(state, WorkspaceState):
-        raise SnapshotPublishError("state must be a WorkspaceState")
+    if not isinstance(state, WorkspaceStore):
+        raise SnapshotPublishError("state must implement WorkspaceStore")
     if base_lexicon is not None and not isinstance(base_lexicon, Lexicon):
         raise SnapshotPublishError("base_lexicon must be a Lexicon")
 
@@ -171,6 +172,10 @@ def publish_local_snapshot(
         json.dumps(lexicon.to_dict(), indent=2, ensure_ascii=False, sort_keys=True) + "\n",
     )
 
+    snapshot_runtime_metadata = lexicon_runtime_metadata(lexicon, source_path=resolved_output_path)
+    if base_lexicon is not None:
+        snapshot_runtime_metadata["base_lexicon_snapshot"] = lexicon_runtime_metadata(base_lexicon)
+
     snapshot = PublishedSnapshot(
         snapshot_id=resolved_snapshot_id,
         created_at=created_at,
@@ -180,7 +185,7 @@ def publish_local_snapshot(
         generated_term_count=len(generated_terms),
         skipped_count=len(skipped_surfaces),
         skipped_surfaces=tuple(skipped_surfaces),
-        metadata={"base_term_count": len(base_terms)},
+        metadata={"base_term_count": len(base_terms), **snapshot_runtime_metadata},
     )
     try:
         state.store_snapshot_record(snapshot)
@@ -255,7 +260,7 @@ def _unique_term_id(base_term_id: str, known_term_ids: set[str]) -> str:
     return f"{candidate}_{suffix}"
 
 
-def _default_snapshot_path(state: WorkspaceState, snapshot_id: str) -> Path:
+def _default_snapshot_path(state: WorkspaceStore, snapshot_id: str) -> Path:
     return state.db_path.parent / "snapshots" / f"{snapshot_id}.json"
 
 

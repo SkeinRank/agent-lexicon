@@ -3,8 +3,8 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-from pathlib import Path
 import unittest
+from pathlib import Path
 
 import agent_lexicon
 from agent_lexicon.cli import main
@@ -14,13 +14,17 @@ def _subprocess_env() -> dict[str, str]:
     env = os.environ.copy()
     existing_pythonpath = env.get("PYTHONPATH")
     src_path = str(Path(__file__).resolve().parents[1] / "src")
-    env["PYTHONPATH"] = src_path if not existing_pythonpath else f"{src_path}{os.pathsep}{existing_pythonpath}"
+    env["PYTHONPATH"] = (
+        src_path
+        if not existing_pythonpath
+        else f"{src_path}{os.pathsep}{existing_pythonpath}"
+    )
     return env
 
 
 class AgentLexiconSmokeTests(unittest.TestCase):
     def test_version_is_initialized(self) -> None:
-        self.assertEqual(agent_lexicon.__version__, "0.6.0")
+        self.assertEqual(agent_lexicon.__version__, "0.7.0")
 
     def test_about_mentions_agent_lexicon(self) -> None:
         self.assertIn("Agent Lexicon", agent_lexicon.about())
@@ -36,8 +40,7 @@ class AgentLexiconSmokeTests(unittest.TestCase):
             capture_output=True,
             env=_subprocess_env(),
         )
-        self.assertEqual(completed.stdout.strip(), "0.6.0")
-
+        self.assertEqual(completed.stdout.strip(), "0.7.0")
 
     def test_cli_match_example(self) -> None:
         completed = subprocess.run(
@@ -54,9 +57,10 @@ class AgentLexiconSmokeTests(unittest.TestCase):
             capture_output=True,
             env=_subprocess_env(),
         )
-        self.assertIn("billing.credit_limit alias billing -> 'customer cap'", completed.stdout)
+        self.assertIn(
+            "billing.credit_limit alias billing -> 'customer cap'", completed.stdout
+        )
         self.assertIn("api.rate_limit canonical api -> 'rate limit'", completed.stdout)
-
 
     def test_cli_resolve_example(self) -> None:
         completed = subprocess.run(
@@ -77,8 +81,6 @@ class AgentLexiconSmokeTests(unittest.TestCase):
         self.assertIn("Action: ask_clarification", completed.stdout)
         self.assertIn("billing.credit_limit", completed.stdout)
         self.assertIn("api.rate_limit", completed.stdout)
-
-
 
     def test_cli_guard_blocks_ambiguous_tool_call(self) -> None:
         completed = subprocess.run(
@@ -197,7 +199,6 @@ class AgentLexiconSmokeTests(unittest.TestCase):
         )
         self.assertIn("Evidence packs:", completed.stdout)
         self.assertIn("billing.update_credit_limit", completed.stdout)
-
 
 
 if __name__ == "__main__":

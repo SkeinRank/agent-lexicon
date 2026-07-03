@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from agent_lexicon.review_agent.agent import ReviewAgentDecision, ReviewAgentError, run_review_agent
-from agent_lexicon.workspace import WorkspaceReviewEvent, WorkspaceReviewItem, WorkspaceState
+from agent_lexicon.workspace import WorkspaceReviewEvent, WorkspaceReviewItem, WorkspaceStore
 
 
 class ReviewDatasetError(ValueError):
@@ -185,15 +185,15 @@ class ReviewDatasetQualitySummary:
 
 
 def build_review_dataset(
-    state: WorkspaceState,
+    state: WorkspaceStore,
     *,
     include_review_agent: bool = False,
     quality: ReviewDatasetQuality | str | None = None,
     limit: int | None = None,
 ) -> ReviewDatasetReport:
     """Build a portable review dataset from local workspace review events."""
-    if not isinstance(state, WorkspaceState):
-        raise ReviewDatasetError("state must be a WorkspaceState")
+    if not isinstance(state, WorkspaceStore):
+        raise ReviewDatasetError("state must implement WorkspaceStore")
     if limit is not None and limit < 1:
         raise ReviewDatasetError("limit must be greater than 0")
     quality_filter: ReviewDatasetQuality | None = None
@@ -234,7 +234,7 @@ def build_review_dataset(
 
 
 def export_review_dataset_jsonl(
-    state: WorkspaceState,
+    state: WorkspaceStore,
     output_path: str | Path | None = None,
     *,
     include_review_agent: bool = False,

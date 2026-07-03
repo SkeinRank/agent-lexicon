@@ -56,6 +56,13 @@ from .git_merge import (
     parse_git_added_lines,
 )
 
+from .lint_diff import (
+    LintDiffError,
+    LintDiffReport,
+    LintFinding,
+    lint_working_diff,
+)
+
 from .quality import (
     CandidateCluster,
     CandidatePriority,
@@ -134,6 +141,10 @@ __all__ = [
     "GitMergeUnknownIdentifier",
     "build_git_merge_terminology_report",
     "check_git_merge_terminology",
+    "LintDiffError",
+    "LintDiffReport",
+    "LintFinding",
+    "lint_working_diff",
     "parse_git_added_lines",
     "CandidateCluster",
     "CandidatePriority",

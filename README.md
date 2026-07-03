@@ -25,6 +25,15 @@ When many agents work a long coding session, each one quietly invents its own na
 
 It is dependency-free, runs locally, and is deterministic by design: the same input always produces the same output, and every decision carries a reason you can audit.
 
+As a command-line tool, install it with [pipx](https://pipx.pypa.io) so `agent-lexicon` and the short `alex` alias are available in every project:
+
+```bash
+pipx install agent-lexicon
+pipx install "agent-lexicon[completion]"   # with shell tab-completion
+```
+
+To use it as a library inside a project, install it with pip into that project's environment instead:
+
 ```bash
 pip install agent-lexicon
 ```
@@ -44,6 +53,7 @@ $ agent-lexicon resolve examples/customer_limits/lexicon.yaml "please raise the 
 Status: ambiguous
 Action: ask_clarification
 Message: Found 2 possible canonical terms.
+Lexicon snapshot: sha256:98b7c5324a20c58926ea8e3413f87851c6d8c354e93197a69c56f1e142ea962e
 Candidates:
 - api.rate_limit (rate limit) scopes=api matches='limit'
 - billing.credit_limit (credit limit) scopes=billing matches='limit'
@@ -56,6 +66,7 @@ $ agent-lexicon resolve examples/customer_limits/lexicon.yaml "please raise the 
 Status: resolved
 Action: use_terms
 Message: Resolved to billing.credit_limit.
+Lexicon snapshot: sha256:98b7c5324a20c58926ea8e3413f87851c6d8c354e93197a69c56f1e142ea962e
 Candidates:
 - billing.credit_limit (credit limit) scopes=billing matches='limit'
 ```
@@ -68,6 +79,8 @@ Status: blocked
 Action: block
 Allowed: no
 Reason: Requested tool is not allowed for the resolved terminology.
+Resolution: resolved
+Lexicon snapshot: sha256:98b7c5324a20c58926ea8e3413f87851c6d8c354e93197a69c56f1e142ea962e
 Matched terms:
 - billing.credit_limit
 Allowed tools:
@@ -106,6 +119,8 @@ Three pieces, each doing one job.
 $ agent-lexicon check-merge --root . --base main --head feature-branch --include 'src/**'
 Git merge terminology check: 1 files, 6 added lines
 Range: main...feature-branch
+Lexicon: lexicon/lexicon.yaml
+Lexicon snapshot: sha256:98b7c5324a20c58926ea8e3413f87851c6d8c354e93197a69c56f1e142ea962e
 Summary: known=2, likely_alias=0, likely_new_term=3, unresolved_unknown=0, hidden_unresolved=1
 Known terminology:
 - auth.py:2 'authToken' -> auth.access_token (access token) scopes=auth
@@ -122,17 +137,68 @@ Add `--fail-on-review` to make this a blocking CI check that returns a non-zero 
 
 ## Three ways to use it
 
-**Command line** — the full local loop, no code required.
+**Command line** — the full local loop, no code required. Every command is also available under the short alias `alex`, so `alex resolve …` works the same as `agent-lexicon resolve …`.
 
 ```bash
-agent-lexicon init                      # create a local dictionary-as-code layout
-agent-lexicon scan README.md docs src   # discover candidate terms with evidence
+agent-lexicon init                      # create lexicon/, workspace, policy, and scan config
+agent-lexicon scan                      # discover candidate terms from configured paths
+agent-lexicon scan README.md docs src   # or override paths explicitly
 agent-lexicon review                    # open the local web inbox to accept/reject
 agent-lexicon publish                   # publish accepted decisions as a snapshot
 agent-lexicon resolve <lexicon> "text"  # resolve terminology in any text
 agent-lexicon guard   <lexicon> "text" --tool <name>   # gate a tool call
+agent-lexicon context <lexicon>         # print the canonical vocabulary brief for an agent
+agent-lexicon lint-diff --stdin         # lint a working diff for terminology drift
 agent-lexicon check-merge --base main --head <branch>  # detect drift at merge
+agent-lexicon check-merge --base main --head <branch> --semantic-check  # CI-style pass/fail
 ```
+
+### In an agent workflow
+
+Two of these commands are built for wrapping an AI coding agent:
+
+**Before a task** — hand the agent the project's canonical vocabulary so it starts with the right language:
+
+```bash
+agent-lexicon context lexicon/lexicon.yaml
+# Use these canonical terms:
+# - ContextSpace
+# - RuntimeSnapshot
+#
+# Avoid:
+# - WorkspaceScope (use "ContextSpace" instead)
+```
+
+**During a task** — check a working diff for terminology drift before it is committed, with layered severity:
+
+```bash
+git diff | agent-lexicon lint-diff --stdin
+# Terminology lint: 2 files, 18 added lines
+#
+# Deprecated terms (fail):
+# - src/session.py:14 WorkspaceScope -> use "ContextSpace"
+#
+# Possible typos / near-misses (warn):
+# - docs/api.md:7 ContextSapce -> did you mean "ContextSpace"?
+#
+# New project terms (info):
+# - src/memory.py:22 TaskMemoryProfile
+# (exit code 1: a deprecated term was used)
+```
+
+Level 1 (declared deprecated terms) fails the check. Level 2 (lexical near-misses) warns, or fails under `--strict`. Level 3 (unknown project terms) is reported for awareness only. An optional `--semantic` flag adds probabilistic suggestions but never changes the exit code — enforcement stays deterministic.
+
+**At merge / PR** — a deterministic terminology gate alongside your other CI checks:
+
+```bash
+agent-lexicon check-merge --base main --head HEAD --semantic-check
+# Terminology check: 3 files, 42 added lines
+# Semantic conflicts detected (1):
+# - customer cap vs credit limit (use "credit limit")
+# (exit code 1, so CI fails)
+```
+
+Both are deterministic: they flag terms the lexicon *already declares* (deprecated aliases and near-misses to canonical terms), never guesses.
 
 **Python library** — call the same logic inline.
 
@@ -160,6 +226,83 @@ agent-lexicon mcp serve --root . --lexicon lexicon/lexicon.yaml
 ```
 
 The server exposes six tools: `resolve_term`, `check_language`, `guard_tool_call`, `find_evidence`, `submit_proposal`, and `get_snapshot`. List their full definitions with `agent-lexicon mcp tools`.
+
+### Repository scan config
+
+`agent-lexicon init` creates `.agent-lexicon/config.yaml` so common repository scans do not need long CLI commands. By default, `agent-lexicon scan` starts from documentation and common source roots, applies language-aware include globs for popular stacks, and respects the repository `.gitignore`.
+
+```yaml
+scan:
+  paths:
+    - README.md
+    - docs
+    - src
+    - app
+    - packages
+    - lib
+    - services
+  include:
+    - "docs/**/*.md"
+    - "docs/**/*.txt"
+    - "**/*.py"
+    - "**/*.ts"
+    - "**/*.tsx"
+    - "**/*.go"
+    - "**/*.rs"
+    - "**/*.java"
+    - "**/*.kt"
+    - "**/*.cs"
+    - "**/*.sql"
+    - "**/*.yaml"
+  exclude:
+    - ".venv/**"
+    - "node_modules/**"
+    - "dist/**"
+    - "**/generated/**"
+  respect_gitignore: true
+  max_file_bytes: 1000000
+```
+
+`.gitignore` is treated as the first line of repository-specific ignore behavior. Use `scan.exclude` for Agent Lexicon-specific rules such as generated fixtures that are still tracked in Git.
+
+CLI flags still win when you need a one-off run:
+
+```bash
+agent-lexicon scan docs src --include "src/**/*.py" --exclude "src/generated/**"
+agent-lexicon scan --no-gitignore
+agent-lexicon check-merge --base main --head HEAD --exclude "docs/generated/**"
+```
+
+---
+
+## GitHub Actions workflow
+
+The repository includes a terminology review workflow for pull requests. It validates the tracked lexicon and runs merge-time drift detection against the PR diff:
+
+```yaml
+name: Agent Lexicon Terminology Review
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  terminology-review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install --upgrade poetry==2.1.1
+      - run: poetry install --with dev
+      - run: poetry run agent-lexicon validate lexicon/lexicon.yaml --lint --strict-lint
+      - run: poetry run agent-lexicon check-merge --root . --base origin/${{ github.base_ref }} --head HEAD
+```
+
+The checked-in workflow is review-first by default: it prints terminology drift without blocking every PR. Set `base_ref`, `head_ref`, and `fail_on_review=true` for an on-demand blocking run, or add `--fail-on-review` when your team is ready to make terminology review a required merge gate.
 
 ---
 
@@ -190,7 +333,7 @@ terms:
       - surface: requests per minute
 ```
 
-Because it is just a file in the repo, the vocabulary versions, diffs, and reviews the same way your code does. A built-in linter warns when a surface is broad enough to over-trigger or to affect a guard decision:
+Because it is just a file in the repo, the vocabulary versions, diffs, and reviews the same way your code does. Runtime decisions also carry a content-addressed snapshot reference (`sha256:<digest>`), so the same text can be replayed later against the exact same vocabulary content. A built-in linter warns when a surface is broad enough to over-trigger or to affect a guard decision:
 
 ```console
 $ agent-lexicon lint lexicon/lexicon.yaml
@@ -198,6 +341,13 @@ Lexicon lint: warnings (1 warning)
 [warning] tool_broad_surface: tool-routed term uses a broad surface that can
   affect guard decisions (term=data.primary_key; surface='PK'). Hint: Use
   explicit tool-facing aliases and avoid bare words on terms with tools.
+```
+
+Review and publish decisions are kept as workspace provenance records and can be exported as JSONL for audit or handoff:
+
+```console
+$ agent-lexicon workspace export-decision-log --root . --action review_decision_saved
+{"action":"review_decision_saved","actor":"local","rule_id":"human_review",...}
 ```
 
 ---
@@ -219,10 +369,12 @@ This is deliberately a **suggestion to a human, marked as non-deterministic**, n
 
 These hold on the deterministic runtime and local review paths:
 
-- **Deterministic.** The same text against the same lexicon version always produces the same decision. No model, no embedding, no randomness on the resolve and guard paths.
-- **Auditable.** Every decision reports its reason — which surface matched, at which span, in which scope, and why a tool was allowed or blocked.
+- **Deterministic.** The same text against the same immutable lexicon snapshot always produces the same decision. No model, no embedding, no randomness on the resolve and guard paths.
+- **Reproducible.** Runtime and merge reports include a content-addressed `lexicon_snapshot_ref` (`sha256:<digest>`), so a decision can be replayed later against the exact same vocabulary content.
+- **Auditable.** Every runtime decision reports its reason — which surface matched, at which span, in which scope, and why a tool was allowed or blocked. Local review and publish decisions are also written to an append-only provenance log with actor, action, rule, result, and lexicon snapshot metadata.
 - **Dependency-free core.** The resolver and matcher have zero runtime dependencies and run entirely in memory. Optional extras are opt-in and never touch the hot path.
 - **Safe by construction.** Local writes are atomic (a reader sees a complete file or none), and the workspace database is configured for concurrent access without torn reads.
+- **Storage boundary.** The local workspace is SQLite-backed by default, but workflow code depends on a small `WorkspaceStore` boundary so future shared storage can be added without changing the deterministic runtime.
 
 ---
 
@@ -230,12 +382,20 @@ These hold on the deterministic runtime and local review paths:
 
 - [Quickstart](docs/quickstart.md) — local setup, scan, review, publish, and runtime usage.
 - [Concepts](docs/concepts.md) — terms, aliases, scopes, resolution, guard decisions, and merge-time drift detection.
+- [Python API reference](docs/api.md) — `load_lexicon`, `resolve_text`, `guard_tool_call`, and the decision and enum types they return.
+- [MCP server reference](docs/mcp.md) — the six MCP tools, their arguments, and their return values.
+
+Contributing, security, and community:
+
+- [Contributing](CONTRIBUTING.md) — development setup and how to send a change.
+- [Security policy](SECURITY.md) — how to report a vulnerability privately.
+- [Code of conduct](CODE_OF_CONDUCT.md) — community standards.
 
 ---
 
 ## Status
 
-Agent Lexicon is an early, actively developed project (0.6.x). The core — resolve, guard, near-miss, dictionary-as-code, and merge-time drift detection — is well tested (261 passing tests) and used through the CLI, the Python API, and the local MCP server. Scaling it across many processes or a networked deployment is on the roadmap, not yet proven in production.
+Agent Lexicon is an early, actively developed project (0.7.x). The core — resolve, guard, near-miss, dictionary-as-code, and merge-time drift detection — is well tested (326 passing tests) and used through the CLI, the Python API, and the local MCP server. Scaling it across many processes or a networked deployment is on the roadmap, not yet proven in production.
 
 If terminology consistency across long, multi-agent sessions is a real cost for you — especially in regulated domains where decisions must be reproducible and auditable — this is built for exactly that.
 

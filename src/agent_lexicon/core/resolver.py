@@ -13,6 +13,7 @@ from agent_lexicon.text import normalize_text_for_matching
 
 from .matcher import SurfaceKind, SurfaceMatch, SurfaceMatcher, _select_long_non_overlapping, build_surface_matcher
 from .models import Lexicon, ResolutionAction, ResolutionCandidate, ResolutionDecision, ResolutionMatch, ResolutionStatus, Term
+from .snapshots import lexicon_runtime_metadata
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,7 +55,7 @@ class LexiconResolver:
             raise TypeError("text must be a string")
 
         normalization = normalize_text_for_matching(text)
-        metadata = _resolution_metadata(normalization)
+        metadata = _resolution_metadata(normalization, self.lexicon)
         raw_matches = self.matcher.match(
             text,
             scopes=scopes,
@@ -185,10 +186,11 @@ def _select_resolution_matches(matches: tuple[SurfaceMatch, ...]) -> tuple[Surfa
     return _select_long_non_overlapping(matches, preserve_same_span=True)
 
 
-def _resolution_metadata(normalization) -> dict[str, object]:
-    metadata = normalization.metadata()
-    if not metadata["unicode_normalized"] and not metadata["unicode_findings"]:
-        return {}
+def _resolution_metadata(normalization, lexicon: Lexicon) -> dict[str, object]:
+    metadata = lexicon_runtime_metadata(lexicon)
+    unicode_metadata = normalization.metadata()
+    if unicode_metadata["unicode_normalized"] or unicode_metadata["unicode_findings"]:
+        metadata.update(unicode_metadata)
     return metadata
 
 
