@@ -174,7 +174,7 @@ def test_check_merge_semantic_check_flags_deprecated_alias(tmp_path: Path, capsy
         "check-merge", "--root", str(tmp_path),
         "--lexicon", str(lexicon_dir / "lexicon.yaml"),
         "--base", "HEAD~1", "--head", "HEAD",
-        "--semantic-check", "--exclude", "lexicon/**",
+        "--semantic-check",
     ])
     out = capsys.readouterr().out
     assert code == 1
@@ -202,7 +202,7 @@ def test_check_merge_semantic_check_clean(tmp_path: Path, capsys) -> None:
         "check-merge", "--root", str(tmp_path),
         "--lexicon", str(lexicon_dir / "lexicon.yaml"),
         "--base", "HEAD~1", "--head", "HEAD",
-        "--semantic-check", "--exclude", "lexicon/**",
+        "--semantic-check",
     ])
     out = capsys.readouterr().out
     assert code == 0
