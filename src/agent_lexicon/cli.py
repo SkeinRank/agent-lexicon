@@ -384,6 +384,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Return exit code 1 when reviewable unknown identifiers are found.",
     )
     check_merge_parser.add_argument(
+        "--semantic-check",
+        action="store_true",
+        help="Print a compact CI-style semantic-conflict summary (non-canonical terms used in the diff) and exit non-zero on conflicts.",
+    )
+    check_merge_parser.add_argument(
         "--include-unresolved-unknowns",
         action="store_true",
         help="Also include low-signal unknown identifiers that are hidden by the default merge review.",
@@ -1391,6 +1396,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit the resolution decision as a JSON document on stdout.",
     )
 
+    context_parser = subparsers.add_parser(
+        "context",
+        help="Print a compact canonical-vocabulary brief for an agent to use before a task.",
+    )
+    context_parser.add_argument("path", help="Path to a lexicon .json, .yaml, or .yml file.")
+    context_parser.add_argument(
+        "--scope",
+        action="append",
+        default=None,
+        help="Limit the brief to a scope. Can be provided multiple times.",
+    )
+    context_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the context brief as a JSON document on stdout.",
+    )
+
     guard_parser = subparsers.add_parser(
         "guard",
         help="Check whether a requested tool call is safe for resolved terminology.",
@@ -1607,6 +1629,7 @@ def main(argv: list[str] | None = None) -> int:
             semantic_model=args.semantic_model,
             semantic_threshold=args.semantic_threshold,
             as_json=args.json,
+            semantic_check=args.semantic_check,
         )
 
     if args.command == "ingest":
@@ -1699,6 +1722,13 @@ def main(argv: list[str] | None = None) -> int:
             scopes=args.scope,
             include_deprecated=not args.exclude_deprecated,
             longest_only=args.longest_only,
+            as_json=args.json,
+        )
+
+    if args.command == "context":
+        return _context_command(
+            path=Path(args.path),
+            scopes=args.scope,
             as_json=args.json,
         )
 
@@ -2252,6 +2282,7 @@ def _check_merge_command(
     semantic_model: str,
     semantic_threshold: float,
     as_json: bool,
+    semantic_check: bool = False,
 ) -> int:
     root_path = root.resolve()
     try:
@@ -2303,6 +2334,27 @@ def _check_merge_command(
         return 1
     except SemanticNearMissError as exc:
         _error(f"Invalid semantic near-miss input: {exc}")
+        return 1
+
+    if semantic_check:
+        conflicts: list[tuple[str, str]] = []
+        # A deprecated alias used in the diff where a canonical term exists.
+        for occ in report.known_occurrences:
+            if occ.deprecated and occ.matched_text != occ.canonical:
+                conflicts.append((occ.matched_text, occ.canonical))
+        # An unknown identifier that closely matches an existing canonical term.
+        for identifier in report.likely_aliases:
+            if identifier.suggestions:
+                conflicts.append((identifier.surface, identifier.suggestions[0].target_canonical))
+        print(f"Terminology check: {report.scanned_file_count} files, {report.added_line_count} added lines")
+        if not conflicts:
+            print("No semantic conflicts found.")
+            return 0
+        seen: set[tuple[str, str]] = set()
+        unique = [c for c in conflicts if not (c in seen or seen.add(c))]
+        print(f"Semantic conflicts detected ({len(unique)}):")
+        for used, canonical in unique:
+            print(f"- {used} vs {canonical} (use \"{canonical}\")")
         return 1
 
     if as_json:
@@ -3377,6 +3429,73 @@ def _match_command(
             f"{scope_label}{deprecated_label} "
             f"-> {match.matched_text!r}"
         )
+    return 0
+
+
+def _context_command(
+    *,
+    path: Path,
+    scopes: list[str] | None,
+    as_json: bool = False,
+) -> int:
+    try:
+        lexicon = load_lexicon(path)
+    except AgentLexiconLoadError as exc:
+        _error(f"Invalid lexicon: {exc}")
+        return 1
+
+    scope_filter = set(scopes) if scopes else None
+
+    def in_scope(term_scopes: tuple[str, ...]) -> bool:
+        if scope_filter is None:
+            return True
+        return any(s in scope_filter for s in term_scopes)
+
+    use_terms: list[dict[str, object]] = []
+    avoid_terms: list[dict[str, object]] = []
+    for term in lexicon.terms:
+        if not in_scope(term.scopes):
+            continue
+        if term.deprecated:
+            avoid_terms.append({"surface": term.canonical, "instead": "", "reason": "deprecated term"})
+            continue
+        use_terms.append(
+            {
+                "canonical": term.canonical,
+                "term_id": term.id,
+                "scopes": list(term.scopes),
+                "description": term.description or "",
+            }
+        )
+        for alias in term.aliases:
+            if alias.deprecated:
+                avoid_terms.append(
+                    {"surface": alias.surface, "instead": term.canonical, "reason": "deprecated alias"}
+                )
+
+    if as_json:
+        print(json.dumps({"use": use_terms, "avoid": avoid_terms}, indent=2, sort_keys=True))
+        return 0
+
+    if not use_terms and not avoid_terms:
+        print("No terminology defined in this lexicon yet.")
+        return 0
+
+    print("Use these canonical terms:")
+    if use_terms:
+        for term in use_terms:
+            scopes_note = f" [{', '.join(term['scopes'])}]" if term["scopes"] else ""
+            print(f"- {term['canonical']}{scopes_note}")
+    else:
+        print("- (none)")
+    if avoid_terms:
+        print("")
+        print("Avoid:")
+        for term in avoid_terms:
+            if term["instead"]:
+                print(f"- {term['surface']} (use \"{term['instead']}\" instead)")
+            else:
+                print(f"- {term['surface']} ({term['reason']})")
     return 0
 
 

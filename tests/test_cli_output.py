@@ -83,3 +83,127 @@ def test_bare_invocation_prints_help_to_stderr(capsys) -> None:
     assert exit_code == 1
     assert captured.out == ""
     assert "usage: agent-lexicon" in captured.err
+
+
+def _write_context_lexicon(tmp_path: Path) -> Path:
+    path = tmp_path / "lex.yaml"
+    path.write_text(
+        "version: '1'\n"
+        "scopes:\n"
+        "  - id: core\n"
+        "terms:\n"
+        "  - id: core.context_space\n"
+        "    canonical: ContextSpace\n"
+        "    scopes: [core]\n"
+        "    aliases:\n"
+        "      - surface: WorkspaceScope\n"
+        "        deprecated: true\n"
+        "  - id: core.legacy\n"
+        "    canonical: LegacyThing\n"
+        "    scopes: [core]\n"
+        "    deprecated: true\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_context_command_human_output(tmp_path: Path, capsys) -> None:
+    path = _write_context_lexicon(tmp_path)
+    assert main(["context", str(path)]) == 0
+    out = capsys.readouterr().out
+    assert "Use these canonical terms:" in out
+    assert "ContextSpace" in out
+    assert "Avoid:" in out
+    assert 'WorkspaceScope (use "ContextSpace" instead)' in out
+    assert "LegacyThing (deprecated term)" in out
+
+
+def test_context_command_json_output(tmp_path: Path, capsys) -> None:
+    path = _write_context_lexicon(tmp_path)
+    assert main(["context", str(path), "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    canon = {t["canonical"] for t in payload["use"]}
+    assert "ContextSpace" in canon
+    assert "LegacyThing" not in canon  # deprecated terms are not "use"
+    avoid = {a["surface"] for a in payload["avoid"]}
+    assert "WorkspaceScope" in avoid
+    assert "LegacyThing" in avoid
+
+
+def test_context_command_bad_lexicon(tmp_path: Path, capsys) -> None:
+    assert main(["context", str(tmp_path / "missing.yaml")]) == 1
+    assert "Invalid lexicon" in capsys.readouterr().err
+
+
+def _init_git_repo(tmp_path: Path):
+    import subprocess
+
+    def run(*args):
+        subprocess.run(args, cwd=tmp_path, check=True, capture_output=True)
+
+    run("git", "init", "-q")
+    run("git", "config", "user.email", "t@example.com")
+    run("git", "config", "user.name", "t")
+    return run
+
+
+def test_check_merge_semantic_check_flags_deprecated_alias(tmp_path: Path, capsys) -> None:
+    run = _init_git_repo(tmp_path)
+    lexicon_dir = tmp_path / "lexicon"
+    lexicon_dir.mkdir()
+    (lexicon_dir / "lexicon.yaml").write_text(
+        "version: '1'\n"
+        "scopes:\n  - id: core\n"
+        "terms:\n"
+        "  - id: core.credit_limit\n"
+        "    canonical: credit limit\n"
+        "    scopes: [core]\n"
+        "    aliases:\n"
+        "      - surface: customer cap\n"
+        "        deprecated: true\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "notes.md").write_text("# start\n", encoding="utf-8")
+    run("git", "add", "-A")
+    run("git", "commit", "-qm", "init")
+    (tmp_path / "notes.md").write_text("We raise the customer cap after verification.\n", encoding="utf-8")
+    run("git", "add", "-A")
+    run("git", "commit", "-qm", "change")
+
+    code = main([
+        "check-merge", "--root", str(tmp_path),
+        "--lexicon", str(lexicon_dir / "lexicon.yaml"),
+        "--base", "HEAD~1", "--head", "HEAD",
+        "--semantic-check", "--exclude", "lexicon/**",
+    ])
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "Semantic conflicts detected" in out
+    assert "customer cap vs credit limit" in out
+
+
+def test_check_merge_semantic_check_clean(tmp_path: Path, capsys) -> None:
+    run = _init_git_repo(tmp_path)
+    lexicon_dir = tmp_path / "lexicon"
+    lexicon_dir.mkdir()
+    (lexicon_dir / "lexicon.yaml").write_text(
+        "version: '1'\nscopes:\n  - id: core\nterms:\n"
+        "  - id: core.credit_limit\n    canonical: credit limit\n    scopes: [core]\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "notes.md").write_text("# start\n", encoding="utf-8")
+    run("git", "add", "-A")
+    run("git", "commit", "-qm", "init")
+    (tmp_path / "notes.md").write_text("We raise the credit limit after verification.\n", encoding="utf-8")
+    run("git", "add", "-A")
+    run("git", "commit", "-qm", "change")
+
+    code = main([
+        "check-merge", "--root", str(tmp_path),
+        "--lexicon", str(lexicon_dir / "lexicon.yaml"),
+        "--base", "HEAD~1", "--head", "HEAD",
+        "--semantic-check", "--exclude", "lexicon/**",
+    ])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "No semantic conflicts found." in out

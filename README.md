@@ -147,8 +147,38 @@ agent-lexicon review                    # open the local web inbox to accept/rej
 agent-lexicon publish                   # publish accepted decisions as a snapshot
 agent-lexicon resolve <lexicon> "text"  # resolve terminology in any text
 agent-lexicon guard   <lexicon> "text" --tool <name>   # gate a tool call
+agent-lexicon context <lexicon>         # print the canonical vocabulary brief for an agent
 agent-lexicon check-merge --base main --head <branch>  # detect drift at merge
+agent-lexicon check-merge --base main --head <branch> --semantic-check  # CI-style pass/fail
 ```
+
+### In an agent workflow
+
+Two of these commands are built for wrapping an AI coding agent:
+
+**Before a task** — hand the agent the project's canonical vocabulary so it starts with the right language:
+
+```bash
+agent-lexicon context lexicon/lexicon.yaml
+# Use these canonical terms:
+# - ContextSpace
+# - RuntimeSnapshot
+#
+# Avoid:
+# - WorkspaceScope (use "ContextSpace" instead)
+```
+
+**At merge / PR** — a deterministic terminology gate alongside your other CI checks:
+
+```bash
+agent-lexicon check-merge --base main --head HEAD --semantic-check
+# Terminology check: 3 files, 42 added lines
+# Semantic conflicts detected (1):
+# - customer cap vs credit limit (use "credit limit")
+# (exit code 1, so CI fails)
+```
+
+Both are deterministic: they flag terms the lexicon *already declares* (deprecated aliases and near-misses to canonical terms), never guesses.
 
 **Python library** — call the same logic inline.
 
@@ -345,7 +375,7 @@ Contributing, security, and community:
 
 ## Status
 
-Agent Lexicon is an early, actively developed project (0.7.x). The core — resolve, guard, near-miss, dictionary-as-code, and merge-time drift detection — is well tested (307 passing tests) and used through the CLI, the Python API, and the local MCP server. Scaling it across many processes or a networked deployment is on the roadmap, not yet proven in production.
+Agent Lexicon is an early, actively developed project (0.7.x). The core — resolve, guard, near-miss, dictionary-as-code, and merge-time drift detection — is well tested (319 passing tests) and used through the CLI, the Python API, and the local MCP server. Scaling it across many processes or a networked deployment is on the roadmap, not yet proven in production.
 
 If terminology consistency across long, multi-agent sessions is a real cost for you — especially in regulated domains where decisions must be reproducible and auditable — this is built for exactly that.
 
