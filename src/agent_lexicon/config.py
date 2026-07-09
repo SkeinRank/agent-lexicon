@@ -48,6 +48,8 @@ DEFAULT_SCAN_EXCLUDE_GLOBS: tuple[str, ...] = (
     "coverage/**",
     "vendor/**",
     "**/generated/**",
+    "**/migrations/**",
+    "**/alembic/**",
     "**/*.lock",
     "**/*.min.js",
     "**/*.map",
@@ -174,6 +176,8 @@ DEFAULT_CONFIG_TEXT = """scan:
     - coverage/**
     - vendor/**
     - "**/generated/**"
+    - "**/migrations/**"
+    - "**/alembic/**"
     - "**/*.lock"
     - "**/*.min.js"
     - "**/*.map"

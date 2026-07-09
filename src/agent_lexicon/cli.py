@@ -189,7 +189,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Do not apply .gitignore rules during discovery for this run.",
     )
     scan_parser.add_argument("--min-score", type=float, default=0.25, help="Minimum candidate score from 0.0 to 1.0.")
-    scan_parser.add_argument("--max-candidates", type=int, default=20, help="Maximum number of candidates to save.")
+    scan_parser.add_argument("--max-candidates", type=int, default=50, help="Maximum number of candidates to save.")
     scan_parser.add_argument(
         "--oov-tokenizer",
         default=None,
