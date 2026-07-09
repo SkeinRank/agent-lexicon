@@ -391,6 +391,15 @@ _HOST_PORT_PATTERN = re.compile(r"^[\w.-]+:\d{2,5}$")
 # describe markup, not project language.
 _RST_OPTION_LINE_PATTERN = re.compile(r"^:[\w-]+:")
 
+# Import statements describe code structure, not project terminology. They are
+# skipped during extraction, and the names they bind are collected so dotted
+# surfaces rooted in third-party imports (status.HTTP_403_FORBIDDEN,
+# sa.Column) can be rejected as library API rather than project vocabulary.
+_PY_FROM_IMPORT_PATTERN = re.compile(r"^from\s+([\w.]+)\s+import\s+(.+)$")
+_PY_IMPORT_PATTERN = re.compile(r"^import\s+([\w.]+(?:\s+as\s+\w+)?(?:\s*,\s*[\w.]+(?:\s+as\s+\w+)?)*)\s*(?:#.*)?$")
+_JS_IMPORT_PATTERN = re.compile(r"^import\s+.+\s+from\s+['\"]")
+_JS_REQUIRE_PATTERN = re.compile(r"^(?:const|let|var)\s+.+=\s*require\(")
+
 # Boilerplate line detection: a normalized line that repeats verbatim across
 # at least this share of documents (and at least _BOILERPLATE_MIN_DOCUMENTS of
 # them) is treated as template text - license headers, copyright banners,
@@ -455,6 +464,10 @@ def discover_scout_candidates(
 
     boilerplate_lines = _detect_boilerplate_lines(document_tuple)
     boilerplate_skipped = 0
+    internal_roots = _collect_internal_roots(document_tuple)
+    imported_names = _collect_imported_names(document_tuple, internal_roots)
+    external_roots = imported_names - internal_roots
+    import_lines_skipped = 0
 
     for document in document_tuple:
         for line_number, raw_line in enumerate(document.text.splitlines(), start=1):
@@ -466,11 +479,16 @@ def discover_scout_candidates(
                 continue
             if _RST_OPTION_LINE_PATTERN.match(line):
                 continue
+            if _is_import_line(line):
+                import_lines_skipped += 1
+                continue
             for surface, kind in _extract_candidate_surfaces(line):
                 normalized = _normalize_surface(surface)
                 if normalized in known_surfaces:
                     continue
                 if _is_rejectable_surface(surface, normalized):
+                    continue
+                if _has_external_root(surface, external_roots):
                     continue
                 accumulator = records.setdefault(
                     normalized,
@@ -513,6 +531,8 @@ def discover_scout_candidates(
             "oov_tokenizer": oov_tokenizer,
             "boilerplate_line_patterns": len(boilerplate_lines),
             "boilerplate_lines_skipped": boilerplate_skipped,
+            "import_lines_skipped": import_lines_skipped,
+            "external_import_roots": len(external_roots),
         },
     )
 
@@ -796,6 +816,82 @@ def _normalize_line(line: str) -> str:
     return " ".join(line.strip().casefold().split())
 
 
+def _is_import_line(line: str) -> bool:
+    return bool(
+        _PY_FROM_IMPORT_PATTERN.match(line)
+        or _PY_IMPORT_PATTERN.match(line)
+        or _JS_IMPORT_PATTERN.match(line)
+        or _JS_REQUIRE_PATTERN.match(line)
+    )
+
+
+def _collect_imported_names(documents: Sequence[IngestDocument], internal_roots: frozenset[str]) -> frozenset[str]:
+    """Return names bound by imports of third-party modules across the corpus.
+
+    ``from alembic import op`` binds ``op``; ``import sqlalchemy as sa`` binds
+    ``sa``; ``from fastapi import status`` binds ``status``. Names imported
+    from the project's own modules are skipped - self-reference is vocabulary.
+    """
+    names: set[str] = set()
+    for document in documents:
+        for raw_line in document.text.splitlines():
+            line = raw_line.strip()
+            from_match = _PY_FROM_IMPORT_PATTERN.match(line)
+            if from_match:
+                module_root = from_match.group(1).split(".")[0].casefold()
+                if module_root in internal_roots:
+                    continue
+                names.add(module_root)
+                imported = from_match.group(2).split("#")[0]
+                for part in imported.split(","):
+                    tokens = part.strip().strip("()").split()
+                    if not tokens or tokens[0] in {"", "*"}:
+                        continue
+                    bound = tokens[2] if len(tokens) >= 3 and tokens[1] == "as" else tokens[0]
+                    if re.fullmatch(r"\w+", bound):
+                        names.add(bound.casefold())
+                continue
+            import_match = _PY_IMPORT_PATTERN.match(line)
+            if import_match:
+                for part in import_match.group(1).split(","):
+                    tokens = part.strip().split()
+                    if not tokens:
+                        continue
+                    if len(tokens) >= 3 and tokens[1] == "as":
+                        names.add(tokens[2].casefold())
+                    else:
+                        names.add(tokens[0].split(".")[0].casefold())
+    return frozenset(names)
+
+
+def _collect_internal_roots(documents: Sequence[IngestDocument]) -> frozenset[str]:
+    """Return name roots that belong to the scanned project itself.
+
+    Every directory component and file stem of a scanned path is a
+    project-internal root: importing ``airflow.models.dag`` inside the Airflow
+    repository is self-reference, not third-party usage.
+    """
+    roots: set[str] = set()
+    for document in documents:
+        parts = re.split(r"[\\/]+", document.relative_path)
+        for part in parts:
+            stem = part.rsplit(".", 1)[0].casefold()
+            if re.fullmatch(r"[\w-]+", stem):
+                roots.add(stem)
+    return frozenset(roots)
+
+
+def _has_external_root(surface: str, external_roots: frozenset[str]) -> bool:
+    root = re.split(r"[.\[\](]", surface, maxsplit=1)[0].casefold()
+    if not root:
+        return False
+    if "." in surface:
+        return root in external_roots
+    # A bare name imported from a third-party module (HTTP_403_FORBIDDEN,
+    # Column) is library vocabulary as well.
+    return root in external_roots
+
+
 def _is_rejectable_surface(surface: str, normalized: str) -> bool:
     if len(surface) < 3 or len(surface) > 80:
         return True
@@ -832,6 +928,10 @@ def _normalize_surface(surface: str) -> str:
 def _clean_surface(surface: str) -> str | None:
     cleaned = surface.strip().strip("'\".,;:()[]{}")
     cleaned = cleaned.lstrip("~").lstrip("/")
+    for receiver_prefix in ("self.", "cls."):
+        if cleaned.startswith(receiver_prefix) and len(cleaned) > len(receiver_prefix):
+            cleaned = cleaned[len(receiver_prefix) :]
+            break
     if not cleaned:
         return None
     if cleaned.startswith("http://") or cleaned.startswith("https://"):

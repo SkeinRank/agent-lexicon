@@ -130,3 +130,68 @@ def test_markup_and_abbreviation_noise_is_rejected() -> None:
     assert "airflow.sdk.definitions.param.param" in surfaces
     assert "~airflow.sdk.definitions.param.param" not in surfaces
     assert "dagprocessor" in surfaces
+
+
+def test_import_lines_are_skipped_and_third_party_roots_rejected() -> None:
+    documents = [
+        _doc(
+            "myproject/api/routes.py",
+            text=(
+                "from fastapi import status\n"
+                "import sqlalchemy as sa\n"
+                "from alembic import op\n"
+                "from myproject.models.workflow import WorkflowRun\n"
+                "raise HTTPException(status.HTTP_403_FORBIDDEN)\n"
+                "col = sa.Column(sa.String)\n"
+                "op.create_table('runs')\n"
+                "run = WorkflowRun(run_id=run_id, workflow.run_state)\n"
+            ),
+        ),
+        _doc(
+            "myproject/models/workflow.py",
+            text="class WorkflowRun:\n    run_state = 'queued'  # WorkflowRun owns run_state and run_id\n",
+        ),
+    ]
+    report = discover_scout_candidates(documents)
+    surfaces = _surfaces(report)
+    # Third-party receivers are library API, not project vocabulary.
+    assert "status.http_403_forbidden" not in surfaces
+    assert "sa.column" not in surfaces
+    assert "sa.string" not in surfaces
+    assert "op.create_table" not in surfaces
+    # Import module paths do not become candidates by themselves.
+    assert "myproject.models.workflow" not in surfaces
+    assert "fastapi" not in surfaces
+    # Project vocabulary survives, including dotted self-reference.
+    assert "workflowrun" in surfaces
+    assert "run_state" in surfaces
+    assert "run_id" in surfaces
+    assert report.metadata["import_lines_skipped"] >= 4
+    assert report.metadata["external_import_roots"] >= 3
+
+
+def test_self_and_cls_receiver_prefixes_are_stripped() -> None:
+    documents = [
+        _doc(
+            "app/session.py",
+            text="value = self.context_space\nother = cls.snapshot_ref\nplain = self.\n",
+        ),
+    ]
+    report = discover_scout_candidates(documents)
+    surfaces = _surfaces(report)
+    assert "context_space" in surfaces
+    assert "self.context_space" not in surfaces
+    assert "snapshot_ref" in surfaces
+    assert "cls.snapshot_ref" not in surfaces
+
+
+def test_prose_starting_with_import_is_not_swallowed() -> None:
+    documents = [
+        _doc(
+            "docs/guide.md",
+            text="import the FluxCapacitor lexicon before running the TemporalRouter.\n",
+        ),
+    ]
+    report = discover_scout_candidates(documents)
+    surfaces = _surfaces(report)
+    assert "fluxcapacitor" in surfaces
