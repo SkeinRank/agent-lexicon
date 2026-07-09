@@ -305,6 +305,99 @@ _BACKGROUND_TERMS = {
     "yaml",
 }
 
+# Common English or legal words that frequently appear in ALL CAPS inside
+# license headers and legal boilerplate ("WITHOUT WARRANTIES OR CONDITIONS OF
+# ANY KIND"). An all-caps surface whose lowercase form is listed here is a
+# styled ordinary word, not an acronym, and is never a terminology candidate.
+_UPPER_STOPWORDS = {
+    "agreed",
+    "all",
+    "and",
+    "any",
+    "applicable",
+    "basis",
+    "conditions",
+    "copyright",
+    "distributed",
+    "either",
+    "express",
+    "expressed",
+    "for",
+    "governing",
+    "implied",
+    "important",
+    "kind",
+    "language",
+    "law",
+    "license",
+    "limitations",
+    "may",
+    "merchantability",
+    "not",
+    "note",
+    "notice",
+    "permissions",
+    "purpose",
+    "required",
+    "shall",
+    "software",
+    "specific",
+    "terms",
+    "the",
+    "this",
+    "under",
+    "unless",
+    "use",
+    "version",
+    "warning",
+    "warranties",
+    "warranty",
+    "with",
+    "without",
+    "writing",
+}
+
+# Well-known repository artifact names. These describe files that exist in
+# almost every project and are never project-specific terminology.
+_DOC_ARTIFACT_SURFACES = {
+    "authors",
+    "changelog",
+    "codeowners",
+    "contributing",
+    "dockerfile",
+    "fixme",
+    "license",
+    "makefile",
+    "maintainers",
+    "notice",
+    "readme",
+    "security",
+    "todo",
+}
+
+# Latin and prose abbreviations that match the identifier pattern because of
+# their inner dot but are never terminology.
+_ABBREVIATION_SURFACES = {"e.g", "i.e", "etc", "et.al", "vs", "cf", "n.b", "a.k.a"}
+
+# Source-location references (module.py:188), CSS fragments (stroke-width:2px),
+# and bare domain paths (raw.githubusercontent.com/apache/...) are markup, not
+# terminology.
+_FILE_LINE_PATTERN = re.compile(r".+\.\w{1,8}:\d+$")
+_CSS_VALUE_PATTERN = re.compile(r".+:\d+(?:px|pt|em|rem|%)$", re.IGNORECASE)
+_DOMAIN_PATH_PATTERN = re.compile(r"^(?:www\.)?[\w-]+(?:\.[\w-]+)+/")
+_HOST_PORT_PATTERN = re.compile(r"^[\w.-]+:\d{2,5}$")
+
+# reStructuredText directive option lines (":header-rows: 1", ":start-after:")
+# describe markup, not project language.
+_RST_OPTION_LINE_PATTERN = re.compile(r"^:[\w-]+:")
+
+# Boilerplate line detection: a normalized line that repeats verbatim across
+# at least this share of documents (and at least _BOILERPLATE_MIN_DOCUMENTS of
+# them) is treated as template text - license headers, copyright banners,
+# generated-file notices - and skipped before candidate extraction.
+_BOILERPLATE_MIN_DOCUMENTS = 3
+_BOILERPLATE_DOCUMENT_SHARE = 0.25
+
 _DOMAIN_HINTS = {
     "alias",
     "billing",
@@ -360,10 +453,18 @@ def discover_scout_candidates(
     known_surfaces = {_normalize_surface(surface) for surface in existing_surfaces or () if str(surface).strip()}
     records: dict[str, _CandidateAccumulator] = {}
 
+    boilerplate_lines = _detect_boilerplate_lines(document_tuple)
+    boilerplate_skipped = 0
+
     for document in document_tuple:
         for line_number, raw_line in enumerate(document.text.splitlines(), start=1):
             line = raw_line.strip()
             if not line:
+                continue
+            if _normalize_line(line) in boilerplate_lines:
+                boilerplate_skipped += 1
+                continue
+            if _RST_OPTION_LINE_PATTERN.match(line):
                 continue
             for surface, kind in _extract_candidate_surfaces(line):
                 normalized = _normalize_surface(surface)
@@ -410,6 +511,8 @@ def discover_scout_candidates(
             "existing_surface_count": len(known_surfaces),
             "quality_signal_version": "quality-v2",
             "oov_tokenizer": oov_tokenizer,
+            "boilerplate_line_patterns": len(boilerplate_lines),
+            "boilerplate_lines_skipped": boilerplate_skipped,
         },
     )
 
@@ -665,10 +768,48 @@ def _background_penalty(tokens: tuple[str, ...], kind: CandidateSurfaceKind) -> 
     return max(0.0, min(1.0, penalty))
 
 
+def _detect_boilerplate_lines(documents: Sequence[IngestDocument]) -> frozenset[str]:
+    """Return normalized lines that repeat verbatim across many documents.
+
+    License headers, copyright banners, and generated-file notices repeat as
+    identical lines in a large share of files. Real terminology repeats as
+    words inside otherwise-different lines, so a per-line document-frequency
+    count separates the two deterministically.
+    """
+    total_documents = len(documents)
+    if total_documents < _BOILERPLATE_MIN_DOCUMENTS + 1:
+        return frozenset()
+    line_documents: dict[str, set[str]] = {}
+    for document in documents:
+        seen_in_document: set[str] = set()
+        for raw_line in document.text.splitlines():
+            normalized = _normalize_line(raw_line)
+            if len(normalized) < 12 or normalized in seen_in_document:
+                continue
+            seen_in_document.add(normalized)
+            line_documents.setdefault(normalized, set()).add(document.relative_path)
+    threshold = max(_BOILERPLATE_MIN_DOCUMENTS, math.ceil(_BOILERPLATE_DOCUMENT_SHARE * total_documents))
+    return frozenset(line for line, docs in line_documents.items() if len(docs) >= threshold)
+
+
+def _normalize_line(line: str) -> str:
+    return " ".join(line.strip().casefold().split())
+
+
 def _is_rejectable_surface(surface: str, normalized: str) -> bool:
     if len(surface) < 3 or len(surface) > 80:
         return True
     if normalized in _BACKGROUND_TERMS:
+        return True
+    if normalized in _DOC_ARTIFACT_SURFACES:
+        return True
+    if surface.isupper() and normalized in _UPPER_STOPWORDS:
+        return True
+    if normalized in _ABBREVIATION_SURFACES:
+        return True
+    if _FILE_LINE_PATTERN.match(surface) or _CSS_VALUE_PATTERN.match(surface):
+        return True
+    if _DOMAIN_PATH_PATTERN.match(surface) or _HOST_PORT_PATTERN.match(surface):
         return True
     tokens = _surface_tokens(normalized)
     if not tokens:
@@ -690,6 +831,7 @@ def _normalize_surface(surface: str) -> str:
 
 def _clean_surface(surface: str) -> str | None:
     cleaned = surface.strip().strip("'\".,;:()[]{}")
+    cleaned = cleaned.lstrip("~").lstrip("/")
     if not cleaned:
         return None
     if cleaned.startswith("http://") or cleaned.startswith("https://"):

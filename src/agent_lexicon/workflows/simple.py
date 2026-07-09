@@ -312,7 +312,7 @@ def run_simple_scan(
     config_path: str | Path | None = None,
     respect_gitignore: bool | None = None,
     min_score: float = 0.25,
-    max_candidates: int = 20,
+    max_candidates: int = 50,
     context_lines: int = 1,
     max_positive_snippets: int = 3,
     max_negative_snippets: int = 3,
