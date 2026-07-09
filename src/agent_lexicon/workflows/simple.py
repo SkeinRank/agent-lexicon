@@ -517,7 +517,11 @@ def run_simple_publish(
         accepted_count=snapshot.accepted_count,
         generated_term_count=snapshot.generated_term_count,
         skipped_count=snapshot.skipped_count,
-        metadata={"root": str(root_path), "lexicon_path": str(resolved_lexicon_path) if resolved_lexicon_path else None},
+        metadata={
+            "root": str(root_path),
+            "lexicon_path": str(resolved_lexicon_path) if resolved_lexicon_path else None,
+            "starter_terms_dropped": list(snapshot.metadata.get("starter_terms_dropped", [])),
+        },
     )
 
 

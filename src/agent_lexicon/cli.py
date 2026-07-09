@@ -2058,6 +2058,9 @@ def _simple_publish_command(args: argparse.Namespace) -> int:
         f"{report.accepted_count} accepted decisions, "
         f"{report.skipped_count} skipped"
     )
+    dropped = report.metadata.get("starter_terms_dropped") or []
+    if dropped:
+        print(f"Starter placeholders excluded from the snapshot: {', '.join(dropped)}")
     return 0
 
 def _review_agent_command(args: argparse.Namespace) -> int:
@@ -3527,6 +3530,9 @@ def _workspace_publish_snapshot_command(
         f"{snapshot.accepted_count} accepted decisions, "
         f"{snapshot.skipped_count} skipped"
     )
+    dropped = snapshot.metadata.get("starter_terms_dropped") or []
+    if dropped:
+        print(f"Starter placeholders excluded from the snapshot: {', '.join(dropped)}")
     return 0
 
 
@@ -3621,6 +3627,8 @@ def _context_command(
     use_terms: list[dict[str, object]] = []
     avoid_terms: list[dict[str, object]] = []
     for term in lexicon.terms:
+        if term.is_starter:
+            continue
         if not in_scope(term.scopes):
             continue
         if term.deprecated:

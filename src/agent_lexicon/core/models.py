@@ -248,6 +248,16 @@ class Term:
     evidence: tuple[EvidenceSpan, ...] = ()
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
+    @property
+    def is_starter(self) -> bool:
+        """Return True for placeholder terms created by init templates.
+
+        Starter terms exist to verify the dictionary-as-code layout. They are
+        excluded from published snapshots and from agent-facing context so a
+        placeholder never becomes working vocabulary.
+        """
+        return bool(self.metadata.get("starter", False)) if isinstance(self.metadata, Mapping) else False
+
     def __post_init__(self) -> None:
         object.__setattr__(self, "id", _clean_text(self.id, field_name="term id"))
         object.__setattr__(self, "canonical", _clean_text(self.canonical, field_name="term canonical"))

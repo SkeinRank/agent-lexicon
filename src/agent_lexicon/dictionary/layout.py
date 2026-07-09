@@ -311,6 +311,8 @@ terms:
   - id: project.example_term
     canonical: example term
     description: Starter term used to verify the dictionary-as-code layout.
+    metadata:
+      starter: true
     scopes: [project]
     aliases:
       - surface: example concept
