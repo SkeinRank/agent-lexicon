@@ -25,6 +25,7 @@ from agent_lexicon.policy import (
 )
 from agent_lexicon.workspace import (
     ReviewDecisionStatus,
+    WorkspaceDecisionAction,
     WorkspaceError,
     WorkspaceReviewItem,
     WorkspaceStore,
@@ -204,6 +205,70 @@ def _accepted_terms(root: str | Path) -> list[dict[str, Any]]:
 
 def _published_terms_by_surface(terms: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return {str(term.get("canonical", "")).casefold(): term for term in terms if str(term.get("canonical", "")).strip()}
+
+
+def _published_records_by_surface(root: str | Path) -> dict[str, dict[str, Any]]:
+    """Return latest publish provenance indexed by candidate surface keys."""
+    try:
+        state = open_workspace(root, create=False)
+        records = state.list_decision_records(action=WorkspaceDecisionAction.SNAPSHOT_PUBLISHED)
+    except (WorkspaceError, OSError, ValueError):
+        return {}
+
+    published: dict[str, dict[str, Any]] = {}
+    for record in reversed(records):
+        payload = record.payload if isinstance(record.payload, Mapping) else {}
+        decisions = payload.get("published_decisions")
+        if not isinstance(decisions, list):
+            metadata = record.metadata if isinstance(record.metadata, Mapping) else {}
+            publish_metadata = metadata.get("publish", {}) if isinstance(metadata.get("publish", {}), Mapping) else {}
+            decisions = publish_metadata.get("published_decisions", [])
+        if not isinstance(decisions, list):
+            continue
+        for decision in decisions:
+            if not isinstance(decision, Mapping):
+                continue
+            surface = str(decision.get("surface", "") or "").strip()
+            normalized_surface = str(decision.get("normalized_surface", "") or "").strip()
+            if not surface and not normalized_surface:
+                continue
+            ui_record = _publish_record_as_ui_dict(record, decision)
+            for key in {surface.casefold(), normalized_surface.casefold()}:
+                if key and key not in published:
+                    published[key] = ui_record
+    return published
+
+
+def _publish_record_as_ui_dict(record: Any, decision: Mapping[str, Any]) -> dict[str, Any]:
+    metadata = record.metadata if isinstance(record.metadata, Mapping) else {}
+    payload = record.payload if isinstance(record.payload, Mapping) else {}
+    actor = metadata.get("actor", {}) if isinstance(metadata.get("actor", {}), Mapping) else {}
+    git = metadata.get("git", {}) if isinstance(metadata.get("git", {}), Mapping) else {}
+    snapshot_payload = payload.get("snapshot", {}) if isinstance(payload.get("snapshot", {}), Mapping) else {}
+    publish_metadata = metadata.get("publish", {}) if isinstance(metadata.get("publish", {}), Mapping) else {}
+    reviewer = str(actor.get("id", "local") or "local")
+    return {
+        "snapshot_id": str(record.subject or snapshot_payload.get("snapshot_id", "") or ""),
+        "created_at": str(record.created_at or snapshot_payload.get("created_at", "") or ""),
+        "result": str(decision.get("result", "published") or "published"),
+        "term_id": str(decision.get("term_id", "") or ""),
+        "accepted_count": int(publish_metadata.get("accepted_count", snapshot_payload.get("accepted_count", 0)) or 0),
+        "generated_term_count": int(publish_metadata.get("generated_term_count", snapshot_payload.get("generated_term_count", 0)) or 0),
+        "skipped_count": int(publish_metadata.get("skipped_count", snapshot_payload.get("skipped_count", 0)) or 0),
+        "actor": {
+            "type": str(actor.get("type", "human") or "human"),
+            "id": str(actor.get("id", reviewer) or reviewer),
+            "source": str(actor.get("source", "cli") or "cli"),
+            "display_id": _display_actor_id(dict(actor), dict(git), reviewer),
+            "display_source": _display_actor_source(dict(actor)),
+        },
+        "git": {
+            "branch": str(git.get("branch", "") or ""),
+            "commit": str(git.get("commit", "") or ""),
+            "dirty": bool(git.get("dirty", False)),
+            "available": bool(git.get("available", False)),
+        },
+    }
 
 
 class ReviewInboxError(ValueError):
@@ -686,6 +751,7 @@ _APP_JS = r"""
     h += '<h2 class="detail-title" style="font-family:ui-monospace,Menlo,monospace">'+esc(it.surface)+'</h2>';
     h += '<div class="kind">'+esc(it.kind)+' \u00b7 appears '+it.occurrences+' times in '+it.documents+' files \u00b7 '+priorityWord(it)+' priority</div>';
     h += currentProvenanceLine(it);
+    h += publishedProvenanceLine(it);
     h += clusterNote;
     h += '</div>';
     h += '<span class="status '+statusClass(it)+'">'+esc(statusLabel(it))+'</span>';
@@ -775,13 +841,21 @@ _APP_JS = r"""
       bits.push('Local decision');
     }
     if (it.decision === 'accepted') {
-      if (it.published && it.published.is_published) {
-        bits.push(it.published.snapshot_id ? 'published in '+esc(it.published.snapshot_id) : 'published');
-      } else {
-        bits.push('publish pending');
-      }
+      bits.push((it.published && it.published.is_published) ? 'published' : 'publish pending');
     }
     return '<div class="provenance-line">'+bits.join(' · ')+'</div>';
+  }
+
+  function publishedProvenanceLine(it){
+    if (!it.published || !it.published.is_published || !it.published.provenance) return '';
+    var p = it.published.provenance;
+    var bits = ['<span class="provenance-state">Published</span>'];
+    bits.push('<strong>'+esc(p.snapshot_id || it.published.snapshot_id || 'snapshot')+'</strong>');
+    bits.push(esc(actorLabel(p)));
+    var git = gitLabel(p);
+    if (git) bits.push(esc(git));
+    if (p.created_at) bits.push(esc(shortDate(p.created_at)));
+    return '<div class="provenance-line publish-line">'+bits.join(' · ')+'</div>';
   }
 
   function statusClass(it){ if(it.decision==='accepted')return'accepted'; if(it.decision==='rejected')return'rejected'; if(it.decision)return'ambiguous'; return''; }
@@ -1183,7 +1257,11 @@ def _handler_for_state(
                     {
                         "ok": True,
                         "surface": normalized_surface,
-                        "item": _item_as_dict(item, published_terms_by_surface=_published_terms_by_surface(_accepted_terms(state.root))) if item else None,
+                        "item": _item_as_dict(
+                            item,
+                            published_terms_by_surface=_published_terms_by_surface(_accepted_terms(state.root)),
+                            published_records_by_surface=_published_records_by_surface(state.root),
+                        ) if item else None,
                     }
                 )
                 return
@@ -1288,7 +1366,12 @@ def _snippets_as_dicts(snippets: Any) -> list[dict[str, Any]]:
     return result
 
 
-def _item_as_dict(item: WorkspaceReviewItem, *, published_terms_by_surface: Mapping[str, dict[str, Any]] | None = None) -> dict[str, Any]:
+def _item_as_dict(
+    item: WorkspaceReviewItem,
+    *,
+    published_terms_by_surface: Mapping[str, dict[str, Any]] | None = None,
+    published_records_by_surface: Mapping[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     cluster = _item_cluster(item)
     cluster_key = str(cluster.get("cluster_key", "") or "")
     priority = _item_priority(item)
@@ -1299,11 +1382,15 @@ def _item_as_dict(item: WorkspaceReviewItem, *, published_terms_by_surface: Mapp
         else None
     )
     published_term = (published_terms_by_surface or {}).get(item.surface.casefold())
+    publish_record = (published_records_by_surface or {}).get(item.surface.casefold()) or (published_records_by_surface or {}).get(item.normalized_surface.casefold())
+    published_snapshot_id = str((published_term or {}).get("snapshot_id", "") or (publish_record or {}).get("snapshot_id", "") or "")
+    published_source = str((published_term or {}).get("source", "") or ("snapshot" if published_snapshot_id else ""))
     published = {
-        "is_published": bool(published_term),
-        "snapshot_id": str((published_term or {}).get("snapshot_id", "") or ""),
-        "source": str((published_term or {}).get("source", "") or ""),
-        "created_at": str((published_term or {}).get("snapshot_created_at", "") or ""),
+        "is_published": bool(published_term or publish_record),
+        "snapshot_id": published_snapshot_id,
+        "source": published_source,
+        "created_at": str((published_term or {}).get("snapshot_created_at", "") or (publish_record or {}).get("created_at", "") or ""),
+        "provenance": publish_record,
     }
     return {
         "surface": item.surface,
@@ -1374,8 +1461,16 @@ def _render_page(
 ) -> str:
     lexicon_terms = _accepted_terms(root)
     published_terms_by_surface = _published_terms_by_surface(lexicon_terms)
+    published_records_by_surface = _published_records_by_surface(root)
     payload = {
-        "items": [_item_as_dict(item, published_terms_by_surface=published_terms_by_surface) for item in items],
+        "items": [
+            _item_as_dict(
+                item,
+                published_terms_by_surface=published_terms_by_surface,
+                published_records_by_surface=published_records_by_surface,
+            )
+            for item in items
+        ],
         "root": root,
         "readOnly": not policy_decision.is_allowed,
         "policy": f"{policy_decision.mode.value} · {policy_decision.role.value}",

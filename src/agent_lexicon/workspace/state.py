@@ -955,10 +955,34 @@ class WorkspaceState:
             )
             snapshot_metadata = dict(getattr(snapshot, "metadata", {}) or {})
             runtime_snapshot = snapshot_metadata.get("lexicon_snapshot", {}) if isinstance(snapshot_metadata.get("lexicon_snapshot", {}), Mapping) else {}
+            publish_metadata = snapshot_metadata.get("publish", {}) if isinstance(snapshot_metadata.get("publish", {}), Mapping) else {}
+            published_decisions = snapshot_metadata.get("published_decisions", [])
+            if not isinstance(published_decisions, list):
+                published_decisions = []
+            event_metadata = _review_actor_event_metadata(
+                self.root,
+                reviewer=str(publish_metadata.get("reviewer", "local") or "local"),
+                actor_type=str(publish_metadata.get("actor_type", "human") or "human"),
+                actor_source=str(publish_metadata.get("actor_source", "cli") or "cli"),
+                actor_id=str(publish_metadata.get("actor_id", "") or "") or None,
+                extra_metadata={
+                    "workspace_schema_version": SCHEMA_VERSION,
+                    "publish": {
+                        "snapshot_id": record.snapshot_id,
+                        "accepted_count": record.accepted_count,
+                        "generated_term_count": record.generated_term_count,
+                        "skipped_count": record.skipped_count,
+                        "published_decisions": published_decisions,
+                    },
+                },
+                git_metadata=None,
+            )
+            actor = event_metadata.get("actor", {})
+            actor_record_id = str(actor.get("id", "local")) if isinstance(actor, Mapping) else "local"
             provenance = WorkspaceDecisionRecord(
                 decision_id=f"decision_{uuid.uuid4().hex}",
                 created_at=record.created_at,
-                actor="workspace",
+                actor=actor_record_id,
                 action=WorkspaceDecisionAction.SNAPSHOT_PUBLISHED,
                 subject=record.snapshot_id,
                 input_text=record.output_path,
@@ -969,8 +993,11 @@ class WorkspaceState:
                 payload={
                     "snapshot": record.to_dict(),
                     "lexicon_snapshot": runtime_snapshot,
+                    "published_decisions": published_decisions,
+                    "actor": dict(actor) if isinstance(actor, Mapping) else {},
+                    "git": dict(event_metadata.get("git", {})) if isinstance(event_metadata.get("git", {}), Mapping) else {},
                 },
-                metadata={"workspace_schema_version": SCHEMA_VERSION},
+                metadata=event_metadata,
             )
             _insert_decision_record(connection, provenance)
         return record

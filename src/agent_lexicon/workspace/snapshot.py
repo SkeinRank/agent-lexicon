@@ -83,6 +83,10 @@ def publish_local_snapshot(
     output_path: str | Path | None = None,
     base_lexicon: Lexicon | None = None,
     snapshot_id: str | None = None,
+    actor_type: str = "human",
+    actor_source: str = "cli",
+    actor_id: str | None = None,
+    reviewer: str = "local",
 ) -> PublishedSnapshot:
     """Publish accepted local review decisions to a lexicon snapshot JSON file.
 
@@ -118,13 +122,32 @@ def publish_local_snapshot(
 
     generated_terms: list[Term] = []
     skipped_surfaces: list[str] = []
+    published_decisions: list[dict[str, Any]] = []
     for item in sorted(accepted_items, key=lambda value: value.normalized_surface):
         surface_key = item.surface.casefold()
         if surface_key in known_surfaces:
             skipped_surfaces.append(item.surface)
+            published_decisions.append(
+                {
+                    "normalized_surface": item.normalized_surface,
+                    "surface": item.surface,
+                    "decision": ReviewDecisionStatus.ACCEPTED.value,
+                    "result": "skipped_existing_surface",
+                    "term_id": "",
+                }
+            )
             continue
         term_id = _unique_term_id(_term_id_from_surface(item.surface), known_term_ids)
         evidence = _evidence_from_item(item, snapshot_id=resolved_snapshot_id)
+        published_decisions.append(
+            {
+                "normalized_surface": item.normalized_surface,
+                "surface": item.surface,
+                "decision": ReviewDecisionStatus.ACCEPTED.value,
+                "result": "generated_term",
+                "term_id": term_id,
+            }
+        )
         generated_terms.append(
             Term(
                 id=term_id,
@@ -161,6 +184,7 @@ def publish_local_snapshot(
             "generated_term_count": len(generated_terms),
             "skipped_count": len(skipped_surfaces),
             "skipped_surfaces": list(skipped_surfaces),
+            "published_decisions": list(published_decisions),
         },
     }
     lexicon = Lexicon(
@@ -193,6 +217,13 @@ def publish_local_snapshot(
         metadata={
             "base_term_count": len(base_terms),
             "starter_terms_dropped": [term.id for term in starter_terms],
+            "published_decisions": list(published_decisions),
+            "publish": {
+                "actor_type": actor_type,
+                "actor_source": actor_source,
+                "actor_id": actor_id or "",
+                "reviewer": reviewer,
+            },
             **snapshot_runtime_metadata,
         },
     )

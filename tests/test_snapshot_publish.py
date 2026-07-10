@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 from agent_lexicon import (
@@ -68,6 +69,34 @@ def test_publish_local_snapshot_writes_valid_lexicon(tmp_path: Path) -> None:
     assert len(records) == 1
     assert records[0].snapshot_id == "snapshot_test"
     assert state.summary().snapshot_count == 1
+
+def test_publish_local_snapshot_records_publish_provenance(tmp_path: Path) -> None:
+    from agent_lexicon.workspace import WorkspaceDecisionAction
+
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Maxim"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "nkvmaxim@gmail.com"], cwd=tmp_path, check=True)
+    state = _workspace_with_reviewed_candidate(tmp_path)
+
+    snapshot = publish_local_snapshot(state, snapshot_id="snapshot_actor")
+
+    records = state.list_decision_records(action=WorkspaceDecisionAction.SNAPSHOT_PUBLISHED)
+    assert len(records) == 1
+    record = records[0]
+    assert record.subject == snapshot.snapshot_id
+    assert record.action == WorkspaceDecisionAction.SNAPSHOT_PUBLISHED
+    assert record.metadata["actor"] == {"type": "human", "id": "Maxim", "source": "cli"}
+    assert record.metadata["git"]["author_name"] == "Maxim"
+    assert record.metadata["publish"]["snapshot_id"] == "snapshot_actor"
+    assert record.payload["published_decisions"] == [
+        {
+            "normalized_surface": "billing.update_credit_limit",
+            "surface": "billing.update_credit_limit",
+            "decision": "accepted",
+            "result": "generated_term",
+            "term_id": "billing.update_credit_limit",
+        }
+    ]
 
 
 def test_publish_local_snapshot_can_include_base_lexicon_and_skip_existing_surfaces(tmp_path: Path) -> None:

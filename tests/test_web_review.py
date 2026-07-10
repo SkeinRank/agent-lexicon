@@ -235,6 +235,40 @@ def test_review_inbox_marks_current_accepted_decision_as_published(tmp_path: Pat
     assert item["published"]["snapshot_id"] == snapshot.snapshot_id
 
 
+def test_review_inbox_marks_published_decision_with_publish_provenance(tmp_path: Path) -> None:
+    import json as _json
+    from agent_lexicon import publish_local_snapshot
+
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Maxim"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "nkvmaxim@gmail.com"], cwd=tmp_path, check=True)
+    state = _workspace_with_evidence(tmp_path)
+    state.save_review_decision(
+        "billing.update_credit_limit",
+        "accepted",
+        actor_type="human",
+        actor_source="web",
+        actor_id="Maxim",
+    )
+    snapshot = publish_local_snapshot(state, snapshot_id="snapshot_ui")
+
+    html = build_review_inbox_html(state, selected_surface="billing.update_credit_limit")
+    start = html.index('<script id="review-data" type="application/json">') + len(
+        '<script id="review-data" type="application/json">'
+    )
+    end = html.index("</script>", start)
+    payload = _json.loads(html[start:end])
+
+    item = next(i for i in payload["items"] if i["surface"] == "billing.update_credit_limit")
+    assert item["published"]["is_published"] is True
+    assert item["published"]["snapshot_id"] == snapshot.snapshot_id
+    assert item["published"]["provenance"]["actor"]["display_id"] == "Maxim"
+    assert item["published"]["provenance"]["actor"]["display_source"] == "cli"
+    assert item["published"]["provenance"]["result"] == "generated_term"
+    assert "publishedProvenanceLine" in html
+    assert "Show decision history" not in html
+
+
 def _drive_post_response(state, body: bytes, headers: dict) -> tuple[int | None, dict[str, str], str]:
     """Drive the review POST handler without a real socket."""
     import io
