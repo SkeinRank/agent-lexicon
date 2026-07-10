@@ -208,12 +208,7 @@ def _published_terms_by_surface(terms: list[dict[str, Any]]) -> dict[str, dict[s
 
 
 def _published_records_by_surface(root: str | Path) -> dict[str, dict[str, Any]]:
-    """Return publish provenance for candidates in the current snapshot.
-
-    The UI treats the newest snapshot as the currently published vocabulary.
-    Older snapshots remain available in the workspace decision log, but they
-    must not make a candidate look published after a newer snapshot replaced it.
-    """
+    """Return publish ledger entries from the newest workspace snapshot."""
     try:
         state = open_workspace(root, create=False)
         latest_snapshots = state.list_snapshots(limit=1)
@@ -228,17 +223,7 @@ def _published_records_by_surface(root: str | Path) -> dict[str, dict[str, Any]]
     for record in reversed(records):
         if record.subject != latest_snapshot_id:
             continue
-        payload = record.payload if isinstance(record.payload, Mapping) else {}
-        decisions = payload.get("published_decisions")
-        if not isinstance(decisions, list):
-            metadata = record.metadata if isinstance(record.metadata, Mapping) else {}
-            publish_metadata = metadata.get("publish", {}) if isinstance(metadata.get("publish", {}), Mapping) else {}
-            decisions = publish_metadata.get("published_decisions", [])
-        if not isinstance(decisions, list):
-            continue
-        for decision in decisions:
-            if not isinstance(decision, Mapping):
-                continue
+        for decision in _published_decisions_from_record(record):
             surface = str(decision.get("surface", "") or "").strip()
             normalized_surface = str(decision.get("normalized_surface", "") or "").strip()
             if not surface and not normalized_surface:
@@ -248,6 +233,47 @@ def _published_records_by_surface(root: str | Path) -> dict[str, dict[str, Any]]
                 if key and key not in published:
                     published[key] = ui_record
     return published
+
+
+def _publish_history_by_surface(root: str | Path) -> dict[str, list[dict[str, Any]]]:
+    """Return publish ledger history keyed by candidate surface.
+
+    This is intentionally based on publish checkpoints, not raw review clicks.
+    Each row says what state a reviewed candidate had when a snapshot was
+    published and whether that state was included in the lexicon.
+    """
+    try:
+        state = open_workspace(root, create=False)
+        records = state.list_decision_records(action=WorkspaceDecisionAction.SNAPSHOT_PUBLISHED)
+    except (WorkspaceError, OSError, ValueError):
+        return {}
+
+    history: dict[str, list[dict[str, Any]]] = {}
+    for record in reversed(records):
+        for decision in _published_decisions_from_record(record):
+            if not isinstance(decision, Mapping):
+                continue
+            surface = str(decision.get("surface", "") or "").strip()
+            normalized_surface = str(decision.get("normalized_surface", "") or "").strip()
+            if not surface and not normalized_surface:
+                continue
+            ui_record = _publish_record_as_ui_dict(record, decision)
+            for key in {surface.casefold(), normalized_surface.casefold()}:
+                if key:
+                    history.setdefault(key, []).append(ui_record)
+    return history
+
+
+def _published_decisions_from_record(record: Any) -> list[Mapping[str, Any]]:
+    payload = record.payload if isinstance(record.payload, Mapping) else {}
+    decisions = payload.get("published_decisions")
+    if not isinstance(decisions, list):
+        metadata = record.metadata if isinstance(record.metadata, Mapping) else {}
+        publish_metadata = metadata.get("publish", {}) if isinstance(metadata.get("publish", {}), Mapping) else {}
+        decisions = publish_metadata.get("published_decisions", [])
+    if not isinstance(decisions, list):
+        return []
+    return [decision for decision in decisions if isinstance(decision, Mapping)]
 
 
 def _publish_record_as_ui_dict(record: Any, decision: Mapping[str, Any]) -> dict[str, Any]:
@@ -261,8 +287,11 @@ def _publish_record_as_ui_dict(record: Any, decision: Mapping[str, Any]) -> dict
     return {
         "snapshot_id": str(record.subject or snapshot_payload.get("snapshot_id", "") or ""),
         "created_at": str(record.created_at or snapshot_payload.get("created_at", "") or ""),
+        "decision": str(decision.get("decision", "") or ""),
         "result": str(decision.get("result", "published") or "published"),
         "term_id": str(decision.get("term_id", "") or ""),
+        "included_in_lexicon": bool(decision.get("included_in_lexicon", decision.get("result") in {"generated_term", "skipped_existing_surface"})),
+        "review_decision": dict(decision.get("review_decision", {})) if isinstance(decision.get("review_decision", {}), Mapping) else {},
         "accepted_count": int(publish_metadata.get("accepted_count", snapshot_payload.get("accepted_count", 0)) or 0),
         "generated_term_count": int(publish_metadata.get("generated_term_count", snapshot_payload.get("generated_term_count", 0)) or 0),
         "skipped_count": int(publish_metadata.get("skipped_count", snapshot_payload.get("skipped_count", 0)) or 0),
@@ -482,6 +511,12 @@ h1 {
 }
 .provenance-line strong { color: var(--text); font-weight: 600; }
 .provenance-state { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
+.publish-history { margin: 14px 0 4px; }
+.publish-ledger-box { margin-top: 10px; border: 1px solid var(--line); border-radius: var(--radius-md); overflow: hidden; background: var(--panel); }
+.publish-history-row { display: grid; grid-template-columns: minmax(150px, 0.8fr) minmax(0, 2fr); gap: 14px; padding: 12px 14px; border-bottom: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+.publish-history-row:last-child { border-bottom: 0; }
+.publish-history-row strong { color: var(--text); }
+.publish-history-snapshot { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-word; }
 .metrics {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -768,6 +803,7 @@ _APP_JS = r"""
     h += '<span class="status '+statusClass(it)+'">'+esc(statusLabel(it))+'</span>';
     h += '</div>';
     if (chips) h += '<div style="margin:16px 0 4px">'+chips+'</div>';
+    h += publishHistorySection(it);
     h += '<h3 class="section-title">Where it appears</h3>';
     h += pos || '<div class="meta">No positive evidence stored.</div>';
     if (neg){ h += '<h3 class="section-title">Low-confidence matches</h3>' + neg; }
@@ -858,15 +894,40 @@ _APP_JS = r"""
   }
 
   function publishedProvenanceLine(it){
-    if (!it.published || !it.published.is_published || !it.published.provenance) return '';
-    var p = it.published.provenance;
-    var bits = ['<span class="provenance-state">Published</span>'];
-    bits.push('<strong>'+esc(p.snapshot_id || it.published.snapshot_id || 'snapshot')+'</strong>');
+    var p = it.publish_checkpoint || (it.published && it.published.provenance);
+    if (!p) return '';
+    var decision = publishDecisionLabel(p);
+    var bits = ['<span class="provenance-state">Latest publish</span>', '<strong>'+esc(decision)+'</strong>'];
+    bits.push(esc(p.snapshot_id || (it.published && it.published.snapshot_id) || 'snapshot'));
     bits.push(esc(actorLabel(p)));
     var git = gitLabel(p);
     if (git) bits.push(esc(git));
+    bits.push(p.included_in_lexicon ? 'in lexicon' : 'not in lexicon');
     if (p.created_at) bits.push(esc(shortDate(p.created_at)));
     return '<div class="provenance-line publish-line">'+bits.join(' · ')+'</div>';
+  }
+
+  function publishDecisionLabel(p){
+    if (!p) return 'Published';
+    if (p.decision === 'accepted') return 'Accepted';
+    if (p.decision === 'rejected') return 'Rejected';
+    if (p.decision === 'ambiguous') return 'Ambiguous';
+    if (p.decision === 'needs_split') return 'Needs split';
+    return p.included_in_lexicon ? 'Accepted' : 'Reviewed';
+  }
+
+  function publishHistorySection(it){
+    var rows = it.publish_history || [];
+    if (!rows.length) return '';
+    var body = rows.map(function(p){
+      var bits = ['<strong>'+esc(publishDecisionLabel(p))+'</strong>', esc(actorLabel(p))];
+      var git = gitLabel(p);
+      if (git) bits.push(esc(git));
+      bits.push(p.included_in_lexicon ? 'in lexicon' : 'not in lexicon');
+      if (p.created_at) bits.push(esc(shortDate(p.created_at)));
+      return '<div class="publish-history-row"><div class="publish-history-snapshot">'+esc(p.snapshot_id || 'snapshot')+'</div><div>'+bits.join(' · ')+'</div></div>';
+    }).join('');
+    return '<details class="publish-history"><summary class="scores-toggle">Show publish history</summary><div class="publish-ledger-box">'+body+'</div></details>';
   }
 
   function statusClass(it){ if(it.decision==='accepted')return'accepted'; if(it.decision==='rejected')return'rejected'; if(it.decision)return'ambiguous'; return''; }
@@ -1272,6 +1333,7 @@ def _handler_for_state(
                             item,
                             published_terms_by_surface=_published_terms_by_surface(_accepted_terms(state.root)),
                             published_records_by_surface=_published_records_by_surface(state.root),
+                            publish_history_by_surface=_publish_history_by_surface(state.root),
                         ) if item else None,
                     }
                 )
@@ -1382,6 +1444,7 @@ def _item_as_dict(
     *,
     published_terms_by_surface: Mapping[str, dict[str, Any]] | None = None,
     published_records_by_surface: Mapping[str, dict[str, Any]] | None = None,
+    publish_history_by_surface: Mapping[str, list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     cluster = _item_cluster(item)
     cluster_key = str(cluster.get("cluster_key", "") or "")
@@ -1394,14 +1457,17 @@ def _item_as_dict(
     )
     published_term = (published_terms_by_surface or {}).get(item.surface.casefold())
     publish_record = (published_records_by_surface or {}).get(item.surface.casefold()) or (published_records_by_surface or {}).get(item.normalized_surface.casefold())
-    published_snapshot_id = str((published_term or {}).get("snapshot_id", "") or (publish_record or {}).get("snapshot_id", "") or "")
+    publish_history = (publish_history_by_surface or {}).get(item.surface.casefold()) or (publish_history_by_surface or {}).get(item.normalized_surface.casefold()) or []
+    included_by_record = bool((publish_record or {}).get("included_in_lexicon", False))
+    is_published = bool(published_term or included_by_record)
+    published_snapshot_id = str((published_term or {}).get("snapshot_id", "") or ((publish_record or {}).get("snapshot_id", "") if is_published else "") or "")
     published_source = str((published_term or {}).get("source", "") or ("snapshot" if published_snapshot_id else ""))
     published = {
-        "is_published": bool(published_term or publish_record),
+        "is_published": is_published,
         "snapshot_id": published_snapshot_id,
         "source": published_source,
-        "created_at": str((published_term or {}).get("snapshot_created_at", "") or (publish_record or {}).get("created_at", "") or ""),
-        "provenance": publish_record,
+        "created_at": str((published_term or {}).get("snapshot_created_at", "") or ((publish_record or {}).get("created_at", "") if is_published else "") or ""),
+        "provenance": publish_record if is_published else None,
     }
     return {
         "surface": item.surface,
@@ -1422,6 +1488,8 @@ def _item_as_dict(
         "decision_metadata": dict(item.review_decision.metadata) if item.review_decision else {},
         "decision_provenance": decision_provenance,
         "published": published,
+        "publish_checkpoint": publish_record,
+        "publish_history": list(publish_history),
         "nums": {
             "Score": round(float(item.score), 3),
             "Jargon": round(float(item.jargon_score), 3),
@@ -1472,6 +1540,7 @@ def _render_page(
 ) -> str:
     lexicon_terms = _accepted_terms(root)
     published_terms_by_surface = _published_terms_by_surface(lexicon_terms)
+    publish_history_by_surface = _publish_history_by_surface(root)
     published_records_by_surface = _published_records_by_surface(root)
     payload = {
         "items": [
@@ -1479,6 +1548,7 @@ def _render_page(
                 item,
                 published_terms_by_surface=published_terms_by_surface,
                 published_records_by_surface=published_records_by_surface,
+                publish_history_by_surface=publish_history_by_surface,
             )
             for item in items
         ],

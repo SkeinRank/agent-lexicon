@@ -106,12 +106,16 @@ def publish_local_snapshot(
     state.ensure_schema()
     resolved_snapshot_id = _clean_text(snapshot_id, field_name="snapshot_id") if snapshot_id else _new_snapshot_id()
     created_at = _utc_now()
-    accepted_items = tuple(
+    reviewed_items = tuple(
         item for item in state.list_review_items(limit=10_000)
+        if item.review_decision is not None
+    )
+    accepted_items = tuple(
+        item for item in reviewed_items
         if item.review_decision is not None and item.review_decision.decision == ReviewDecisionStatus.ACCEPTED
     )
-    if not accepted_items:
-        raise SnapshotPublishError("no accepted review decisions are available to publish")
+    if not reviewed_items:
+        raise SnapshotPublishError("no reviewed decisions are available to publish")
 
     all_base_terms = tuple(base_lexicon.terms) if base_lexicon is not None else ()
     starter_terms = tuple(term for term in all_base_terms if _is_snapshot_hidden_starter_term(term))
@@ -127,30 +131,41 @@ def publish_local_snapshot(
     generated_terms: list[Term] = []
     skipped_surfaces: list[str] = []
     published_decisions: list[dict[str, Any]] = []
-    for item in sorted(accepted_items, key=lambda value: value.normalized_surface):
+    for item in sorted(reviewed_items, key=lambda value: value.normalized_surface):
+        if item.review_decision is None:
+            continue
+        decision = item.review_decision.decision
+        if decision != ReviewDecisionStatus.ACCEPTED:
+            published_decisions.append(
+                _publish_decision_entry(
+                    item,
+                    result=f"excluded_{decision.value}",
+                    term_id="",
+                    included_in_lexicon=False,
+                )
+            )
+            continue
         surface_key = item.surface.casefold()
         if surface_key in known_surfaces:
             skipped_surfaces.append(item.surface)
             published_decisions.append(
-                {
-                    "normalized_surface": item.normalized_surface,
-                    "surface": item.surface,
-                    "decision": ReviewDecisionStatus.ACCEPTED.value,
-                    "result": "skipped_existing_surface",
-                    "term_id": "",
-                }
+                _publish_decision_entry(
+                    item,
+                    result="skipped_existing_surface",
+                    term_id="",
+                    included_in_lexicon=True,
+                )
             )
             continue
         term_id = _unique_term_id(_term_id_from_surface(item.surface), known_term_ids)
         evidence = _evidence_from_item(item, snapshot_id=resolved_snapshot_id)
         published_decisions.append(
-            {
-                "normalized_surface": item.normalized_surface,
-                "surface": item.surface,
-                "decision": ReviewDecisionStatus.ACCEPTED.value,
-                "result": "generated_term",
-                "term_id": term_id,
-            }
+            _publish_decision_entry(
+                item,
+                result="generated_term",
+                term_id=term_id,
+                included_in_lexicon=True,
+            )
         )
         generated_terms.append(
             Term(
@@ -184,6 +199,7 @@ def publish_local_snapshot(
             "snapshot_id": resolved_snapshot_id,
             "created_at": created_at,
             "source": "local_workspace",
+            "reviewed_count": len(reviewed_items),
             "accepted_count": len(accepted_items),
             "generated_term_count": len(generated_terms),
             "skipped_count": len(skipped_surfaces),
@@ -221,6 +237,7 @@ def publish_local_snapshot(
         metadata={
             "base_term_count": len(base_terms),
             "starter_terms_dropped": [term.id for term in starter_terms],
+            "reviewed_count": len(reviewed_items),
             "published_decisions": list(published_decisions),
             "publish": {
                 "actor_type": actor_type,
@@ -236,6 +253,26 @@ def publish_local_snapshot(
     except WorkspaceError as exc:
         raise SnapshotPublishError(str(exc)) from exc
     return snapshot
+
+
+def _publish_decision_entry(
+    item: WorkspaceReviewItem,
+    *,
+    result: str,
+    term_id: str,
+    included_in_lexicon: bool,
+) -> dict[str, Any]:
+    if item.review_decision is None:
+        raise SnapshotPublishError("review_decision is required for publish ledger entries")
+    return {
+        "normalized_surface": item.normalized_surface,
+        "surface": item.surface,
+        "decision": item.review_decision.decision.value,
+        "result": result,
+        "term_id": term_id,
+        "included_in_lexicon": bool(included_in_lexicon),
+        "review_decision": item.review_decision.to_dict(),
+    }
 
 
 def _evidence_from_item(item: WorkspaceReviewItem, *, snapshot_id: str) -> tuple[EvidenceSpan, ...]:

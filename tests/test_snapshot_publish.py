@@ -88,15 +88,15 @@ def test_publish_local_snapshot_records_publish_provenance(tmp_path: Path) -> No
     assert record.metadata["actor"] == {"type": "human", "id": "Maxim", "source": "cli"}
     assert record.metadata["git"]["author_name"] == "Maxim"
     assert record.metadata["publish"]["snapshot_id"] == "snapshot_actor"
-    assert record.payload["published_decisions"] == [
-        {
-            "normalized_surface": "billing.update_credit_limit",
-            "surface": "billing.update_credit_limit",
-            "decision": "accepted",
-            "result": "generated_term",
-            "term_id": "billing.update_credit_limit",
-        }
-    ]
+    assert len(record.payload["published_decisions"]) == 1
+    published_decision = record.payload["published_decisions"][0]
+    assert published_decision["normalized_surface"] == "billing.update_credit_limit"
+    assert published_decision["surface"] == "billing.update_credit_limit"
+    assert published_decision["decision"] == "accepted"
+    assert published_decision["result"] == "generated_term"
+    assert published_decision["term_id"] == "billing.update_credit_limit"
+    assert published_decision["included_in_lexicon"] is True
+    assert published_decision["review_decision"]["note"] == "Ready for snapshot"
 
 
 def test_publish_local_snapshot_can_include_base_lexicon_and_skip_existing_surfaces(tmp_path: Path) -> None:
@@ -117,15 +117,38 @@ def test_publish_local_snapshot_can_include_base_lexicon_and_skip_existing_surfa
     assert snapshot.skipped_surfaces == ("billing.update_credit_limit",)
 
 
-def test_publish_local_snapshot_requires_accepted_reviews(tmp_path: Path) -> None:
+def test_publish_local_snapshot_requires_reviewed_decisions(tmp_path: Path) -> None:
     state = init_workspace(tmp_path)
 
     try:
         publish_local_snapshot(state, output_path=tmp_path / "snapshot.json")
     except SnapshotPublishError as exc:
-        assert "no accepted review decisions" in str(exc)
+        assert "no reviewed decisions" in str(exc)
     else:  # pragma: no cover - defensive branch
         raise AssertionError("expected SnapshotPublishError")
+
+
+def test_publish_local_snapshot_records_rejected_decisions_in_publish_ledger(tmp_path: Path) -> None:
+    from agent_lexicon.workspace import WorkspaceDecisionAction
+
+    state = _workspace_with_reviewed_candidate(tmp_path)
+    rejected_item = next(
+        item for item in state.list_review_items(limit=10)
+        if item.normalized_surface != "billing.update_credit_limit"
+    )
+    state.save_review_decision(rejected_item.normalized_surface, "rejected", note="Do not promote")
+
+    snapshot = publish_local_snapshot(state, snapshot_id="snapshot_ledger")
+
+    records = state.list_decision_records(action=WorkspaceDecisionAction.SNAPSHOT_PUBLISHED)
+    assert len(records) == 1
+    decisions = {entry["surface"]: entry for entry in records[0].payload["published_decisions"]}
+    assert snapshot.accepted_count == 1
+    assert decisions["billing.update_credit_limit"]["included_in_lexicon"] is True
+    assert decisions[rejected_item.surface]["decision"] == "rejected"
+    assert decisions[rejected_item.surface]["result"] == "excluded_rejected"
+    assert decisions[rejected_item.surface]["included_in_lexicon"] is False
+    assert decisions[rejected_item.surface]["review_decision"]["note"] == "Do not promote"
 
 
 def test_cli_workspace_publish_snapshot(tmp_path: Path, capsys) -> None:
