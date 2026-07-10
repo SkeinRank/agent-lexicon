@@ -86,3 +86,59 @@ def test_update_lexicon_supports_json_lexicon(tmp_path: Path) -> None:
     assert report.metadata["lexicon_updated_path"] == str(json_lexicon)
     reloaded = load_lexicon(json_lexicon)
     assert any("contextspace" in term.canonical.casefold() for term in reloaded.terms)
+
+
+def test_update_lexicon_works_without_pyyaml_installed(tmp_path: Path, monkeypatch) -> None:
+    """CI installs only `poetry install --with dev`, which does not include
+    PyYAML - --update-lexicon must not hard-require it. Reproduces the
+    ModuleNotFoundError seen in CI by forcing the optional import to fail.
+    """
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _blocked_import(name, *args, **kwargs):
+        if name == "yaml":
+            raise ModuleNotFoundError("No module named 'yaml'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _blocked_import)
+
+    _prepare_workspace(tmp_path)
+    lexicon_file = tmp_path / "lexicon" / "lexicon.yaml"
+
+    report = run_simple_publish(tmp_path, update_lexicon=True)
+
+    assert report.metadata["lexicon_updated_path"] == str(lexicon_file)
+    reloaded = load_lexicon(lexicon_file)
+    assert any("contextspace" in term.canonical.casefold() for term in reloaded.terms)
+
+
+def test_basic_yaml_writer_quotes_numeric_looking_strings() -> None:
+    from agent_lexicon.workflows.simple import _dump_basic_yaml
+    from agent_lexicon.core.loader import _load_basic_yaml
+
+    payload = {"version": "1", "count": "007", "ratio": "3.14", "label": "normal"}
+    text = _dump_basic_yaml(payload)
+    reloaded = _load_basic_yaml(text)
+    assert reloaded == payload  # numeric-looking strings must round-trip as strings
+
+
+def test_basic_yaml_writer_handles_empty_and_nested_collections() -> None:
+    from agent_lexicon.workflows.simple import _dump_basic_yaml
+    from agent_lexicon.core.loader import _load_basic_yaml
+
+    payload = {
+        "terms": [
+            {
+                "id": "t",
+                "tags": ["a", "b"],
+                "aliases": [],
+                "scopes": [],
+            }
+        ],
+        "proposals": [],
+    }
+    text = _dump_basic_yaml(payload)
+    reloaded = _load_basic_yaml(text)
+    assert reloaded == payload

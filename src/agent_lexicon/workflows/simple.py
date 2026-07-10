@@ -11,6 +11,7 @@ intended for the common local loop:
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -548,27 +549,108 @@ def run_simple_publish(
 def _write_lexicon_file(lexicon: Any, path: Path) -> Path:
     """Write a lexicon back to its git-tracked file in the file's own format.
 
-    YAML files require PyYAML - which is already guaranteed present, because
-    the same YAML file could not have been *loaded* without it. JSON files
-    use the standard library. The rewrite is atomic. Note: hand-written YAML
-    comments are not preserved by a rewrite.
+    Agent Lexicon is zero-dependency by design (see core.loader._load_basic_yaml
+    for the read-side equivalent), so this must not hard-require PyYAML. When
+    PyYAML is installed it is used for a fuller-featured dump; otherwise a
+    minimal built-in writer handles the plain mapping/list/scalar shape that
+    Lexicon.to_dict() always produces. JSON files use the standard library
+    either way. The rewrite is atomic. Note: hand-written YAML comments are
+    not preserved by a rewrite.
     """
     from agent_lexicon.core.files import atomic_write_text
 
     payload = lexicon.to_dict()
     suffix = path.suffix.casefold()
     if suffix in {".yaml", ".yml"}:
-        try:  # pragma: no cover - import branch depends on the environment
-            import yaml
-        except ModuleNotFoundError as exc:  # pragma: no cover
-            raise SimpleWorkflowError(
-                "PyYAML is required to update a YAML lexicon file; install pyyaml or use a JSON lexicon"
-            ) from exc
-        text = yaml.safe_dump(payload, sort_keys=False, allow_unicode=True, default_flow_style=False)
+        try:
+            import yaml  # noqa: PLC0415 - optional dependency, imported lazily
+        except ModuleNotFoundError:
+            text = _dump_basic_yaml(payload)
+        else:
+            text = yaml.safe_dump(payload, sort_keys=False, allow_unicode=True, default_flow_style=False)
     else:
         text = json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True) + "\n"
     atomic_write_text(path, text)
     return path
+
+
+def _dump_basic_yaml(value: Any, *, indent: int = 0) -> str:
+    """Serialize the plain mapping/list/scalar shape produced by Lexicon.to_dict().
+
+    Mirrors core.loader._load_basic_yaml on the write side so the package
+    stays usable without PyYAML installed. Handles dict, list, str, bool,
+    int, float, and None - the only types Lexicon.to_dict() ever produces.
+    The basic reader has no inline "{}" support, so empty mappings are
+    omitted (round-trips fine: an absent key loads back as the model's
+    default empty mapping).
+    """
+    pad = "  " * indent
+    if isinstance(value, Mapping):
+        if not value:
+            return pad + "{}\n"
+        lines = []
+        for key, item in value.items():
+            rendered_key = _dump_scalar(key)
+            if isinstance(item, Mapping) and item:
+                lines.append(f"{pad}{rendered_key}:")
+                lines.append(_dump_basic_yaml(item, indent=indent + 1).rstrip("\n"))
+            elif isinstance(item, list) and item:
+                lines.append(f"{pad}{rendered_key}:")
+                lines.append(_dump_basic_yaml(item, indent=indent + 1).rstrip("\n"))
+            elif isinstance(item, Mapping):
+                continue  # empty mapping: omit key, loads back as default {}
+            elif isinstance(item, list):
+                lines.append(f"{pad}{rendered_key}: []")
+            else:
+                lines.append(f"{pad}{rendered_key}: {_dump_scalar(item)}")
+        return "\n".join(lines) + "\n"
+    if isinstance(value, list):
+        if not value:
+            return pad + "[]\n"
+        lines = []
+        for item in value:
+            if isinstance(item, Mapping) and item:
+                item_lines = _dump_basic_yaml(item, indent=indent + 1).rstrip("\n").splitlines()
+                # item_lines[0] is "<pad+2>key: value" or "<pad+2>key:"; fold the
+                # first field onto the "- " marker, keep the rest indented as-is.
+                first_line = item_lines[0].lstrip()
+                lines.append(f"{pad}- {first_line}")
+                lines.extend(item_lines[1:])
+            elif isinstance(item, Mapping):
+                lines.append(f"{pad}- {{}}")
+            elif isinstance(item, list):
+                nested = _dump_basic_yaml(item, indent=indent + 1).rstrip("\n").splitlines()
+                lines.append(f"{pad}- {nested[0].lstrip()}")
+                lines.extend(nested[1:])
+            else:
+                lines.append(f"{pad}- {_dump_scalar(item)}")
+        return "\n".join(lines) + "\n"
+    return pad + _dump_scalar(value) + "\n"
+
+
+_NUMERIC_LOOKING = re.compile(r"^[+-]?(\d+\.?\d*|\.\d+)$")
+
+
+def _dump_scalar(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    text = str(value)
+    needs_quoting = (
+        text == ""
+        or text.strip() != text
+        or text.casefold() in {"null", "true", "false", "~"}
+        or bool(_NUMERIC_LOOKING.match(text))
+        or any(character in text for character in ":#{}[]&*!|>'\"%@`,")
+        or text[:1] in "-?"
+    )
+    if needs_quoting:
+        escaped = text.replace("\\", "\\\\").replace('"', '\\"')
+        return f'"{escaped}"'
+    return text
 
 
 def _resolve_scan_paths(paths: Sequence[str | Path] | None, *, root: Path) -> tuple[Path, ...]:
