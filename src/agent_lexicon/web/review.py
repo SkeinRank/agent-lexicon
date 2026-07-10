@@ -504,19 +504,43 @@ h1 {
   font-size: 13px;
   margin-top: 7px;
 }
-.provenance-line {
-  margin-top: 7px;
+.state-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 10px;
+  max-width: 760px;
+}
+.state-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
   color: var(--muted);
   font-size: 12px;
 }
-.provenance-line strong { color: var(--text); font-weight: 600; }
-.provenance-state { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
+.state-row strong { color: var(--text); font-weight: 650; }
+.state-label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
+.state-badge { border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; color: var(--muted); background: var(--soft); font-size: 11px; }
+.state-badge.ok { background: var(--ok); color: #1d5f2f; }
+.state-badge.warn { background: var(--warn); color: #7a4d00; }
 .publish-history { margin: 14px 0 4px; }
+.publish-history > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+}
+.publish-history-count { border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; color: var(--muted); background: var(--soft); font-size: 11px; }
 .publish-ledger-box { margin-top: 10px; border: 1px solid var(--line); border-radius: var(--radius-md); overflow: hidden; background: var(--panel); }
-.publish-history-row { display: grid; grid-template-columns: minmax(150px, 0.8fr) minmax(0, 2fr); gap: 14px; padding: 12px 14px; border-bottom: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+.publish-history-row { display: grid; grid-template-columns: minmax(145px, 0.78fr) minmax(0, 2fr); gap: 14px; padding: 12px 14px; border-bottom: 1px solid var(--line); font-size: 12px; color: var(--muted); }
 .publish-history-row:last-child { border-bottom: 0; }
 .publish-history-row strong { color: var(--text); }
-.publish-history-snapshot { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-word; }
+.publish-history-snapshot { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-word; color: var(--text); }
+.publish-history-meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.publish-history-note { color: var(--muted); font-size: 11px; margin-top: 3px; }
 .metrics {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -796,8 +820,7 @@ _APP_JS = r"""
     h += '<div class="detail-head"><div>';
     h += '<h2 class="detail-title" style="font-family:ui-monospace,Menlo,monospace">'+esc(it.surface)+'</h2>';
     h += '<div class="kind">'+esc(it.kind)+' \u00b7 appears '+it.occurrences+' times in '+it.documents+' files \u00b7 '+priorityWord(it)+' priority</div>';
-    h += currentProvenanceLine(it);
-    h += publishedProvenanceLine(it);
+    h += compactStateSummary(it);
     h += clusterNote;
     h += '</div>';
     h += '<span class="status '+statusClass(it)+'">'+esc(statusLabel(it))+'</span>';
@@ -875,36 +898,46 @@ _APP_JS = r"""
     return String(value).replace('T', ' ').replace('+00:00', ' UTC');
   }
 
-  function currentProvenanceLine(it){
-    if (!isDecided(it)) return '';
+  function compactStateSummary(it){
+    var rows = [];
+    if (isDecided(it)) rows.push(currentStateRow(it));
+    var p = latestPublishCheckpoint(it);
+    if (p) rows.push(latestPublishRow(p));
+    if (!rows.length) return '';
+    return '<div class="state-summary">'+rows.join('')+'</div>';
+  }
+
+  function currentStateRow(it){
     var ev = currentDecisionEvent(it);
-    var bits = ['<span class="provenance-state">Current decision</span>', '<strong>'+esc(statusLabel(it))+'</strong>'];
+    var bits = ['<span class="state-label">Current</span>', '<strong>'+esc(statusLabel(it))+'</strong>'];
     if (ev) {
       bits.push(esc(actorLabel(ev)));
-      var git = gitLabel(ev);
-      if (git) bits.push(esc(git));
-      if (ev.created_at) bits.push(esc(shortDate(ev.created_at)));
     } else {
       bits.push('Local decision');
     }
     if (it.decision === 'accepted') {
-      bits.push((it.published && it.published.is_published) ? 'published' : 'publish pending');
+      var cls = (it.published && it.published.is_published) ? 'ok' : 'warn';
+      var label = (it.published && it.published.is_published) ? 'published' : 'publish pending';
+      bits.push('<span class="state-badge '+cls+'">'+label+'</span>');
     }
-    return '<div class="provenance-line">'+bits.join(' · ')+'</div>';
+    return '<div class="state-row">'+bits.join(' · ')+'</div>';
   }
 
-  function publishedProvenanceLine(it){
-    var p = it.publish_checkpoint || (it.published && it.published.provenance);
-    if (!p) return '';
-    var decision = publishDecisionLabel(p);
-    var bits = ['<span class="provenance-state">Latest publish</span>', '<strong>'+esc(decision)+'</strong>'];
-    bits.push(esc(p.snapshot_id || (it.published && it.published.snapshot_id) || 'snapshot'));
-    bits.push(esc(actorLabel(p)));
-    var git = gitLabel(p);
-    if (git) bits.push(esc(git));
-    bits.push(p.included_in_lexicon ? 'in lexicon' : 'not in lexicon');
-    if (p.created_at) bits.push(esc(shortDate(p.created_at)));
-    return '<div class="provenance-line publish-line">'+bits.join(' · ')+'</div>';
+  function latestPublishCheckpoint(it){
+    return it.publish_checkpoint || (it.published && it.published.provenance) || null;
+  }
+
+  function latestPublishRow(p){
+    var bits = ['<span class="state-label">Latest publish</span>', '<strong>'+esc(publishDecisionLabel(p))+'</strong>'];
+    bits.push(esc(shortSnapshot(p.snapshot_id || 'snapshot')));
+    bits.push('<span class="state-badge '+(p.included_in_lexicon ? 'ok' : 'warn')+'">'+(p.included_in_lexicon ? 'in lexicon' : 'not in lexicon')+'</span>');
+    return '<div class="state-row">'+bits.join(' · ')+'</div>';
+  }
+
+  function shortSnapshot(snapshotId){
+    var value = String(snapshotId || 'snapshot');
+    if (value.length <= 28) return value;
+    return value.slice(0, 18) + '…' + value.slice(-8);
   }
 
   function publishDecisionLabel(p){
@@ -919,15 +952,17 @@ _APP_JS = r"""
   function publishHistorySection(it){
     var rows = it.publish_history || [];
     if (!rows.length) return '';
-    var body = rows.map(function(p){
-      var bits = ['<strong>'+esc(publishDecisionLabel(p))+'</strong>', esc(actorLabel(p))];
+    var body = rows.map(function(p, i){
+      var stateBadge = '<span class="state-badge '+(p.included_in_lexicon ? 'ok' : 'warn')+'">'+(p.included_in_lexicon ? 'in lexicon' : 'not in lexicon')+'</span>';
+      var bits = ['<strong>'+esc(publishDecisionLabel(p))+'</strong>', stateBadge, esc(actorLabel(p))];
       var git = gitLabel(p);
       if (git) bits.push(esc(git));
-      bits.push(p.included_in_lexicon ? 'in lexicon' : 'not in lexicon');
       if (p.created_at) bits.push(esc(shortDate(p.created_at)));
-      return '<div class="publish-history-row"><div class="publish-history-snapshot">'+esc(p.snapshot_id || 'snapshot')+'</div><div>'+bits.join(' · ')+'</div></div>';
+      var marker = i === 0 ? '<div class="publish-history-note">latest publish checkpoint</div>' : '';
+      return '<div class="publish-history-row"><div><div class="publish-history-snapshot">'+esc(p.snapshot_id || 'snapshot')+'</div>'+marker+'</div><div><div class="publish-history-meta">'+bits.join(' · ')+'</div></div></div>';
     }).join('');
-    return '<details class="publish-history"><summary class="scores-toggle">Show publish history</summary><div class="publish-ledger-box">'+body+'</div></details>';
+    var label = rows.length === 1 ? '1 checkpoint' : rows.length + ' checkpoints';
+    return '<details class="publish-history"><summary><span>Published history</span><span class="publish-history-count">'+label+'</span></summary><div class="publish-ledger-box">'+body+'</div></details>';
   }
 
   function statusClass(it){ if(it.decision==='accepted')return'accepted'; if(it.decision==='rejected')return'rejected'; if(it.decision)return'ambiguous'; return''; }

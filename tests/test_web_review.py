@@ -265,7 +265,8 @@ def test_review_inbox_marks_published_decision_with_publish_provenance(tmp_path:
     assert item["published"]["provenance"]["actor"]["display_id"] == "Maxim"
     assert item["published"]["provenance"]["actor"]["display_source"] == "cli"
     assert item["published"]["provenance"]["result"] == "generated_term"
-    assert "publishedProvenanceLine" in html
+    assert "compactStateSummary" in html
+    assert "Published history" in html
     assert "Show decision history" not in html
 
 
@@ -436,8 +437,8 @@ def test_review_inbox_renders_current_decision_ui_without_raw_click_history(tmp_
 
     html = build_review_inbox_html(state, selected_surface="billing.update_credit_limit")
 
-    assert "currentProvenanceLine" in html
-    assert "Current decision" in html
+    assert "compactStateSummary" in html
+    assert "Current" in html
     assert "decision_provenance" in html
     assert "Show decision history" not in html
     assert "history-box" not in html
