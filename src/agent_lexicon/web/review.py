@@ -13,7 +13,7 @@ import subprocess
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from agent_lexicon.policy import (
@@ -523,6 +523,7 @@ _APP_JS = r"""
   var search = '';
   var filter = 'all';
   var collapsed = {};
+  var historyOpen = {};
 
   items.forEach(function(it){
     if (it.cluster_key && it.cluster_size > 1) {
@@ -531,6 +532,7 @@ _APP_JS = r"""
   });
   var sel = DATA.selected;
   if (sel) { for (var i=0;i<items.length;i++){ if(items[i].normalized_surface===sel){ idx=i; break; } } }
+  if (DATA.historyOpen && sel) historyOpen[sel] = true;
 
   function esc(s){ return String(s).replace(/[&<>"]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
   function isDecided(it){ return it.decision != null; }
@@ -687,11 +689,20 @@ _APP_JS = r"""
     return null;
   }
 
+  function isLocalActorId(value){
+    var cleaned = String(value || '').trim().toLowerCase();
+    return cleaned === '' || cleaned === 'local' || cleaned === 'unknown' || cleaned === 'unknown-actor';
+  }
+
   function actorLabel(ev){
     if (!ev || !ev.actor) return 'Local decision';
     var id = ev.actor.display_id || ev.actor.id || ev.reviewer || 'Human';
     var source = ev.actor.display_source || ev.actor.source || 'local';
-    if (source === 'local') return id === 'Human' ? 'Local decision' : id + ' via local';
+    id = isLocalActorId(id) ? 'Human' : id;
+    source = String(source || '').trim().toLowerCase();
+    if (!source || source === 'unknown' || source === 'local') {
+      return id === 'Human' ? 'Local decision' : id + ' local decision';
+    }
     return id + ' via ' + source;
   }
 
@@ -729,7 +740,8 @@ _APP_JS = r"""
       var note = ev.note ? '<div class="history-note">'+esc(ev.note)+'</div>' : '';
       return '<div class="history-row"><div class="history-time">'+esc(shortDate(ev.created_at))+'</div><div class="history-main">'+mainBits.join(' · ')+note+'</div></div>';
     }).join('');
-    return '<details><summary class="history-toggle">Show decision history</summary><div class="history-box">'+rows+'</div></details>';
+    var open = historyOpen[it.normalized_surface] ? ' open' : '';
+    return '<details data-history-surface="'+esc(it.normalized_surface)+'"'+open+'><summary class="history-toggle">Show decision history</summary><div class="history-box">'+rows+'</div></details>';
   }
 
   function statusClass(it){ if(it.decision==='accepted')return'accepted'; if(it.decision==='rejected')return'rejected'; if(it.decision)return'ambiguous'; return''; }
@@ -811,6 +823,7 @@ _APP_JS = r"""
     var f = document.getElementById('f');
     if (f) f.onchange = function(){ filter = f.value; var v=visibleIndexes(); if(v.indexOf(idx)===-1 && v.length) idx=v[0]; updateList(); };
     bindList();
+    bindHistoryToggles();
     app.querySelectorAll('[data-act]').forEach(function(b){ b.onclick = function(){ decide(idx, b.dataset.act); }; });
     var sk = app.querySelector('[data-skip]'); if (sk) sk.onclick = function(){ next(); };
     var un = app.querySelector('[data-undo]'); if (un) un.onclick = function(){ undo(); };
@@ -822,20 +835,49 @@ _APP_JS = r"""
     app.querySelectorAll('.cluster-head').forEach(function(c){ c.onclick = function(){ var k=c.dataset.cluster; collapsed[k]=!collapsed[k]; updateList(); }; });
   }
 
+  function bindHistoryToggles(){
+    app.querySelectorAll('[data-history-surface]').forEach(function(d){
+      d.ontoggle = function(){ historyOpen[d.dataset.historySurface] = d.open; };
+    });
+  }
+
   function updateList(){
     var listEl = document.getElementById('sblist');
     if (listEl) listEl.innerHTML = renderListInner();
     bindList();
   }
 
+  function replaceItem(updated){
+    if (!updated || !updated.normalized_surface) return;
+    for (var i = 0; i < items.length; i++){
+      if (items[i].normalized_surface === updated.normalized_surface){
+        items[i] = updated;
+        return;
+      }
+    }
+  }
+
+  function postAction(body){
+    body += '&response=json';
+    return fetch('/decision', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body: body})
+      .then(function(resp){
+        if (!resp.ok) throw new Error('review decision failed');
+        return resp.json();
+      })
+      .then(function(payload){
+        if (payload && payload.item) replaceItem(payload.item);
+        return payload;
+      });
+  }
+
   function post(surface, decision){
     var body = 'surface='+encodeURIComponent(surface)+'&decision='+encodeURIComponent(decision)+'&note=';
-    return fetch('/decision', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body: body});
+    return postAction(body);
   }
 
   function clearDecision(surface){
     var body = 'surface='+encodeURIComponent(surface)+'&action=clear&note=';
-    return fetch('/decision', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body: body});
+    return postAction(body);
   }
 
   var history = [];
@@ -867,7 +909,7 @@ _APP_JS = r"""
     var it = items[i];
     rememberDecisionChange(i);
     it.decision = decision;
-    post(it.normalized_surface, decision);
+    post(it.normalized_surface, decision).then(function(){ render(); }).catch(function(){ window.location = '/?surface=' + encodeURIComponent(it.normalized_surface); });
     render();
     setTimeout(next, 100);
   }
@@ -883,21 +925,23 @@ _APP_JS = r"""
       var it = items[targetIndex];
       if (!it) return;
       it.decision = last.prev;
-      if (last.prev) post(it.normalized_surface, last.prev);
-      else clearDecision(it.normalized_surface);
+      var undoRequest = last.prev ? post(it.normalized_surface, last.prev) : clearDecision(it.normalized_surface);
       idx = targetIndex;
+      undoRequest.then(function(){ render(); }).catch(function(){ window.location = '/?surface=' + encodeURIComponent(it.normalized_surface); });
       render();
       return;
     }
     if (!isDecided(current)) return;
     current.decision = null;
-    clearDecision(current.normalized_surface);
+    clearDecision(current.normalized_surface).then(function(){ render(); }).catch(function(){ window.location = '/?surface=' + encodeURIComponent(current.normalized_surface); });
     render();
   }
 
   function acceptCluster(key){
     if (DATA.readOnly) return;
-    items.forEach(function(it, i){ if (it.cluster_key === key){ rememberDecisionChange(i); it.decision='accepted'; post(it.normalized_surface,'accepted'); } });
+    var requests = [];
+    items.forEach(function(it, i){ if (it.cluster_key === key){ rememberDecisionChange(i); it.decision='accepted'; requests.push(post(it.normalized_surface,'accepted')); } });
+    Promise.all(requests).then(function(){ render(); }).catch(function(){ render(); });
     render();
     setTimeout(next, 100);
   }
@@ -932,6 +976,7 @@ def build_review_inbox_html(
     actor: str = "local",
     role: str | None = None,
     policy_mode: str | None = None,
+    history_open: bool = False,
 ) -> str:
     """Render the local proposal inbox as a complete HTML document."""
     if not isinstance(state, WorkspaceStore):
@@ -947,6 +992,7 @@ def build_review_inbox_html(
         root=str(state.root),
         policy_decision=policy_decision,
         review_events=review_events,
+        history_open=history_open,
     )
 
 
@@ -1025,6 +1071,7 @@ def _handler_for_state(
                 return
             params = parse_qs(parsed.query)
             selected_surface = params.get("surface", [None])[0]
+            history_open = params.get("history", [""])[0] in {"1", "true", "yes"}
             try:
                 content = build_review_inbox_html(
                     state,
@@ -1032,6 +1079,7 @@ def _handler_for_state(
                     actor=policy_decision.actor,
                     role=policy_decision.role.value,
                     policy_mode=policy_decision.mode.value,
+                    history_open=history_open,
                 )
             except (ReviewInboxError, WorkspaceError, LocalPolicyError) as exc:
                 self._send_text(f"Review inbox error: {exc}\n", status=500)
@@ -1065,6 +1113,8 @@ def _handler_for_state(
             decision = form.get("decision", [""])[0]
             action = form.get("action", ["save"])[0]
             note = form.get("note", [""])[0]
+            response_mode = form.get("response", ["redirect"])[0]
+            history_open = form.get("history", [""])[0] in {"1", "true", "yes"}
             if not policy_decision.is_allowed:
                 self._send_text(f"Policy denied review decision: {policy_decision.reason}\n", status=403)
                 return
@@ -1094,13 +1144,34 @@ def _handler_for_state(
             except (ValueError, WorkspaceError) as exc:
                 self._send_text(f"Invalid review decision: {exc}\n", status=400)
                 return
+            if response_mode == "json":
+                item = state.get_review_item(normalized_surface)
+                review_events = state.list_review_events(limit=2000)
+                self._send_json(
+                    {
+                        "ok": True,
+                        "surface": normalized_surface,
+                        "item": _item_as_dict(item, review_events=review_events) if item else None,
+                    }
+                )
+                return
             location = f"/?surface={quote(normalized_surface)}"
+            if history_open:
+                location += "&history=1"
             self.send_response(303)
             self.send_header("Location", location)
             self.end_headers()
 
         def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - stdlib signature
             return
+
+        def _send_json(self, payload: Mapping[str, Any], *, status: int = 200) -> None:
+            encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
 
         def _send_html(self, content: str, *, status: int = 200) -> None:
             encoded = content.encode("utf-8")
@@ -1268,6 +1339,7 @@ def _render_page(
     root: str,
     policy_decision: PolicyDecision,
     review_events: tuple[WorkspaceReviewEvent, ...] = (),
+    history_open: bool = False,
 ) -> str:
     payload = {
         "items": [_item_as_dict(item, review_events=review_events) for item in items],
@@ -1275,6 +1347,7 @@ def _render_page(
         "readOnly": not policy_decision.is_allowed,
         "policy": f"{policy_decision.mode.value} · {policy_decision.role.value}",
         "selected": selected.normalized_surface if selected is not None else "",
+        "historyOpen": bool(history_open),
         "lexicon": _accepted_terms(root),
     }
     data_json = json.dumps(payload).replace("</", "<\\/")

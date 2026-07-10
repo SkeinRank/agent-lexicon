@@ -192,8 +192,8 @@ proposals: []
     assert term["aliases"] == ["credit limit"]
 
 
-def _drive_post(state, body: bytes, headers: dict) -> str:
-    """Drive the review POST handler without a real socket; return status line."""
+def _drive_post_response(state, body: bytes, headers: dict) -> tuple[int | None, dict[str, str], str]:
+    """Drive the review POST handler without a real socket."""
     import io
     from http.client import HTTPMessage
     from agent_lexicon.web.review import _handler_for_state
@@ -212,21 +212,32 @@ def _drive_post(state, body: bytes, headers: dict) -> str:
             self.path = "/decision"
             self.command = "POST"
             self.headers = HTTPMessage()
+            self.response_status = None
+            self.response_headers = {}
             for k, v in headers.items():
                 self.headers[k] = v
 
         def send_response(self, code, message=None):
-            self.wfile.write(f"STATUS {code}".encode())
+            self.response_status = code
+            self.wfile.write(f"STATUS {code}\n".encode())
 
         def send_header(self, k, v):
-            pass
+            self.response_headers[k] = v
 
         def end_headers(self):
-            pass
+            self.wfile.write(b"\n")
 
     h = H(body)
     h.do_POST()
-    return h.wfile.getvalue().decode(errors="replace").split("\n")[0]
+    raw = h.wfile.getvalue().decode(errors="replace")
+    body_text = raw.split("\n\n", 1)[1] if "\n\n" in raw else ""
+    return h.response_status, h.response_headers, body_text
+
+
+def _drive_post(state, body: bytes, headers: dict) -> str:
+    """Drive the review POST handler without a real socket; return status line."""
+    status, _headers, _body = _drive_post_response(state, body, headers)
+    return f"STATUS {status}"
 
 
 def test_review_inbox_undo_targets_selected_candidate_history(tmp_path: Path) -> None:
@@ -348,6 +359,8 @@ def test_review_inbox_renders_provenance_ui_and_centered_status_styles(tmp_path:
     assert "currentProvenanceLine" in html
     assert "Show decision history" in html
     assert "history-box" in html
+    assert "data-history-surface" in html
+    assert "historyOpen" in html
     assert "align-items: center" in html
     assert "detail-head .status" in html
 
@@ -364,6 +377,69 @@ def test_review_post_resolves_web_actor_from_git_config(tmp_path: Path) -> None:
     event = state.list_review_events()[0]
     assert event.metadata["actor"] == {"type": "human", "id": "Maxim", "source": "web"}
     assert event.metadata["git"]["author_name"] == "Maxim"
+
+
+def test_review_post_json_response_returns_updated_item_history(tmp_path: Path) -> None:
+    import json as _json
+
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Maxim"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "nkvmaxim@gmail.com"], cwd=tmp_path, check=True)
+    state = _workspace_with_evidence(tmp_path)
+
+    body = b"surface=billing.update_credit_limit&decision=accepted&note=&response=json"
+    status, headers, response_body = _drive_post_response(state, body, {"Content-Length": str(len(body))})
+
+    assert status == 200
+    assert headers["Content-Type"] == "application/json; charset=utf-8"
+    payload = _json.loads(response_body)
+    assert payload["ok"] is True
+    assert payload["item"]["decision"] == "accepted"
+    assert payload["item"]["history"][-1]["actor"]["display_id"] == "Maxim"
+    assert payload["item"]["history"][-1]["actor"]["display_source"] == "web"
+
+
+def test_review_redirect_preserves_open_history_flag(tmp_path: Path) -> None:
+    state = _workspace_with_evidence(tmp_path)
+
+    body = b"surface=billing.update_credit_limit&decision=accepted&note=&history=1"
+    status, headers, _response_body = _drive_post_response(state, body, {"Content-Length": str(len(body))})
+
+    assert status == 303
+    assert headers["Location"].endswith("&history=1")
+
+
+def test_review_inbox_can_render_history_open_for_selected_candidate(tmp_path: Path) -> None:
+    import json as _json
+
+    state = _workspace_with_evidence(tmp_path)
+    state.save_review_decision("billing.update_credit_limit", "accepted", note="Ready")
+
+    html = build_review_inbox_html(
+        state,
+        selected_surface="billing.update_credit_limit",
+        history_open=True,
+    )
+    start = html.index('<script id="review-data" type="application/json">') + len(
+        '<script id="review-data" type="application/json">'
+    )
+    end = html.index("</script>", start)
+    payload = _json.loads(html[start:end])
+
+    assert payload["historyOpen"] is True
+    assert "data-history-surface" in html
+    assert "if (DATA.historyOpen && sel) historyOpen[sel] = true" in html
+
+
+def test_review_inbox_actor_label_avoids_local_via_unknown_copy(tmp_path: Path) -> None:
+    state = _workspace_with_evidence(tmp_path)
+
+    html = build_review_inbox_html(state, selected_surface="billing.update_credit_limit")
+
+    assert "function isLocalActorId" in html
+    assert "Local decision" in html
+    assert "via unknown" not in html
+    assert "via local" not in html
 
 
 def test_review_inbox_normalizes_legacy_local_actor_display(tmp_path: Path) -> None:
