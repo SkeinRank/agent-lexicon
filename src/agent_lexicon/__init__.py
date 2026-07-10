@@ -680,7 +680,7 @@ __all__ = [
     "resolve_text",
 ]
 
-__version__ = "0.7.3"
+__version__ = "0.7.4"
 
 
 def about() -> str:

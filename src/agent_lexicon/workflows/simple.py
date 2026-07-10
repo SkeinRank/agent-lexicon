@@ -44,7 +44,6 @@ from agent_lexicon.review_agent import (
     run_review_agent,
     run_review_agent_consensus,
 )
-from agent_lexicon.safety import PromptSafetyError, PromptSafetyReport, scan_documents_for_prompt_injection
 from agent_lexicon.scout import (
     EvidencePackError,
     EvidencePackReport,
@@ -96,7 +95,6 @@ class SimpleScanReport:
     """Result returned by the product-facing scan workflow."""
 
     ingest: LocalIngestReport
-    safety: PromptSafetyReport
     candidates: ScoutCandidateReport
     evidence: EvidencePackReport
     workspace: WorkspaceSummary
@@ -129,7 +127,6 @@ class SimpleScanReport:
             "negative_count": self.evidence.negative_count,
             "lexicon_path": self.lexicon_path,
             "ingest": self.ingest.to_dict(include_text=include_documents),
-            "safety": self.safety.to_dict(),
             "candidates": self.candidates.to_dict(),
             "evidence": self.evidence.to_dict(),
             "workspace": self.workspace.to_dict(),
@@ -320,7 +317,7 @@ def run_simple_scan(
     max_file_bytes: int | None = None,
     oov_tokenizer: str | None = None,
 ) -> SimpleScanReport:
-    """Run local ingest, safety scan, candidate discovery, evidence, and workspace sync."""
+    """Run local ingest, candidate discovery, evidence, and workspace sync."""
     root_path = Path(root).expanduser().resolve()
     try:
         config = load_project_config(root_path, config_path=config_path)
@@ -343,7 +340,6 @@ def run_simple_scan(
             max_file_bytes=effective_max_bytes,
             respect_gitignore=effective_gitignore,
         )
-        safety = scan_documents_for_prompt_injection(ingest.documents)
         existing_surfaces = ()
         if resolved_lexicon_path is not None:
             lexicon = load_lexicon(resolved_lexicon_path)
@@ -361,7 +357,7 @@ def run_simple_scan(
             context_lines=context_lines,
             max_positive_snippets=max_positive_snippets,
             max_negative_snippets=max_negative_snippets,
-            include_prompt_safety=True,
+            include_prompt_safety=False,
         )
         state = init_workspace(root_path)
         state.store_ingest_report(ingest)
@@ -370,7 +366,6 @@ def run_simple_scan(
         quality_report = build_scout_quality_report(candidates, evidence)
     except (
         LocalIngestError,
-        PromptSafetyError,
         AgentLexiconLoadError,
         ScoutCandidateError,
         EvidencePackError,
@@ -381,7 +376,6 @@ def run_simple_scan(
 
     return SimpleScanReport(
         ingest=ingest,
-        safety=safety,
         candidates=candidates,
         evidence=evidence,
         workspace=state.summary(),

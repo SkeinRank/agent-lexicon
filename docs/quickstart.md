@@ -53,7 +53,7 @@ You can still override paths for a one-off run:
 agent-lexicon scan README.md docs src
 ```
 
-Scan reads the configured files, applies include/exclude rules, runs prompt-safety checks, discovers candidate terms, builds line-numbered evidence for each, scores their quality, and saves everything to the local workspace. Add `--quality-report` to see how candidates were prioritized.
+Scan reads the configured files, applies include/exclude rules, discovers candidate terms, builds line-numbered evidence for each, scores their quality, and saves everything to the local workspace. Add `--quality-report` to see how candidates were prioritized.
 
 Repository scan behavior lives in `.agent-lexicon/config.yaml`:
 

@@ -357,14 +357,29 @@ def _append_quality_flag(summary: ReviewDatasetQualitySummary, flag: str) -> Rev
 
 def _evidence_is_unsafe(evidence: Mapping[str, Any]) -> bool:
     metadata = evidence.get("metadata", {}) if isinstance(evidence, Mapping) else {}
-    safety = metadata.get("prompt_safety", {}) if isinstance(metadata, Mapping) else {}
-    if not isinstance(safety, Mapping):
+    safety = metadata.get("prompt_safety") if isinstance(metadata, Mapping) else None
+    if isinstance(safety, Mapping):
+        if str(safety.get("action", "")) == "block_llm_review":
+            return True
+        if str(safety.get("highest_risk", "")) == "high":
+            return True
+        return int(safety.get("high_count", 0) or 0) > 0
+    # Evidence built without prompt-safety annotations (the default since the
+    # scan-time screening was removed): screen the snippet text live so the
+    # LLM-facing dataset gate keeps working regardless of scan settings.
+    from agent_lexicon.safety import scan_prompt_injection_text
+
+    snippet_texts: list[str] = []
+    for key in ("positive_snippets", "negative_snippets"):
+        for snippet in evidence.get(key, []) if isinstance(evidence, Mapping) else []:
+            if isinstance(snippet, Mapping):
+                text = snippet.get("text", "")
+                if isinstance(text, str) and text:
+                    snippet_texts.append(text)
+    if not snippet_texts:
         return False
-    if str(safety.get("action", "")) == "block_llm_review":
-        return True
-    if str(safety.get("highest_risk", "")) == "high":
-        return True
-    return int(safety.get("high_count", 0) or 0) > 0
+    report = scan_prompt_injection_text("\n".join(snippet_texts), source_path="review-dataset")
+    return report.high_count > 0
 
 
 def _positive_count(evidence: Mapping[str, Any]) -> int:
