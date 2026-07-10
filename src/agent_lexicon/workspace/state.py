@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import subprocess
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -111,6 +112,7 @@ class WorkspaceReviewDecision:
     reviewer: str
     created_at: str
     updated_at: str
+    metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "normalized_surface", _clean_text(self.normalized_surface, field_name="normalized_surface"))
@@ -119,6 +121,9 @@ class WorkspaceReviewDecision:
         object.__setattr__(self, "reviewer", _clean_text(self.reviewer, field_name="reviewer"))
         object.__setattr__(self, "created_at", _clean_text(self.created_at, field_name="created_at"))
         object.__setattr__(self, "updated_at", _clean_text(self.updated_at, field_name="updated_at"))
+        if not isinstance(self.metadata, Mapping):
+            raise WorkspaceError("metadata must be a mapping")
+        object.__setattr__(self, "metadata", {str(key): value for key, value in self.metadata.items()})
 
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-serializable review decision."""
@@ -129,6 +134,7 @@ class WorkspaceReviewDecision:
             "reviewer": self.reviewer,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            "metadata": dict(self.metadata),
         }
 
 
@@ -539,6 +545,11 @@ class WorkspaceState:
         *,
         note: str = "",
         reviewer: str = "local",
+        actor_type: str = "human",
+        actor_source: str = "cli",
+        actor_id: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+        git_metadata: Mapping[str, Any] | None = None,
     ) -> WorkspaceReviewDecision:
         """Save or replace a local review decision for one candidate."""
         normalized = _clean_text(normalized_surface, field_name="normalized_surface")
@@ -547,6 +558,18 @@ class WorkspaceState:
             raise WorkspaceError("use clear_review_decision to return a candidate to unreviewed")
         reviewer_value = _clean_text(reviewer, field_name="reviewer")
         note_value = note.strip() if isinstance(note, str) else ""
+        event_metadata = _review_actor_event_metadata(
+            self.root,
+            reviewer=reviewer_value,
+            actor_type=actor_type,
+            actor_source=actor_source,
+            actor_id=actor_id,
+            extra_metadata=metadata,
+            git_metadata=git_metadata,
+        )
+        actor = event_metadata.get("actor", {})
+        actor_record_id = str(actor.get("id", reviewer_value)) if isinstance(actor, Mapping) else reviewer_value
+        rule_id = _review_rule_id(actor_type=actor_type, action="save")
         self.ensure_schema()
         now = _utc_now()
         with _connect(self.db_path) as connection:
@@ -575,6 +598,7 @@ class WorkspaceState:
                 note=note_value,
                 reviewer=reviewer_value,
                 created_at=now,
+                metadata=event_metadata,
             )
             connection.execute(
                 """
@@ -603,20 +627,22 @@ class WorkspaceState:
             provenance = WorkspaceDecisionRecord(
                 decision_id=f"decision_{uuid.uuid4().hex}",
                 created_at=now,
-                actor=reviewer_value,
+                actor=actor_record_id,
                 action=WorkspaceDecisionAction.REVIEW_DECISION_SAVED,
                 subject=normalized,
                 input_text=normalized,
                 result=status.value,
-                rule_id="human_review",
+                rule_id=rule_id,
                 payload={
                     "review_event_id": event.event_id,
                     "review_decision": status.value,
                     "note": note_value,
                     "candidate_snapshot": event.candidate_snapshot,
                     "evidence_snapshot": event.evidence_snapshot,
+                    "actor": dict(actor) if isinstance(actor, Mapping) else {},
+                    "git": dict(event_metadata.get("git", {})) if isinstance(event_metadata.get("git", {}), Mapping) else {},
                 },
-                metadata={"workspace_schema_version": SCHEMA_VERSION},
+                metadata=event_metadata,
             )
             _insert_decision_record(connection, provenance)
         return WorkspaceReviewDecision(
@@ -626,6 +652,7 @@ class WorkspaceState:
             reviewer=reviewer_value,
             created_at=created_at,
             updated_at=now,
+            metadata=event_metadata,
         )
 
     def clear_review_decision(
@@ -634,6 +661,11 @@ class WorkspaceState:
         *,
         note: str = "",
         reviewer: str = "local",
+        actor_type: str = "human",
+        actor_source: str = "cli",
+        actor_id: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+        git_metadata: Mapping[str, Any] | None = None,
     ) -> bool:
         """Remove the current review decision for one candidate.
 
@@ -655,6 +687,24 @@ class WorkspaceState:
                 return False
             previous_decision = str(existing[0])
             previous_note = str(existing[1])
+            extra_metadata = {
+                "previous_decision": previous_decision,
+                "previous_note": previous_note,
+            }
+            if metadata:
+                extra_metadata.update({str(key): value for key, value in metadata.items()})
+            event_metadata = _review_actor_event_metadata(
+                self.root,
+                reviewer=reviewer_value,
+                actor_type=actor_type,
+                actor_source=actor_source,
+                actor_id=actor_id,
+                extra_metadata=extra_metadata,
+                git_metadata=git_metadata,
+            )
+            actor = event_metadata.get("actor", {})
+            actor_record_id = str(actor.get("id", reviewer_value)) if isinstance(actor, Mapping) else reviewer_value
+            rule_id = _review_rule_id(actor_type=actor_type, action="clear")
             connection.execute("DELETE FROM review_decisions WHERE normalized_surface = ?", (normalized,))
             event = _build_review_event(
                 connection,
@@ -664,11 +714,7 @@ class WorkspaceState:
                 reviewer=reviewer_value,
                 created_at=now,
                 event_type=ReviewEventType.DECISION_CLEARED,
-                metadata={
-                    "workspace_schema_version": SCHEMA_VERSION,
-                    "previous_decision": previous_decision,
-                    "previous_note": previous_note,
-                },
+                metadata=event_metadata,
             )
             connection.execute(
                 """
@@ -697,20 +743,22 @@ class WorkspaceState:
             provenance = WorkspaceDecisionRecord(
                 decision_id=f"decision_{uuid.uuid4().hex}",
                 created_at=now,
-                actor=reviewer_value,
+                actor=actor_record_id,
                 action=WorkspaceDecisionAction.REVIEW_DECISION_CLEARED,
                 subject=normalized,
                 input_text=normalized,
                 result=ReviewDecisionStatus.UNREVIEWED.value,
-                rule_id="human_review_clear",
+                rule_id=rule_id,
                 payload={
                     "review_event_id": event.event_id,
                     "previous_decision": previous_decision,
                     "previous_note": previous_note,
                     "candidate_snapshot": event.candidate_snapshot,
                     "evidence_snapshot": event.evidence_snapshot,
+                    "actor": dict(actor) if isinstance(actor, Mapping) else {},
+                    "git": dict(event_metadata.get("git", {})) if isinstance(event_metadata.get("git", {}), Mapping) else {},
                 },
-                metadata={"workspace_schema_version": SCHEMA_VERSION},
+                metadata=event_metadata,
             )
             _insert_decision_record(connection, provenance)
         return True
@@ -907,10 +955,34 @@ class WorkspaceState:
             )
             snapshot_metadata = dict(getattr(snapshot, "metadata", {}) or {})
             runtime_snapshot = snapshot_metadata.get("lexicon_snapshot", {}) if isinstance(snapshot_metadata.get("lexicon_snapshot", {}), Mapping) else {}
+            publish_metadata = snapshot_metadata.get("publish", {}) if isinstance(snapshot_metadata.get("publish", {}), Mapping) else {}
+            published_decisions = snapshot_metadata.get("published_decisions", [])
+            if not isinstance(published_decisions, list):
+                published_decisions = []
+            event_metadata = _review_actor_event_metadata(
+                self.root,
+                reviewer=str(publish_metadata.get("reviewer", "local") or "local"),
+                actor_type=str(publish_metadata.get("actor_type", "human") or "human"),
+                actor_source=str(publish_metadata.get("actor_source", "cli") or "cli"),
+                actor_id=str(publish_metadata.get("actor_id", "") or "") or None,
+                extra_metadata={
+                    "workspace_schema_version": SCHEMA_VERSION,
+                    "publish": {
+                        "snapshot_id": record.snapshot_id,
+                        "accepted_count": record.accepted_count,
+                        "generated_term_count": record.generated_term_count,
+                        "skipped_count": record.skipped_count,
+                        "published_decisions": published_decisions,
+                    },
+                },
+                git_metadata=None,
+            )
+            actor = event_metadata.get("actor", {})
+            actor_record_id = str(actor.get("id", "local")) if isinstance(actor, Mapping) else "local"
             provenance = WorkspaceDecisionRecord(
                 decision_id=f"decision_{uuid.uuid4().hex}",
                 created_at=record.created_at,
-                actor="workspace",
+                actor=actor_record_id,
                 action=WorkspaceDecisionAction.SNAPSHOT_PUBLISHED,
                 subject=record.snapshot_id,
                 input_text=record.output_path,
@@ -921,8 +993,11 @@ class WorkspaceState:
                 payload={
                     "snapshot": record.to_dict(),
                     "lexicon_snapshot": runtime_snapshot,
+                    "published_decisions": published_decisions,
+                    "actor": dict(actor) if isinstance(actor, Mapping) else {},
+                    "git": dict(event_metadata.get("git", {})) if isinstance(event_metadata.get("git", {}), Mapping) else {},
                 },
-                metadata={"workspace_schema_version": SCHEMA_VERSION},
+                metadata=event_metadata,
             )
             _insert_decision_record(connection, provenance)
         return record
@@ -938,7 +1013,7 @@ class WorkspaceState:
                 SELECT snapshot_id, created_at, term_count, accepted_count,
                        generated_term_count, skipped_count, output_path, payload_json
                 FROM snapshots
-                ORDER BY created_at DESC, snapshot_id DESC
+                ORDER BY created_at DESC, rowid DESC, snapshot_id DESC
                 LIMIT ?
                 """,
                 (limit,),
@@ -970,7 +1045,14 @@ class WorkspaceState:
                     d.note,
                     d.reviewer,
                     d.created_at,
-                    d.updated_at
+                    d.updated_at,
+                    (
+                        SELECT re.event_json
+                        FROM review_events re
+                        WHERE re.normalized_surface = c.normalized_surface
+                        ORDER BY re.created_at DESC, re.rowid DESC
+                        LIMIT 1
+                    )
                 FROM candidates c
                 LEFT JOIN evidence_packs e ON e.normalized_surface = c.normalized_surface
                 LEFT JOIN review_decisions d ON d.normalized_surface = c.normalized_surface
@@ -1008,7 +1090,14 @@ class WorkspaceState:
                     d.note,
                     d.reviewer,
                     d.created_at,
-                    d.updated_at
+                    d.updated_at,
+                    (
+                        SELECT re.event_json
+                        FROM review_events re
+                        WHERE re.normalized_surface = c.normalized_surface
+                        ORDER BY re.created_at DESC, re.rowid DESC
+                        LIMIT 1
+                    )
                 FROM candidates c
                 LEFT JOIN evidence_packs e ON e.normalized_surface = c.normalized_surface
                 LEFT JOIN review_decisions d ON d.normalized_surface = c.normalized_surface
@@ -1122,9 +1211,24 @@ def save_review_decision(
     *,
     note: str = "",
     reviewer: str = "local",
+    actor_type: str = "human",
+    actor_source: str = "cli",
+    actor_id: str | None = None,
+    metadata: Mapping[str, Any] | None = None,
+    git_metadata: Mapping[str, Any] | None = None,
 ) -> WorkspaceReviewDecision:
     """Save a local review decision in a workspace."""
-    return state.save_review_decision(normalized_surface, decision, note=note, reviewer=reviewer)
+    return state.save_review_decision(
+        normalized_surface,
+        decision,
+        note=note,
+        reviewer=reviewer,
+        actor_type=actor_type,
+        actor_source=actor_source,
+        actor_id=actor_id,
+        metadata=metadata,
+        git_metadata=git_metadata,
+    )
 
 
 def clear_review_decision(
@@ -1133,9 +1237,23 @@ def clear_review_decision(
     *,
     note: str = "",
     reviewer: str = "local",
+    actor_type: str = "human",
+    actor_source: str = "cli",
+    actor_id: str | None = None,
+    metadata: Mapping[str, Any] | None = None,
+    git_metadata: Mapping[str, Any] | None = None,
 ) -> bool:
     """Return one candidate to the unreviewed state."""
-    return state.clear_review_decision(normalized_surface, note=note, reviewer=reviewer)
+    return state.clear_review_decision(
+        normalized_surface,
+        note=note,
+        reviewer=reviewer,
+        actor_type=actor_type,
+        actor_source=actor_source,
+        actor_id=actor_id,
+        metadata=metadata,
+        git_metadata=git_metadata,
+    )
 
 
 def list_review_events(
@@ -1375,6 +1493,9 @@ def _snapshot_record_from_row(row: sqlite3.Row | tuple[Any, ...]) -> WorkspaceSn
 
 def _review_item_from_row(row: sqlite3.Row | tuple[Any, ...]) -> WorkspaceReviewItem:
     decision = None
+    latest_event_metadata: Mapping[str, Any] = {}
+    if len(row) > 17 and row[17] is not None:
+        latest_event_metadata = _review_event_from_payload(str(row[17])).metadata
     if row[12] is not None:
         decision = WorkspaceReviewDecision(
             normalized_surface=str(row[0]),
@@ -1383,6 +1504,7 @@ def _review_item_from_row(row: sqlite3.Row | tuple[Any, ...]) -> WorkspaceReview
             reviewer=str(row[14] or "local"),
             created_at=str(row[15] or ""),
             updated_at=str(row[16] or ""),
+            metadata=latest_event_metadata,
         )
     return WorkspaceReviewItem(
         normalized_surface=str(row[0]),
@@ -1399,6 +1521,121 @@ def _review_item_from_row(row: sqlite3.Row | tuple[Any, ...]) -> WorkspaceReview
         evidence_payload=_json_loads_mapping(str(row[11])),
         review_decision=decision,
     )
+
+
+
+_REVIEW_ACTOR_TYPES = {"human", "agent", "system"}
+_REVIEW_ACTOR_SOURCES = {"web", "cli", "mcp", "ci", "import", "migration", "system"}
+_LOCAL_ACTOR_IDS = {"", "local", "unknown", "unknown-actor"}
+
+
+def _review_actor_event_metadata(
+    root: Path,
+    *,
+    reviewer: str,
+    actor_type: str,
+    actor_source: str,
+    actor_id: str | None,
+    extra_metadata: Mapping[str, Any] | None,
+    git_metadata: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    git = dict(git_metadata) if isinstance(git_metadata, Mapping) else _git_context(root)
+    actor_type_value = _clean_review_actor_type(actor_type)
+    actor_source_value = _clean_review_actor_source(actor_source)
+    actor_id_value = _resolve_review_actor_id(
+        reviewer=reviewer,
+        actor_type=actor_type_value,
+        actor_id=actor_id,
+        git_metadata=git,
+    )
+    metadata: dict[str, Any] = {
+        "workspace_schema_version": SCHEMA_VERSION,
+        "actor": {
+            "type": actor_type_value,
+            "id": actor_id_value,
+            "source": actor_source_value,
+        },
+        "git": git,
+    }
+    if extra_metadata:
+        metadata.update({str(key): value for key, value in extra_metadata.items()})
+    return metadata
+
+
+def _clean_review_actor_type(value: str) -> str:
+    cleaned = str(value).strip().lower().replace("_", "-")
+    if cleaned not in _REVIEW_ACTOR_TYPES:
+        supported = ", ".join(sorted(_REVIEW_ACTOR_TYPES))
+        raise WorkspaceError(f"unsupported review actor type: {value!r}; supported types: {supported}")
+    return cleaned
+
+
+def _clean_review_actor_source(value: str) -> str:
+    cleaned = str(value).strip().lower().replace("_", "-")
+    if not cleaned:
+        return "cli"
+    if cleaned not in _REVIEW_ACTOR_SOURCES:
+        return cleaned[:80]
+    return cleaned
+
+
+def _resolve_review_actor_id(
+    *,
+    reviewer: str,
+    actor_type: str,
+    actor_id: str | None,
+    git_metadata: Mapping[str, Any],
+) -> str:
+    provided = str(actor_id or "").strip()
+    if provided:
+        return provided
+    reviewer_value = str(reviewer or "").strip()
+    if actor_type == "human" and reviewer_value.casefold() in _LOCAL_ACTOR_IDS:
+        for key in ("author_name", "author_email"):
+            value = str(git_metadata.get(key, "")).strip()
+            if value:
+                return value
+    return reviewer_value or "unknown-actor"
+
+
+def _review_rule_id(*, actor_type: str, action: str) -> str:
+    actor_type_value = _clean_review_actor_type(actor_type)
+    if actor_type_value == "agent":
+        return "agent_review_clear" if action == "clear" else "agent_review"
+    if actor_type_value == "system":
+        return "system_review_clear" if action == "clear" else "system_review"
+    return "human_review_clear" if action == "clear" else "human_review"
+
+
+def _git_context(root: Path) -> dict[str, Any]:
+    def run_git(*args: str) -> str:
+        try:
+            completed = subprocess.run(
+                ["git", "-C", str(root), *args],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+        if completed.returncode != 0:
+            return ""
+        return completed.stdout.strip()
+
+    commit = run_git("rev-parse", "--short", "HEAD")
+    branch = run_git("branch", "--show-current")
+    if not branch and commit:
+        branch = run_git("rev-parse", "--short", "--abbrev-ref", "HEAD")
+    status = run_git("status", "--porcelain") if commit else ""
+    return {
+        "available": bool(commit),
+        "author_name": run_git("config", "--get", "user.name"),
+        "author_email": run_git("config", "--get", "user.email"),
+        "branch": branch,
+        "commit": commit,
+        "dirty": bool(status),
+    }
 
 
 def _build_review_event(

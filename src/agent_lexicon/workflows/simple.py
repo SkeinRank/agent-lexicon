@@ -491,6 +491,7 @@ def run_simple_publish(
     output_path: str | Path | None = None,
     snapshot_id: str | None = None,
     update_lexicon: bool = False,
+    actor: str = "local",
 ) -> SimplePublishReport:
     """Publish accepted local review decisions as a lexicon-compatible snapshot.
 
@@ -508,6 +509,10 @@ def run_simple_publish(
             output_path=Path(output_path) if output_path is not None else None,
             base_lexicon=base_lexicon,
             snapshot_id=snapshot_id,
+            actor_type="human",
+            actor_source="cli",
+            actor_id=None if actor == "local" else actor,
+            reviewer=actor,
         )
     except (WorkspaceError, AgentLexiconLoadError, SnapshotPublishError, OSError) as exc:
         raise SimpleWorkflowError(str(exc)) from exc

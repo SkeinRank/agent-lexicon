@@ -74,7 +74,31 @@ class WorkspaceStore(Protocol):
     def store_candidate_report(self, report: Any) -> int: ...
     def store_evidence_packs(self, packs: Iterable[Any]) -> int: ...
     def store_evidence_report(self, report: Any) -> int: ...
-    def save_review_decision(self, normalized_surface: str, decision: Any, *, note: str = "", reviewer: str = "local") -> Any: ...
+    def save_review_decision(
+        self,
+        normalized_surface: str,
+        decision: Any,
+        *,
+        note: str = "",
+        reviewer: str = "local",
+        actor_type: str = "human",
+        actor_source: str = "cli",
+        actor_id: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+        git_metadata: Mapping[str, Any] | None = None,
+    ) -> Any: ...
+    def clear_review_decision(
+        self,
+        normalized_surface: str,
+        *,
+        note: str = "",
+        reviewer: str = "local",
+        actor_type: str = "human",
+        actor_source: str = "cli",
+        actor_id: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+        git_metadata: Mapping[str, Any] | None = None,
+    ) -> bool: ...
     def append_decision_record(
         self,
         *,

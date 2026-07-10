@@ -19,8 +19,6 @@
   <a href="#how-it-works">How it works</a>
 </p>
 
-**A deterministic terminology layer for AI agents. One shared vocabulary across every agent, branch, and tool call — with auditable drift detection at merge time.**
-
 When many agents work a long coding session, each one quietly invents its own names. One branch writes `accessToken`, another `authToken`, a third `bearer_token` — all the same concept. By merge time the service speaks five dialects of itself. Agent Lexicon gives every agent a single canonical vocabulary to read from, resolves the words they actually use back to that canon, and flags terminology that drifted before it lands in `main`.
 
 It is dependency-free, runs locally, and is deterministic by design: the same input always produces the same output, and every decision carries a reason you can audit.
@@ -43,6 +41,21 @@ Requires Python 3.10+. Apache 2.0. Zero runtime dependencies.
 ---
 
 ## Proof
+
+### Benchmark: less terminology drift
+
+Paired synthetic benchmark: the same coding tasks run with and without an agent-lexicon context brief.
+
+**Setup:** Claude Sonnet 4.6, temperature 0, 10 tasks × 3 repeats × 2 conditions = 60 runs. Scored by an independent regex scorer over raw model output.
+
+| Metric | No lexicon | With agent-lexicon |
+|---|---:|---:|
+| Exact canonical name (strict) | 0% | 60% |
+| Canonical term inside compound (substring) | 10% | 100% |
+
+This is an early synthetic benchmark, not a universal claim. Harness, tasks, scorer, and raw results: [SkeinRank/agent-lexicon-benchmark](https://github.com/SkeinRank/agent-lexicon-benchmark).
+
+### Live output
 
 Real output from the shipped example lexicon (`examples/customer_limits/lexicon.yaml`). Two terms share the surface word *limit* — `billing.credit_limit` and `api.rate_limit`. This is exactly where an agent drifts and calls the wrong tool.
 

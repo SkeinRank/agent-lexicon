@@ -115,3 +115,27 @@ def test_cli_mcp_tools(capsys) -> None:
     captured = capsys.readouterr()
     assert "Agent Lexicon MCP tools:" in captured.out
     assert "resolve_term" in captured.out
+
+
+def test_mcp_submit_proposal_records_agent_actor_metadata(tmp_path: Path) -> None:
+    from agent_lexicon import init_workspace
+
+    config = McpServerConfig(root=tmp_path, policy_mode="team", actor="claude-code", role="reviewer")
+    init_workspace(tmp_path)
+
+    call_mcp_tool(
+        "submit_proposal",
+        {"candidate_id": "billing.update_credit_limit", "decision": "accepted", "note": "Looks canonical"},
+        config=config,
+    )
+
+    state = init_workspace(tmp_path)
+    events = state.list_review_events()
+    assert events[0].metadata["actor"] == {
+        "type": "agent",
+        "id": "claude-code",
+        "source": "mcp",
+    }
+    records = state.list_decision_records()
+    assert records[0].actor == "claude-code"
+    assert records[0].rule_id == "agent_review"

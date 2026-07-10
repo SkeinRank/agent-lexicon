@@ -409,7 +409,15 @@ def _submit_proposal(args: Mapping[str, Any], *, config: McpServerConfig) -> dic
         raise McpServerError(f"policy denied review_candidate: {policy_decision.reason}")
 
     state = open_workspace(config.root)
-    saved = state.save_review_decision(candidate_id, decision, note=note, reviewer=reviewer)
+    saved = state.save_review_decision(
+        candidate_id,
+        decision,
+        note=note,
+        reviewer=reviewer,
+        actor_type="agent",
+        actor_source="mcp",
+        actor_id=reviewer,
+    )
     return {
         "tool": "submit_proposal",
         "review_decision": saved.to_dict(),

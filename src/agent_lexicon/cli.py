@@ -1989,6 +1989,7 @@ def _simple_publish_command(args: argparse.Namespace) -> int:
             output_path=Path(args.output) if args.output else None,
             snapshot_id=args.snapshot_id,
             update_lexicon=args.update_lexicon,
+            actor=args.actor,
         )
     except SimpleWorkflowError as exc:
         _error(f"Invalid publish input: {exc}")
@@ -3391,6 +3392,10 @@ def _workspace_publish_snapshot_command(
             output_path=output_path,
             base_lexicon=base_lexicon,
             snapshot_id=snapshot_id,
+            actor_type="human",
+            actor_source="cli",
+            actor_id=None if actor == "local" else actor,
+            reviewer=actor,
         )
     except (SnapshotPublishError, WorkspaceError) as exc:
         _error(f"Invalid snapshot publish input: {exc}")

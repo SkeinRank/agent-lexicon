@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import html
 import json
+import subprocess
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from agent_lexicon.policy import (
@@ -24,6 +25,7 @@ from agent_lexicon.policy import (
 )
 from agent_lexicon.workspace import (
     ReviewDecisionStatus,
+    WorkspaceDecisionAction,
     WorkspaceError,
     WorkspaceReviewItem,
     WorkspaceStore,
@@ -33,6 +35,65 @@ from agent_lexicon.workspace import (
 
 _LEGACY_STARTER_TERM_ID = "project.example_term"
 _LEGACY_STARTER_CANONICAL = "example term"
+_LOCAL_DISPLAY_ACTOR_IDS = {"", "local", "unknown", "unknown-actor"}
+
+
+def _git_config_value(root: str | Path, key: str) -> str:
+    """Return a local git config value without failing outside git worktrees."""
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(Path(root).resolve()), "config", "--get", key],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if completed.returncode != 0:
+        return ""
+    return completed.stdout.strip()
+
+
+def _default_web_actor_id(root: str | Path) -> str | None:
+    """Resolve the human actor displayed for web review decisions."""
+    name = _git_config_value(root, "user.name")
+    if name:
+        return name
+    return None
+
+
+def _is_local_display_actor(value: str) -> bool:
+    return value.strip().casefold() in _LOCAL_DISPLAY_ACTOR_IDS
+
+
+def _display_actor_id(actor: dict[str, Any], git: dict[str, Any], reviewer: str) -> str:
+    actor_type = str(actor.get("type", "human") or "human")
+    actor_id = str(actor.get("id", reviewer) or reviewer).strip()
+    if actor_type == "agent" and _is_local_display_actor(actor_id):
+        return "Agent"
+    if actor_type == "system" and _is_local_display_actor(actor_id):
+        return "System"
+    if _is_local_display_actor(actor_id):
+        git_name = str(git.get("author_name", "") or "").strip()
+        if git_name:
+            return git_name
+        return "Human"
+    if actor_type == "human" and "@" in actor_id:
+        return "Human"
+    return actor_id
+
+
+def _display_actor_source(actor: dict[str, Any]) -> str:
+    actor_type = str(actor.get("type", "human") or "human")
+    actor_source = str(actor.get("source", "") or "").strip()
+    if actor_source and actor_source.casefold() != "unknown":
+        return actor_source
+    if actor_type == "agent":
+        return "mcp"
+    if actor_type == "system":
+        return "system"
+    return "local"
 
 
 def _is_web_hidden_starter_term(term: Any) -> bool:
@@ -50,16 +111,99 @@ def _is_web_hidden_starter_term(term: Any) -> bool:
     )
 
 
-def _accepted_terms(root: str | Path) -> list[dict[str, Any]]:
-    """Read the published lexicon for this workspace and return real terms.
+def _term_as_lexicon_tab_dict(
+    term: Any,
+    *,
+    source: str,
+    snapshot_id: str = "",
+    snapshot_created_at: str = "",
+    publish_checkpoint: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    checkpoint = dict(publish_checkpoint or {})
+    review_decision = checkpoint.get("review_decision")
+    return {
+        "id": term.id,
+        "canonical": term.canonical,
+        "scopes": list(term.scopes),
+        "tools": list(term.tools),
+        "aliases": [alias.surface for alias in term.aliases],
+        "deprecated": bool(term.deprecated),
+        "source": source,
+        "snapshot_id": snapshot_id,
+        "snapshot_created_at": snapshot_created_at,
+        "review_surface": str(checkpoint.get("surface", "") or getattr(term, "canonical", "") or ""),
+        "review_normalized_surface": str(checkpoint.get("normalized_surface", "") or getattr(term, "canonical", "") or ""),
+        "publish_checkpoint": checkpoint or None,
+        "review_decision_provenance": _review_decision_snapshot_as_ui_dict(review_decision)
+        if isinstance(review_decision, Mapping)
+        else None,
+    }
 
-    Returns an empty list when no lexicon file exists yet, or when the only
-    dictionary entry is the generated starter placeholder, so the Lexicon tab
-    can show an inviting empty state instead of demo terminology.
-    """
+
+def _terms_from_lexicon(
+    lexicon: Any,
+    *,
+    source: str,
+    snapshot_id: str = "",
+    snapshot_created_at: str = "",
+    publish_records_by_surface: Mapping[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    terms: list[dict[str, Any]] = []
+    records = publish_records_by_surface or {}
+    for term in lexicon.terms:
+        if _is_web_hidden_starter_term(term):
+            continue
+        publish_checkpoint = (
+            records.get(str(term.canonical).casefold())
+            or records.get(str(term.id).casefold())
+        )
+        terms.append(
+            _term_as_lexicon_tab_dict(
+                term,
+                source=source,
+                snapshot_id=snapshot_id,
+                snapshot_created_at=snapshot_created_at,
+                publish_checkpoint=publish_checkpoint,
+            )
+        )
+    terms.sort(key=lambda t: t["id"])
+    return terms
+
+
+def _latest_published_snapshot_terms(root: str | Path) -> list[dict[str, Any]]:
+    """Return terms from the newest published workspace snapshot, if available."""
+    try:
+        from agent_lexicon.core import AgentLexiconLoadError, load_lexicon
+    except ImportError:
+        return []
+    try:
+        state = open_workspace(root, create=False)
+        snapshots = state.list_snapshots(limit=1)
+    except (WorkspaceError, OSError, ValueError):
+        return []
+    if not snapshots:
+        return []
+    snapshot = snapshots[0]
+    snapshot_path = Path(snapshot.output_path)
+    if not snapshot_path.exists():
+        return []
+    try:
+        lexicon = load_lexicon(snapshot_path, document_format="json")
+    except (AgentLexiconLoadError, OSError, ValueError):
+        return []
+    return _terms_from_lexicon(
+        lexicon,
+        source="snapshot",
+        snapshot_id=snapshot.snapshot_id,
+        snapshot_created_at=snapshot.created_at,
+        publish_records_by_surface=_published_records_by_surface(root),
+    )
+
+
+def _dictionary_lexicon_terms(root: str | Path) -> list[dict[str, Any]]:
     try:
         from agent_lexicon.dictionary import dictionary_layout_path
-        from agent_lexicon.core import load_lexicon, AgentLexiconLoadError
+        from agent_lexicon.core import AgentLexiconLoadError, load_lexicon
     except ImportError:
         return []
     layout = dictionary_layout_path(root)
@@ -70,22 +214,158 @@ def _accepted_terms(root: str | Path) -> list[dict[str, Any]]:
         lexicon = load_lexicon(lexicon_path)
     except (AgentLexiconLoadError, OSError, ValueError):
         return []
-    terms: list[dict[str, Any]] = []
-    for term in lexicon.terms:
-        if _is_web_hidden_starter_term(term):
+    return _terms_from_lexicon(lexicon, source="dictionary")
+
+
+def _accepted_terms(root: str | Path) -> list[dict[str, Any]]:
+    """Return the latest published terminology shown in the Lexicon tab.
+
+    ``agent-lexicon publish`` writes a local snapshot by default, while
+    ``agent-lexicon publish --update-lexicon`` also rewrites lexicon/lexicon.yaml.
+    The web UI treats the newest snapshot as the freshest published state so the
+    Lexicon tab updates immediately after the normal publish command. If no
+    snapshot exists yet, it falls back to the git-tracked dictionary file.
+    """
+    snapshot_terms = _latest_published_snapshot_terms(root)
+    if snapshot_terms:
+        return snapshot_terms
+    return _dictionary_lexicon_terms(root)
+
+
+def _published_terms_by_surface(terms: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    return {str(term.get("canonical", "")).casefold(): term for term in terms if str(term.get("canonical", "")).strip()}
+
+
+def _published_records_by_surface(root: str | Path) -> dict[str, dict[str, Any]]:
+    """Return publish ledger entries from the newest workspace snapshot."""
+    try:
+        state = open_workspace(root, create=False)
+        latest_snapshots = state.list_snapshots(limit=1)
+        if not latest_snapshots:
+            return {}
+        latest_snapshot_id = latest_snapshots[0].snapshot_id
+        records = state.list_decision_records(action=WorkspaceDecisionAction.SNAPSHOT_PUBLISHED)
+    except (WorkspaceError, OSError, ValueError):
+        return {}
+
+    published: dict[str, dict[str, Any]] = {}
+    for record in reversed(records):
+        if record.subject != latest_snapshot_id:
             continue
-        terms.append(
-            {
-                "id": term.id,
-                "canonical": term.canonical,
-                "scopes": list(term.scopes),
-                "tools": list(term.tools),
-                "aliases": [alias.surface for alias in term.aliases],
-                "deprecated": bool(term.deprecated),
-            }
-        )
-    terms.sort(key=lambda t: t["id"])
-    return terms
+        for decision in _published_decisions_from_record(record):
+            surface = str(decision.get("surface", "") or "").strip()
+            normalized_surface = str(decision.get("normalized_surface", "") or "").strip()
+            if not surface and not normalized_surface:
+                continue
+            ui_record = _publish_record_as_ui_dict(record, decision)
+            for key in {surface.casefold(), normalized_surface.casefold()}:
+                if key and key not in published:
+                    published[key] = ui_record
+    return published
+
+
+def _publish_history_by_surface(root: str | Path) -> dict[str, list[dict[str, Any]]]:
+    """Return publish ledger history keyed by candidate surface.
+
+    This is intentionally based on publish checkpoints, not raw review clicks.
+    Each row says what state a reviewed candidate had when a snapshot was
+    published and whether that state was included in the lexicon.
+    """
+    try:
+        state = open_workspace(root, create=False)
+        records = state.list_decision_records(action=WorkspaceDecisionAction.SNAPSHOT_PUBLISHED)
+    except (WorkspaceError, OSError, ValueError):
+        return {}
+
+    history: dict[str, list[dict[str, Any]]] = {}
+    for record in reversed(records):
+        for decision in _published_decisions_from_record(record):
+            if not isinstance(decision, Mapping):
+                continue
+            surface = str(decision.get("surface", "") or "").strip()
+            normalized_surface = str(decision.get("normalized_surface", "") or "").strip()
+            if not surface and not normalized_surface:
+                continue
+            ui_record = _publish_record_as_ui_dict(record, decision)
+            for key in {surface.casefold(), normalized_surface.casefold()}:
+                if key:
+                    history.setdefault(key, []).append(ui_record)
+    return history
+
+
+def _published_decisions_from_record(record: Any) -> list[Mapping[str, Any]]:
+    payload = record.payload if isinstance(record.payload, Mapping) else {}
+    decisions = payload.get("published_decisions")
+    if not isinstance(decisions, list):
+        metadata = record.metadata if isinstance(record.metadata, Mapping) else {}
+        publish_metadata = metadata.get("publish", {}) if isinstance(metadata.get("publish", {}), Mapping) else {}
+        decisions = publish_metadata.get("published_decisions", [])
+    if not isinstance(decisions, list):
+        return []
+    return [decision for decision in decisions if isinstance(decision, Mapping)]
+
+
+def _review_decision_snapshot_as_ui_dict(decision: Mapping[str, Any]) -> dict[str, Any]:
+    metadata = decision.get("metadata", {}) if isinstance(decision.get("metadata", {}), Mapping) else {}
+    actor = metadata.get("actor", {}) if isinstance(metadata.get("actor", {}), Mapping) else {}
+    git = metadata.get("git", {}) if isinstance(metadata.get("git", {}), Mapping) else {}
+    reviewer = str(decision.get("reviewer", "local") or "local")
+    return {
+        "decision": str(decision.get("decision", "") or ""),
+        "note": str(decision.get("note", "") or ""),
+        "reviewer": reviewer,
+        "created_at": str(decision.get("updated_at", decision.get("created_at", "")) or ""),
+        "actor": {
+            "type": str(actor.get("type", "human") or "human"),
+            "id": str(actor.get("id", reviewer) or reviewer),
+            "source": str(actor.get("source", "web") or "web"),
+            "display_id": _display_actor_id(dict(actor), dict(git), reviewer),
+            "display_source": _display_actor_source(dict(actor)),
+        },
+        "git": {
+            "branch": str(git.get("branch", "") or ""),
+            "commit": str(git.get("commit", "") or ""),
+            "dirty": bool(git.get("dirty", False)),
+            "available": bool(git.get("available", False)),
+        },
+    }
+
+
+def _publish_record_as_ui_dict(record: Any, decision: Mapping[str, Any]) -> dict[str, Any]:
+    metadata = record.metadata if isinstance(record.metadata, Mapping) else {}
+    payload = record.payload if isinstance(record.payload, Mapping) else {}
+    actor = metadata.get("actor", {}) if isinstance(metadata.get("actor", {}), Mapping) else {}
+    git = metadata.get("git", {}) if isinstance(metadata.get("git", {}), Mapping) else {}
+    snapshot_payload = payload.get("snapshot", {}) if isinstance(payload.get("snapshot", {}), Mapping) else {}
+    publish_metadata = metadata.get("publish", {}) if isinstance(metadata.get("publish", {}), Mapping) else {}
+    reviewer = str(actor.get("id", "local") or "local")
+    return {
+        "surface": str(decision.get("surface", "") or ""),
+        "normalized_surface": str(decision.get("normalized_surface", "") or ""),
+        "snapshot_id": str(record.subject or snapshot_payload.get("snapshot_id", "") or ""),
+        "created_at": str(record.created_at or snapshot_payload.get("created_at", "") or ""),
+        "decision": str(decision.get("decision", "") or ""),
+        "result": str(decision.get("result", "published") or "published"),
+        "term_id": str(decision.get("term_id", "") or ""),
+        "included_in_lexicon": bool(decision.get("included_in_lexicon", decision.get("result") in {"generated_term", "skipped_existing_surface"})),
+        "review_decision": dict(decision.get("review_decision", {})) if isinstance(decision.get("review_decision", {}), Mapping) else {},
+        "accepted_count": int(publish_metadata.get("accepted_count", snapshot_payload.get("accepted_count", 0)) or 0),
+        "generated_term_count": int(publish_metadata.get("generated_term_count", snapshot_payload.get("generated_term_count", 0)) or 0),
+        "skipped_count": int(publish_metadata.get("skipped_count", snapshot_payload.get("skipped_count", 0)) or 0),
+        "actor": {
+            "type": str(actor.get("type", "human") or "human"),
+            "id": str(actor.get("id", reviewer) or reviewer),
+            "source": str(actor.get("source", "cli") or "cli"),
+            "display_id": _display_actor_id(dict(actor), dict(git), reviewer),
+            "display_source": _display_actor_source(dict(actor)),
+        },
+        "git": {
+            "branch": str(git.get("branch", "") or ""),
+            "commit": str(git.get("commit", "") or ""),
+            "dirty": bool(git.get("dirty", False)),
+            "available": bool(git.get("available", False)),
+        },
+    }
 
 
 class ReviewInboxError(ValueError):
@@ -104,6 +384,23 @@ _STATUS_LABELS = {
 }
 
 
+_THEME_BOOTSTRAP_JS = """
+(function(){
+  try {
+    var key = 'agent-lexicon-theme';
+    var mode = localStorage.getItem(key) || 'system';
+    if (mode !== 'light' && mode !== 'dark' && mode !== 'system') mode = 'system';
+    var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    var resolved = mode === 'system' ? (prefersDark ? 'dark' : 'light') : mode;
+    document.documentElement.setAttribute('data-theme-mode', mode);
+    document.documentElement.setAttribute('data-theme', resolved);
+  } catch (e) {
+    document.documentElement.setAttribute('data-theme-mode', 'system');
+  }
+})();
+"""
+
+
 _CSS = """
 :root {
   --bg: #f7f7f5;
@@ -115,12 +412,58 @@ _CSS = """
   --strong: #111111;
   --soft: #fafaf8;
   --accent: #20201d;
+  --accent-contrast: #ffffff;
   --ok: #f2f8f3;
+  --ok-text: #1d5f2f;
   --warn: #fff7ea;
+  --warn-text: #7a4d00;
   --danger: #fff1f0;
+  --danger-text: #87231d;
+  --priority-important-bg: #fef3c7;
+  --priority-important-text: #7a4d00;
+  --scope-bg: #eef;
+  --scope-text: #3730a3;
+  --code-text: #252522;
+  --term-hit-bg: rgba(245, 190, 70, 0.28);
+  --term-hit-border: rgba(190, 120, 20, 0.45);
+  --term-hit-text: inherit;
+  --focus-bg: #ffffff;
+  --timeline-sticky-bg: rgba(255, 255, 255, 0.92);
+  --shadow: 0 18px 60px rgba(0, 0, 0, 0.035);
   --radius-lg: 24px;
   --radius-md: 16px;
   --radius-sm: 10px;
+  color-scheme: light;
+}
+:root[data-theme="dark"] {
+  --bg: #0f1115;
+  --panel: #171a21;
+  --text: #e7eaf0;
+  --muted: #9aa3b2;
+  --subtle: #202532;
+  --line: #2d3545;
+  --strong: #f3f6fb;
+  --soft: #141923;
+  --accent: #e7eaf0;
+  --accent-contrast: #0f1115;
+  --ok: #142719;
+  --ok-text: #8ad39a;
+  --warn: #2b2112;
+  --warn-text: #e4b86d;
+  --danger: #2d1719;
+  --danger-text: #f09a95;
+  --priority-important-bg: #30250d;
+  --priority-important-text: #e4b86d;
+  --scope-bg: #191d3a;
+  --scope-text: #aeb8ff;
+  --code-text: #d9deea;
+  --term-hit-bg: rgba(245, 190, 70, 0.22);
+  --term-hit-border: rgba(245, 190, 70, 0.55);
+  --term-hit-text: #f8e6b0;
+  --focus-bg: #1d2330;
+  --timeline-sticky-bg: rgba(23, 26, 33, 0.92);
+  --shadow: 0 20px 70px rgba(0, 0, 0, 0.36);
+  color-scheme: dark;
 }
 * { box-sizing: border-box; }
 body {
@@ -185,7 +528,7 @@ h1 {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
-  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.035);
+  box-shadow: var(--shadow);
 }
 .sidebar { padding: 12px; }
 .list-title {
@@ -225,7 +568,7 @@ h1 {
   border-radius: 999px;
   border: 1px solid var(--line);
 }
-.priority.important { background: #fef3c7; color: #7a4d00; }
+.priority.important { background: var(--priority-important-bg); color: var(--priority-important-text); }
 .priority.later { background: var(--soft); color: var(--muted); }
 .score {
   color: var(--muted);
@@ -239,20 +582,32 @@ h1 {
 }
 .status {
   display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border: 1px solid var(--line);
   border-radius: 999px;
-  padding: 3px 8px;
+  padding: 4px 10px;
   margin-top: 9px;
   color: var(--muted);
   font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
 }
-.status.accepted { background: var(--ok); color: #1d5f2f; }
-.status.rejected { background: var(--danger); color: #87231d; }
-.status.ambiguous, .status.needs_split { background: var(--warn); color: #7a4d00; }
+.detail-head .status {
+  align-self: flex-start;
+  min-height: 44px;
+  min-width: 86px;
+  padding: 0 14px;
+  margin-top: 0;
+}
+.status.accepted { background: var(--ok); color: var(--ok-text); }
+.status.rejected { background: var(--danger); color: var(--danger-text); }
+.status.ambiguous, .status.needs_split { background: var(--warn); color: var(--warn-text); }
 .detail { padding: 24px; }
 .detail-head {
   display: flex;
   justify-content: space-between;
+  align-items: flex-start;
   gap: 18px;
   padding-bottom: 20px;
   border-bottom: 1px solid var(--line);
@@ -269,6 +624,43 @@ h1 {
   font-size: 13px;
   margin-top: 7px;
 }
+.state-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 10px;
+  max-width: 760px;
+}
+.state-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+  color: var(--muted);
+  font-size: 12px;
+}
+.state-row strong { color: var(--text); font-weight: 650; }
+.state-label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
+.state-badge { border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; color: var(--muted); background: var(--soft); font-size: 11px; }
+.state-badge.ok { background: var(--ok); color: var(--ok-text); }
+.state-badge.warn { background: var(--warn); color: var(--warn-text); }
+.publish-history { margin: 14px 0 4px; }
+.publish-history > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+}
+.publish-history-count { border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; color: var(--muted); background: var(--soft); font-size: 11px; }
+.publish-ledger-box { margin-top: 10px; border: 1px solid var(--line); border-radius: var(--radius-md); overflow: hidden; background: var(--panel); }
+.publish-history-row { display: grid; grid-template-columns: minmax(145px, 0.78fr) minmax(0, 2fr); gap: 14px; padding: 12px 14px; border-bottom: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+.publish-history-row:last-child { border-bottom: 0; }
+.publish-history-row strong { color: var(--text); }
+.publish-history-snapshot { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-word; color: var(--text); }
+.publish-history-meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.publish-history-note { color: var(--muted); font-size: 11px; margin-top: 3px; }
 .metrics {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -314,8 +706,15 @@ pre {
   padding: 13px 14px;
   overflow-x: auto;
   white-space: pre-wrap;
-  color: #252522;
+  color: var(--code-text);
   font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+mark.term-hit {
+  background: var(--term-hit-bg);
+  border-bottom: 1px solid var(--term-hit-border);
+  border-radius: 4px;
+  color: var(--term-hit-text);
+  padding: 0 2px;
 }
 .actions {
   margin-top: 24px;
@@ -334,7 +733,7 @@ textarea {
   color: var(--text);
   outline: none;
 }
-textarea:focus { border-color: var(--strong); background: #fff; }
+textarea:focus { border-color: var(--strong); background: var(--focus-bg); }
 .button-row {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -352,7 +751,7 @@ button {
 }
 button:hover { border-color: var(--strong); }
 button:disabled { color: var(--muted); cursor: not-allowed; background: var(--subtle); }
-button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+button.primary { background: var(--accent); color: var(--accent-contrast); border-color: var(--accent); }
 .notice {
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
@@ -390,9 +789,36 @@ button.primary { background: var(--accent); color: #fff; border-color: var(--acc
 .progress-bar { height: 100%; width: 0; background: var(--accent); border-radius: 999px; transition: width 0.2s; }
 .toolbar { display: flex; gap: 8px; padding: 4px 6px 12px; }
 .search { flex: 1; border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 8px 11px; font: inherit; background: var(--soft); color: var(--text); outline: none; }
-.search:focus { border-color: var(--strong); background: #fff; }
+.search:focus { border-color: var(--strong); background: var(--focus-bg); }
 .filter { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 8px 10px; font: inherit; background: var(--soft); color: var(--text); cursor: pointer; }
 .sidebar-list { max-height: 62vh; overflow-y: auto; }
+.timeline-section { margin-bottom: 12px; }
+.timeline-section-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px 7px;
+  margin: 2px 0 6px;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  background: var(--timeline-sticky-bg);
+  border-bottom: 1px solid var(--subtle);
+  backdrop-filter: blur(8px);
+}
+.timeline-section-head span:last-child {
+  letter-spacing: 0;
+  text-transform: none;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 1px 7px;
+  background: var(--soft);
+}
 .cluster-head { display: flex; align-items: center; gap: 8px; padding: 9px 10px; border-radius: var(--radius-sm); cursor: pointer; color: var(--muted); font-size: 12px; }
 .cluster-head:hover { background: var(--soft); }
 .cluster-head .caret { transition: transform 0.15s; }
@@ -416,12 +842,49 @@ button.primary { background: var(--accent); color: #fff; border-color: var(--acc
 .tab { border: 0.5px solid transparent; border-radius: 999px; padding: 6px 14px; font-size: 13px; color: var(--muted); cursor: pointer; background: transparent; }
 .tab:hover { background: var(--soft); }
 .tab.active { background: var(--panel); border-color: var(--line); color: var(--text); }
+.theme-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+}
+.theme-switch button {
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  padding: 5px 9px;
+  font-size: 12px;
+  line-height: 1;
+}
+.theme-switch button:hover { color: var(--text); background: var(--soft); }
+.theme-switch button.active { background: var(--accent); color: var(--accent-contrast); }
+.theme-switch-label { color: var(--muted); font-size: 11px; padding: 0 4px 0 7px; }
 .actionbar { position: sticky; bottom: 0; z-index: 5; background: var(--panel); border-top: 1px solid var(--line); padding: 14px 24px; margin: 18px -24px -24px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; border-bottom-left-radius: var(--radius-lg); border-bottom-right-radius: var(--radius-lg); }
 .lex-term { border: 1px solid var(--line); border-radius: var(--radius-md); padding: 14px 16px; margin-bottom: 10px; background: var(--panel); }
 .lex-canonical { font-size: 16px; font-weight: 650; }
 .lex-id { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--muted); }
 .lex-alias { display: inline-block; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; background: var(--soft); border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; margin: 4px 4px 0 0; }
-.lex-scope { display: inline-block; font-size: 11px; background: #eef; border: 1px solid var(--line); border-radius: 999px; padding: 2px 9px; margin-right: 5px; color: #3730a3; }
+.lex-scope { display: inline-block; font-size: 11px; background: var(--scope-bg); border: 1px solid var(--line); border-radius: 999px; padding: 2px 9px; margin-right: 5px; color: var(--scope-text); }
+.lex-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 18px; padding: 4px 4px 16px; border-bottom: 1px solid var(--line); margin-bottom: 14px; }
+.lex-header h2 { margin: 0; font-size: 22px; line-height: 1.15; letter-spacing: -0.03em; }
+.lex-header .meta { max-width: 640px; }
+.lex-term { padding: 0; overflow: hidden; }
+.lex-term > summary { list-style: none; cursor: pointer; padding: 14px 16px; }
+.lex-term > summary::-webkit-details-marker { display: none; }
+.lex-term > summary:hover { background: var(--soft); }
+.lex-summary { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; }
+.lex-detail { border-top: 1px solid var(--line); padding: 14px 16px 16px; background: var(--soft); }
+.lex-detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 10px 0 12px; }
+.lex-detail-card { border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--panel); padding: 10px 12px; }
+.lex-detail-card strong { display:block; margin-bottom: 4px; }
+.lex-actions { display:flex; gap:8px; flex-wrap:wrap; margin-top: 12px; }
+.lex-actions button { padding: 8px 10px; font-size: 12px; }
+.lex-actions button.primary { color: var(--accent-contrast); }
+@media (max-width: 860px) { .lex-header { flex-direction: column; } .lex-detail-grid { grid-template-columns: 1fr; } }
 """
 
 
@@ -437,6 +900,33 @@ _APP_JS = r"""
   var search = '';
   var filter = 'all';
   var collapsed = {};
+  var THEME_STORAGE_KEY = 'agent-lexicon-theme';
+  var themeMode = readThemeMode();
+
+  function readThemeMode(){
+    try {
+      var stored = localStorage.getItem(THEME_STORAGE_KEY);
+      if (stored === 'light' || stored === 'dark' || stored === 'system') return stored;
+    } catch (e) {}
+    return 'system';
+  }
+
+  function systemPrefersDark(){
+    return !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+  }
+
+  function resolvedTheme(mode){
+    return mode === 'system' ? (systemPrefersDark() ? 'dark' : 'light') : mode;
+  }
+
+  function applyTheme(mode){
+    if (mode !== 'light' && mode !== 'dark' && mode !== 'system') mode = 'system';
+    themeMode = mode;
+    document.documentElement.setAttribute('data-theme-mode', mode);
+    document.documentElement.setAttribute('data-theme', resolvedTheme(mode));
+    try { localStorage.setItem(THEME_STORAGE_KEY, mode); } catch (e) {}
+    updateThemeSwitch();
+  }
 
   items.forEach(function(it){
     if (it.cluster_key && it.cluster_size > 1) {
@@ -450,12 +940,17 @@ _APP_JS = r"""
   function isDecided(it){ return it.decision != null; }
   function priorityWord(it){ return it.priority === 'important' ? (it.score >= 0.6 ? 'high' : 'medium') : 'low'; }
 
+  function hasReviewHistory(it){
+    return isDecided(it) || !!(it.publish_history && it.publish_history.length);
+  }
+
   function visibleIndexes(){
     var out = [];
     for (var i=0;i<items.length;i++){
       var it = items[i];
       if (filter === 'unreviewed' && isDecided(it)) continue;
       if (filter === 'important' && it.priority !== 'important') continue;
+      if (filter === 'history' && !hasReviewHistory(it)) continue;
       if (search && it.surface.toLowerCase().indexOf(search.toLowerCase()) === -1) continue;
       out.push(i);
     }
@@ -495,6 +990,7 @@ _APP_JS = r"""
     h += '<option value="all"'+(filter==='all'?' selected':'')+'>All</option>';
     h += '<option value="unreviewed"'+(filter==='unreviewed'?' selected':'')+'>Unreviewed</option>';
     h += '<option value="important"'+(filter==='important'?' selected':'')+'>Important</option>';
+    h += '<option value="history"'+(filter==='history'?' selected':'')+'>History</option>';
     h += '</select>';
     h += '</div>';
     return h;
@@ -502,9 +998,21 @@ _APP_JS = r"""
 
   function renderListInner(){
     var vis = visibleIndexes();
-    var groups = groupVisible(vis);
+    var sections = timelineSections(vis);
     var h = '';
     if (vis.length === 0){ h += '<div class="meta" style="padding:16px">No terms match.</div>'; }
+    sections.forEach(function(section){
+      h += '<div class="timeline-section">';
+      h += '<div class="timeline-section-head"><span>'+esc(section.label)+'</span><span>'+section.idxs.length+'</span></div>';
+      h += renderGroupedItems(section.idxs);
+      h += '</div>';
+    });
+    return h;
+  }
+
+  function renderGroupedItems(idxs){
+    var groups = groupVisible(idxs);
+    var h = '';
     groups.forEach(function(g){
       if (g.key === null){
         g.idxs.forEach(function(i){ h += itemRow(i); });
@@ -520,6 +1028,43 @@ _APP_JS = r"""
       }
     });
     return h;
+  }
+
+  function timelineSections(vis){
+    var buckets = {needs: [], today: [], yesterday: [], older: []};
+    vis.forEach(function(i){ buckets[timelineBucket(items[i])].push(i); });
+    var defs = [
+      ['needs', 'Needs review'],
+      ['today', 'Reviewed today'],
+      ['yesterday', 'Reviewed yesterday'],
+      ['older', 'Reviewed earlier']
+    ];
+    return defs.filter(function(def){ return buckets[def[0]].length > 0; })
+      .map(function(def){ return {key:def[0], label:def[1], idxs:buckets[def[0]]}; });
+  }
+
+  function timelineBucket(it){
+    if (!hasReviewHistory(it)) return 'needs';
+    var d = itemTimelineDate(it);
+    if (!d) return 'older';
+    var now = new Date();
+    var today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    var yesterday = new Date(today);
+    yesterday.setDate(today.getDate() - 1);
+    var itemDay = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    if (itemDay.getTime() === today.getTime()) return 'today';
+    if (itemDay.getTime() === yesterday.getTime()) return 'yesterday';
+    return 'older';
+  }
+
+  function itemTimelineDate(it){
+    var raw = '';
+    if (it.decision_provenance && it.decision_provenance.created_at) raw = it.decision_provenance.created_at;
+    if (!raw && it.publish_history && it.publish_history.length && it.publish_history[0].created_at) raw = it.publish_history[0].created_at;
+    if (!raw) return null;
+    var parsed = new Date(raw);
+    if (isNaN(parsed.getTime())) return null;
+    return parsed;
   }
 
   function itemRow(i){
@@ -539,8 +1084,8 @@ _APP_JS = r"""
     var it = items[idx];
     if (!it) return '<section class="panel detail"><div class="empty"><strong>Nothing to review</strong><span>Run a scan first.</span></div></section>';
     var chips = it.reasons.map(function(r){ return '<span class="chip accent">'+esc(r)+'</span>'; }).join('');
-    var pos = it.positive.map(function(s){ return snippet(s, 'positive'); }).join('');
-    var neg = it.negative.map(function(s){ return snippet(s, 'negative'); }).join('');
+    var pos = it.positive.map(function(s){ return snippet(s, 'positive', it); }).join('');
+    var neg = it.negative.map(function(s){ return snippet(s, 'negative', it); }).join('');
     var nums = Object.keys(it.nums).map(function(k){ return '<div class="scores-row"><span>'+esc(k)+'</span><span>'+it.nums[k].toFixed(3)+'</span></div>'; }).join('');
     var clusterNote = (it.cluster_key && it.cluster_size > 1) ? '<div class="cluster-note">\u25c8 part of '+esc(it.cluster_key)+' ('+it.cluster_size+' variants)</div>' : '';
     var ro = DATA.readOnly;
@@ -548,11 +1093,13 @@ _APP_JS = r"""
     h += '<div class="detail-head"><div>';
     h += '<h2 class="detail-title" style="font-family:ui-monospace,Menlo,monospace">'+esc(it.surface)+'</h2>';
     h += '<div class="kind">'+esc(it.kind)+' \u00b7 appears '+it.occurrences+' times in '+it.documents+' files \u00b7 '+priorityWord(it)+' priority</div>';
+    h += compactStateSummary(it);
     h += clusterNote;
     h += '</div>';
     h += '<span class="status '+statusClass(it)+'">'+esc(statusLabel(it))+'</span>';
     h += '</div>';
     if (chips) h += '<div style="margin:16px 0 4px">'+chips+'</div>';
+    h += publishHistorySection(it);
     h += '<h3 class="section-title">Where it appears</h3>';
     h += pos || '<div class="meta">No positive evidence stored.</div>';
     if (neg){ h += '<h3 class="section-title">Low-confidence matches</h3>' + neg; }
@@ -576,11 +1123,204 @@ _APP_JS = r"""
     return h;
   }
 
-  function snippet(s, kind){
-    return '<article class="snippet '+kind+'"><div class="snippet-head"><span>'+esc(s.path)+':'+esc(s.start)+'-'+esc(s.end)+'</span><span>'+esc(s.reason)+'</span></div><pre>'+esc(s.text)+'</pre></article>';
+  function evidenceHighlightTerms(it){
+    var terms = [];
+    function add(value){
+      var v = String(value || '').trim();
+      if (v.length < 3) return;
+      var key = v.toLowerCase();
+      for (var i = 0; i < terms.length; i++) {
+        if (terms[i].toLowerCase() === key) return;
+      }
+      terms.push(v);
+    }
+    if (it) {
+      add(it.surface);
+      add(it.normalized_surface);
+    }
+    terms.sort(function(a, b){ return b.length - a.length; });
+    return terms;
   }
+
+  function highlightEvidenceText(text, terms){
+    var raw = String(text || '');
+    var hits = [];
+    var lower = raw.toLowerCase();
+    (terms || []).forEach(function(term){
+      var needle = String(term || '').toLowerCase();
+      if (!needle) return;
+      var at = lower.indexOf(needle);
+      while (at !== -1) {
+        hits.push({start: at, end: at + needle.length});
+        at = lower.indexOf(needle, at + Math.max(needle.length, 1));
+      }
+    });
+    if (!hits.length) return esc(raw);
+    hits.sort(function(a, b){
+      if (a.start !== b.start) return a.start - b.start;
+      return (b.end - b.start) - (a.end - a.start);
+    });
+    var selected = [];
+    var cursor = -1;
+    hits.forEach(function(hit){
+      if (hit.start < cursor) return;
+      selected.push(hit);
+      cursor = hit.end;
+    });
+    var out = '';
+    var pos = 0;
+    selected.forEach(function(hit){
+      out += esc(raw.slice(pos, hit.start));
+      out += '<mark class="term-hit">' + esc(raw.slice(hit.start, hit.end)) + '</mark>';
+      pos = hit.end;
+    });
+    out += esc(raw.slice(pos));
+    return out;
+  }
+
+  function snippet(s, kind, it){
+    return '<article class="snippet '+kind+'"><div class="snippet-head"><span>'+esc(s.path)+':'+esc(s.start)+'-'+esc(s.end)+'</span><span>'+esc(s.reason)+'</span></div><pre>'+highlightEvidenceText(s.text, evidenceHighlightTerms(it))+'</pre></article>';
+  }
+
+  function decisionVerb(ev){
+    if (!ev) return 'Decision';
+    if (ev.event_type === 'review_decision_cleared') return 'Cleared';
+    if (ev.decision === 'accepted') return 'Accepted';
+    if (ev.decision === 'rejected') return 'Rejected';
+    if (ev.decision === 'ambiguous') return 'Marked ambiguous';
+    if (ev.decision === 'needs_split') return 'Marked needs split';
+    return 'Reviewed';
+  }
+
+  function currentDecisionEvent(it){
+    return it.decision_provenance || null;
+  }
+
+  function isLocalActorId(value){
+    var cleaned = String(value || '').trim().toLowerCase();
+    return cleaned === '' || cleaned === 'local' || cleaned === 'unknown' || cleaned === 'unknown-actor';
+  }
+
+  function actorLabel(ev){
+    if (!ev || !ev.actor) return 'Local decision';
+    var id = ev.actor.display_id || ev.actor.id || ev.reviewer || 'Human';
+    var source = ev.actor.display_source || ev.actor.source || 'local';
+    id = isLocalActorId(id) ? 'Human' : id;
+    source = String(source || '').trim().toLowerCase();
+    if (!source || source === 'unknown' || source === 'local') {
+      return id === 'Human' ? 'Local decision' : id + ' local decision';
+    }
+    return id + ' via ' + source;
+  }
+
+  function gitLabel(ev){
+    if (!ev || !ev.git || !ev.git.commit) return '';
+    var branch = ev.git.branch || 'detached';
+    var label = branch + '@' + ev.git.commit;
+    if (ev.git.dirty) label += ' · dirty';
+    return label;
+  }
+
+  function shortDate(value){
+    if (!value) return '';
+    return String(value).replace('T', ' ').replace('+00:00', ' UTC');
+  }
+
+  function compactStateSummary(it){
+    var rows = [];
+    if (isDecided(it)) rows.push(currentStateRow(it));
+    var p = latestPublishCheckpoint(it);
+    if (p) rows.push(latestPublishRow(p));
+    if (!rows.length) return '';
+    return '<div class="state-summary">'+rows.join('')+'</div>';
+  }
+
+  function currentStateRow(it){
+    var ev = currentDecisionEvent(it);
+    var bits = ['<span class="state-label">Current</span>', '<strong>'+esc(statusLabel(it))+'</strong>'];
+    if (ev) {
+      bits.push(esc(actorLabel(ev)));
+    } else {
+      bits.push('Local decision');
+    }
+    if (it.decision === 'accepted') {
+      var cls = (it.published && it.published.is_published) ? 'ok' : 'warn';
+      var label = (it.published && it.published.is_published) ? 'published' : 'publish pending';
+      bits.push('<span class="state-badge '+cls+'">'+label+'</span>');
+    }
+    return '<div class="state-row">'+bits.join(' · ')+'</div>';
+  }
+
+  function latestPublishCheckpoint(it){
+    return it.publish_checkpoint || (it.published && it.published.provenance) || null;
+  }
+
+  function latestPublishRow(p){
+    var bits = ['<span class="state-label">Latest publish</span>', '<strong>'+esc(publishDecisionLabel(p))+'</strong>'];
+    bits.push(esc(shortSnapshot(p.snapshot_id || 'snapshot')));
+    bits.push('<span class="state-badge '+(p.included_in_lexicon ? 'ok' : 'warn')+'">'+(p.included_in_lexicon ? 'in lexicon' : 'not in lexicon')+'</span>');
+    return '<div class="state-row">'+bits.join(' · ')+'</div>';
+  }
+
+  function shortSnapshot(snapshotId){
+    var value = String(snapshotId || 'snapshot');
+    if (value.length <= 28) return value;
+    return value.slice(0, 18) + '…' + value.slice(-8);
+  }
+
+  function publishDecisionLabel(p){
+    if (!p) return 'Published';
+    if (p.decision === 'accepted') return 'Accepted';
+    if (p.decision === 'rejected') return 'Rejected';
+    if (p.decision === 'ambiguous') return 'Ambiguous';
+    if (p.decision === 'needs_split') return 'Needs split';
+    return p.included_in_lexicon ? 'Accepted' : 'Reviewed';
+  }
+
+  function publishHistorySection(it){
+    var rows = it.publish_history || [];
+    if (!rows.length) return '';
+    var body = rows.map(function(p, i){
+      var stateBadge = '<span class="state-badge '+(p.included_in_lexicon ? 'ok' : 'warn')+'">'+(p.included_in_lexicon ? 'in lexicon' : 'not in lexicon')+'</span>';
+      var bits = ['<strong>'+esc(publishDecisionLabel(p))+'</strong>', stateBadge, esc(actorLabel(p))];
+      var git = gitLabel(p);
+      if (git) bits.push(esc(git));
+      if (p.created_at) bits.push(esc(shortDate(p.created_at)));
+      var marker = i === 0 ? '<div class="publish-history-note">latest publish checkpoint</div>' : '';
+      return '<div class="publish-history-row"><div><div class="publish-history-snapshot">'+esc(p.snapshot_id || 'snapshot')+'</div>'+marker+'</div><div><div class="publish-history-meta">'+bits.join(' · ')+'</div></div></div>';
+    }).join('');
+    var label = rows.length === 1 ? '1 checkpoint' : rows.length + ' checkpoints';
+    return '<details class="publish-history"><summary><span>Published history</span><span class="publish-history-count">'+label+'</span></summary><div class="publish-ledger-box">'+body+'</div></details>';
+  }
+
   function statusClass(it){ if(it.decision==='accepted')return'accepted'; if(it.decision==='rejected')return'rejected'; if(it.decision)return'ambiguous'; return''; }
   function statusLabel(it){ if(it.decision==='accepted')return'Accepted'; if(it.decision==='rejected')return'Rejected'; if(it.decision==='ambiguous')return'Ambiguous'; if(it.decision)return'Reviewed'; return'Unreviewed'; }
+
+  function renderThemeSwitch(){
+    var options = [
+      ['system', 'System'],
+      ['light', 'Light'],
+      ['dark', 'Dark']
+    ];
+    var h = '<div class="theme-switch" role="group" aria-label="Color theme"><span class="theme-switch-label">Theme</span>';
+    options.forEach(function(opt){
+      h += '<button type="button" data-theme-choice="'+opt[0]+'" class="'+(themeMode===opt[0]?'active':'')+'">'+opt[1]+'</button>';
+    });
+    h += '</div>';
+    return h;
+  }
+
+  function updateThemeSwitch(){
+    app.querySelectorAll('[data-theme-choice]').forEach(function(button){
+      button.classList.toggle('active', button.dataset.themeChoice === themeMode);
+    });
+  }
+
+  function bindThemeSwitch(){
+    app.querySelectorAll('[data-theme-choice]').forEach(function(button){
+      button.onclick = function(){ applyTheme(button.dataset.themeChoice); };
+    });
+  }
 
   function renderHeader(){
     var total = items.length, done = reviewedCount();
@@ -598,6 +1338,7 @@ _APP_JS = r"""
       + '<div style="margin-top:8px">'+tabs+'</div></div>'
       + '<div class="summary" style="align-items:center">'
       + right
+      + renderThemeSwitch()
       + '<span class="pill">policy: '+esc(DATA.policy)+'</span>'
       + '<a class="pill" href="/review-events.jsonl">Export JSONL</a>'
       + '</div></header>';
@@ -605,7 +1346,7 @@ _APP_JS = r"""
 
   function renderLexicon(){
     if (!lexicon.length){
-      return '<section class="panel detail" style="max-height:none"><div class="empty"><strong>No accepted terminology yet</strong><span>Accept candidates in the Review tab, then run</span><span class="code">agent-lexicon publish</span></div></section>';
+      return '<section class="panel detail" style="max-height:none"><div class="empty"><strong>No published terminology yet</strong><span>Accept candidates in the Review tab, then run</span><span class="code">poetry run alex publish</span></div></section>';
     }
     var q = (search || '').toLowerCase();
     var shown = lexicon.filter(function(t){
@@ -614,28 +1355,83 @@ _APP_JS = r"""
       if (t.id.toLowerCase().indexOf(q) > -1) return true;
       return t.aliases.some(function(a){ return a.toLowerCase().indexOf(q) > -1; });
     });
-    var rows = shown.map(function(t){
-      var aliases = t.aliases.length ? t.aliases.map(function(a){ return '<span class="lex-alias">'+esc(a)+'</span>'; }).join('') : '<span class="meta">no aliases</span>';
-      var scopes = t.scopes.map(function(s){ return '<span class="lex-scope">'+esc(s)+'</span>'; }).join('');
-      var tools = t.tools.length ? '<div class="meta" style="margin-top:8px">tools: '+t.tools.map(esc).join(', ')+'</div>' : '';
-      return '<div class="lex-term">'
-        + '<div style="display:flex; justify-content:space-between; align-items:baseline; gap:12px;">'
-        + '<span class="lex-canonical">'+esc(t.canonical)+(t.deprecated?' <span class="meta">(deprecated)</span>':'')+'</span>'
-        + '<span class="lex-id">'+esc(t.id)+'</span></div>'
-        + '<div style="margin-top:8px">'+scopes+'</div>'
-        + '<div style="margin-top:6px">'+aliases+'</div>'
-        + tools
-        + '</div>';
-    }).join('');
-    return '<section class="panel detail" style="max-height:none"><div style="padding:4px 4px 12px"><input class="search" id="lq" placeholder="Search accepted terms" value="'+esc(search)+'" style="max-width:320px"></div>'
+    var source = lexicon[0] && lexicon[0].source === 'snapshot' ? 'latest snapshot' : 'dictionary file';
+    var snap = lexicon[0] && lexicon[0].snapshot_id ? lexicon[0].snapshot_id : '';
+    var header = '<div class="lex-header"><div>'
+      + '<p class="eyebrow">Published lexicon</p>'
+      + '<h2>Published source of truth</h2>'
+      + '<div class="meta">Read-only view of the terminology agents should use. Change decisions in Review, then publish a new snapshot.</div>'
+      + '</div><div class="summary">'
+      + '<span class="pill">'+lexicon.length+' terms</span>'
+      + '<span class="pill">'+esc(source)+(snap ? ' · '+esc(shortSnapshot(snap)) : '')+'</span>'
+      + '</div></div>';
+    var rows = shown.map(function(t, i){ return lexiconTermCard(t, i); }).join('');
+    return '<section class="panel detail" style="max-height:none">'+header+'<div style="display:flex; align-items:center; justify-content:space-between; gap:12px; padding:0 4px 12px"><input class="search" id="lq" placeholder="Search published terms" value="'+esc(search)+'" style="max-width:320px"><span class="meta">Read-only</span></div>'
       + (shown.length ? rows : '<div class="meta" style="padding:12px">No terms match.</div>')
       + '</section>';
+  }
+
+  function lexiconTermCard(t, visibleIndex){
+    var aliases = t.aliases.length ? t.aliases.map(function(a){ return '<span class="lex-alias">'+esc(a)+'</span>'; }).join('') : '<span class="meta">no aliases</span>';
+    var scopes = t.scopes.length ? t.scopes.map(function(s){ return '<span class="lex-scope">'+esc(s)+'</span>'; }).join('') : '<span class="meta">no scopes</span>';
+    var tools = t.tools.length ? '<div class="meta" style="margin-top:8px">tools: '+t.tools.map(esc).join(', ')+'</div>' : '';
+    var publish = t.publish_checkpoint || null;
+    var review = t.review_decision_provenance || null;
+    var reviewIndex = findReviewIndexForLexiconTerm(t);
+    var origin = t.source === 'snapshot' && t.snapshot_id ? 'published in '+esc(shortSnapshot(t.snapshot_id)) : 'from dictionary file';
+    var summary = '<summary><div class="lex-summary"><div>'
+      + '<div class="lex-canonical">'+esc(t.canonical)+(t.deprecated?' <span class="meta">(deprecated)</span>':'')+'</div>'
+      + '<div class="meta">canonical term · '+(t.aliases.length ? t.aliases.length+' aliases' : 'no aliases')+' · '+origin+'</div>'
+      + '</div><span class="lex-id">'+esc(t.id)+'</span></div></summary>';
+    var publishCard = publish
+      ? lexiconProvenanceCard('Publish provenance', publishDecisionLabel(publish)+' · '+(publish.included_in_lexicon ? 'in lexicon' : 'not in lexicon'), actorLabel(publish), gitLabel(publish), publish.created_at, publish.snapshot_id)
+      : lexiconProvenanceCard('Publish provenance', origin, '', '', t.snapshot_created_at || '', t.snapshot_id || '');
+    var reviewCard = review
+      ? lexiconProvenanceCard('Review decision', publishDecisionLabel(review), actorLabel(review), gitLabel(review), review.created_at, '')
+      : lexiconProvenanceCard('Review decision', 'No linked review decision', '', '', '', '');
+    var action = reviewIndex > -1
+      ? '<button class="primary" data-view-review="'+reviewIndex+'">View in Review</button>'
+      : '<button disabled>View in Review</button>';
+    return '<details class="lex-term" data-lex-card="'+visibleIndex+'">'+summary+'<div class="lex-detail">'
+      + '<div class="lex-detail-grid">'+publishCard+reviewCard+'</div>'
+      + '<div><strong style="font-size:12px">Aliases</strong><div style="margin-top:6px">'+aliases+'</div></div>'
+      + '<div style="margin-top:10px"><strong style="font-size:12px">Scopes</strong><div style="margin-top:6px">'+scopes+'</div></div>'
+      + tools
+      + '<div class="lex-actions">'+action+'<span class="meta">Lexicon is read-only. Use Review to change the decision.</span></div>'
+      + '</div></details>';
+  }
+
+  function lexiconProvenanceCard(title, state, actor, git, createdAt, snapshotId){
+    var bits = [];
+    if (actor) bits.push(esc(actor));
+    if (git) bits.push(esc(git));
+    if (createdAt) bits.push(esc(shortDate(createdAt)));
+    if (snapshotId) bits.push(esc(shortSnapshot(snapshotId)));
+    return '<div class="lex-detail-card"><strong>'+esc(title)+'</strong><div>'+esc(state || 'Unknown')+'</div>'
+      + (bits.length ? '<div class="meta" style="margin-top:5px">'+bits.join(' · ')+'</div>' : '')
+      + '</div>';
+  }
+
+  function findReviewIndexForLexiconTerm(t){
+    var keys = [t.review_normalized_surface, t.review_surface, t.canonical, t.id]
+      .filter(function(v){ return String(v || '').trim(); })
+      .map(function(v){ return String(v).toLowerCase(); });
+    for (var i = 0; i < items.length; i++){
+      var it = items[i];
+      var itemKeys = [it.normalized_surface, it.surface].map(function(v){ return String(v || '').toLowerCase(); });
+      for (var k = 0; k < keys.length; k++){
+        if (itemKeys.indexOf(keys[k]) > -1) return i;
+      }
+    }
+    return -1;
   }
 
   function render(){
     if (view === 'lexicon'){
       app.innerHTML = renderHeader() + '<section class="grid" style="grid-template-columns:1fr">' + renderLexicon() + '</section>';
       bindTabs();
+      bindThemeSwitch();
+      bindLexicon();
       var lq = document.getElementById('lq');
       if (lq) lq.oninput = function(){ search = lq.value; render(); var el=document.getElementById('lq'); if(el){el.focus(); el.setSelectionRange(el.value.length, el.value.length);} };
       return;
@@ -644,12 +1440,29 @@ _APP_JS = r"""
       + '<section class="grid"><aside class="panel sidebar">'+renderSidebar()+'</aside>'+renderDetail()+'</section>';
     bind();
     bindTabs();
+    bindThemeSwitch();
     var active = app.querySelector('.item.active');
     if (active) active.scrollIntoView({block:'nearest'});
   }
 
   function bindTabs(){
     app.querySelectorAll('.tab').forEach(function(t){ t.onclick = function(){ view = t.dataset.view; search=''; render(); }; });
+  }
+
+  function bindLexicon(){
+    app.querySelectorAll('[data-view-review]').forEach(function(b){
+      b.onclick = function(ev){
+        ev.preventDefault();
+        var nextIdx = parseInt(b.dataset.viewReview);
+        if (!isNaN(nextIdx) && items[nextIdx]) {
+          idx = nextIdx;
+          view = 'review';
+          search = '';
+          filter = 'all';
+          render();
+        }
+      };
+    });
   }
 
   function bind(){
@@ -669,35 +1482,59 @@ _APP_JS = r"""
     app.querySelectorAll('.cluster-head').forEach(function(c){ c.onclick = function(){ var k=c.dataset.cluster; collapsed[k]=!collapsed[k]; updateList(); }; });
   }
 
+
   function updateList(){
     var listEl = document.getElementById('sblist');
     if (listEl) listEl.innerHTML = renderListInner();
     bindList();
   }
 
+  function replaceItem(updated){
+    if (!updated || !updated.normalized_surface) return;
+    for (var i = 0; i < items.length; i++){
+      if (items[i].normalized_surface === updated.normalized_surface){
+        items[i] = updated;
+        return;
+      }
+    }
+  }
+
+  function postAction(body){
+    body += '&response=json';
+    return fetch('/decision', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body: body})
+      .then(function(resp){
+        if (!resp.ok) throw new Error('review decision failed');
+        return resp.json();
+      })
+      .then(function(payload){
+        if (payload && payload.item) replaceItem(payload.item);
+        return payload;
+      });
+  }
+
   function post(surface, decision){
     var body = 'surface='+encodeURIComponent(surface)+'&decision='+encodeURIComponent(decision)+'&note=';
-    return fetch('/decision', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body: body});
+    return postAction(body);
   }
 
   function clearDecision(surface){
     var body = 'surface='+encodeURIComponent(surface)+'&action=clear&note=';
-    return fetch('/decision', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body: body});
+    return postAction(body);
   }
 
-  var history = [];
+  var undoHistory = [];
 
   function rememberDecisionChange(i){
     var it = items[i];
     if (!it) return;
-    history.push({i:i, surface: it.normalized_surface, prev: it.decision || null});
+    undoHistory.push({i:i, surface: it.normalized_surface, prev: it.decision || null});
   }
 
   function lastHistoryIndexFor(i){
     var it = items[i];
     if (!it) return -1;
-    for (var h = history.length - 1; h >= 0; h--){
-      if (history[h].surface === it.normalized_surface || history[h].i === i) return h;
+    for (var h = undoHistory.length - 1; h >= 0; h--){
+      if (undoHistory[h].surface === it.normalized_surface || undoHistory[h].i === i) return h;
     }
     return -1;
   }
@@ -714,7 +1551,7 @@ _APP_JS = r"""
     var it = items[i];
     rememberDecisionChange(i);
     it.decision = decision;
-    post(it.normalized_surface, decision);
+    post(it.normalized_surface, decision).then(function(){ render(); }).catch(function(){ window.location = '/?surface=' + encodeURIComponent(it.normalized_surface); });
     render();
     setTimeout(next, 100);
   }
@@ -725,26 +1562,28 @@ _APP_JS = r"""
     if (!current) return;
     var historyIndex = lastHistoryIndexFor(idx);
     if (historyIndex > -1){
-      var last = history.splice(historyIndex, 1)[0];
+      var last = undoHistory.splice(historyIndex, 1)[0];
       var targetIndex = itemIndexForHistoryEntry(last);
       var it = items[targetIndex];
       if (!it) return;
       it.decision = last.prev;
-      if (last.prev) post(it.normalized_surface, last.prev);
-      else clearDecision(it.normalized_surface);
+      var undoRequest = last.prev ? post(it.normalized_surface, last.prev) : clearDecision(it.normalized_surface);
       idx = targetIndex;
+      undoRequest.then(function(){ render(); }).catch(function(){ window.location = '/?surface=' + encodeURIComponent(it.normalized_surface); });
       render();
       return;
     }
     if (!isDecided(current)) return;
     current.decision = null;
-    clearDecision(current.normalized_surface);
+    clearDecision(current.normalized_surface).then(function(){ render(); }).catch(function(){ window.location = '/?surface=' + encodeURIComponent(current.normalized_surface); });
     render();
   }
 
   function acceptCluster(key){
     if (DATA.readOnly) return;
-    items.forEach(function(it, i){ if (it.cluster_key === key){ rememberDecisionChange(i); it.decision='accepted'; post(it.normalized_surface,'accepted'); } });
+    var requests = [];
+    items.forEach(function(it, i){ if (it.cluster_key === key){ rememberDecisionChange(i); it.decision='accepted'; requests.push(post(it.normalized_surface,'accepted')); } });
+    Promise.all(requests).then(function(){ render(); }).catch(function(){ render(); });
     render();
     setTimeout(next, 100);
   }
@@ -766,6 +1605,13 @@ _APP_JS = r"""
     else if (k==='A'){ var it=items[idx]; if(it.cluster_key && it.cluster_size>1) acceptCluster(it.cluster_key); e.preventDefault(); }
   });
 
+  applyTheme(themeMode);
+  if (window.matchMedia) {
+    var themeMedia = window.matchMedia('(prefers-color-scheme: dark)');
+    var onSystemThemeChange = function(){ if (themeMode === 'system') applyTheme('system'); };
+    if (themeMedia.addEventListener) themeMedia.addEventListener('change', onSystemThemeChange);
+    else if (themeMedia.addListener) themeMedia.addListener(onSystemThemeChange);
+  }
   render();
 })();
 """
@@ -779,15 +1625,22 @@ def build_review_inbox_html(
     actor: str = "local",
     role: str | None = None,
     policy_mode: str | None = None,
+    history_open: bool = False,
 ) -> str:
     """Render the local proposal inbox as a complete HTML document."""
+    _ = history_open  # Backward-compatible no-op; raw click history is not shown in the UI.
     if not isinstance(state, WorkspaceStore):
         raise ReviewInboxError("state must implement WorkspaceStore")
     items = state.list_review_items(limit=limit)
     selected = _select_item(state, items, selected_surface=selected_surface)
     policy = load_local_policy(state.root, mode=policy_mode)
     policy_decision = check_local_policy(policy, PolicyAction.REVIEW_CANDIDATE, actor=actor, role=role)
-    return _render_page(items=items, selected=selected, root=str(state.root), policy_decision=policy_decision)
+    return _render_page(
+        items=items,
+        selected=selected,
+        root=str(state.root),
+        policy_decision=policy_decision,
+    )
 
 
 def _is_unreviewed(item: WorkspaceReviewItem) -> bool:
@@ -905,19 +1758,50 @@ def _handler_for_state(
             decision = form.get("decision", [""])[0]
             action = form.get("action", ["save"])[0]
             note = form.get("note", [""])[0]
+            response_mode = form.get("response", ["redirect"])[0]
             if not policy_decision.is_allowed:
                 self._send_text(f"Policy denied review decision: {policy_decision.reason}\n", status=403)
                 return
             try:
                 if action == "clear":
-                    state.clear_review_decision(normalized_surface, note=note, reviewer=policy_decision.actor)
+                    state.clear_review_decision(
+                        normalized_surface,
+                        note=note,
+                        reviewer=policy_decision.actor,
+                        actor_type="human",
+                        actor_source="web",
+                        actor_id=_default_web_actor_id(state.root),
+                    )
                 elif action in {"", "save"}:
-                    state.save_review_decision(normalized_surface, decision, note=note, reviewer=policy_decision.actor)
+                    state.save_review_decision(
+                        normalized_surface,
+                        decision,
+                        note=note,
+                        reviewer=policy_decision.actor,
+                        actor_type="human",
+                        actor_source="web",
+                        actor_id=_default_web_actor_id(state.root),
+                    )
                 else:
                     self._send_text(f"Invalid review action: {action}\n", status=400)
                     return
             except (ValueError, WorkspaceError) as exc:
                 self._send_text(f"Invalid review decision: {exc}\n", status=400)
+                return
+            if response_mode == "json":
+                item = state.get_review_item(normalized_surface)
+                self._send_json(
+                    {
+                        "ok": True,
+                        "surface": normalized_surface,
+                        "item": _item_as_dict(
+                            item,
+                            published_terms_by_surface=_published_terms_by_surface(_accepted_terms(state.root)),
+                            published_records_by_surface=_published_records_by_surface(state.root),
+                            publish_history_by_surface=_publish_history_by_surface(state.root),
+                        ) if item else None,
+                    }
+                )
                 return
             location = f"/?surface={quote(normalized_surface)}"
             self.send_response(303)
@@ -926,6 +1810,14 @@ def _handler_for_state(
 
         def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - stdlib signature
             return
+
+        def _send_json(self, payload: Mapping[str, Any], *, status: int = 200) -> None:
+            encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
 
         def _send_html(self, content: str, *, status: int = 200) -> None:
             encoded = content.encode("utf-8")
@@ -1012,11 +1904,36 @@ def _snippets_as_dicts(snippets: Any) -> list[dict[str, Any]]:
     return result
 
 
-def _item_as_dict(item: WorkspaceReviewItem) -> dict[str, Any]:
+def _item_as_dict(
+    item: WorkspaceReviewItem,
+    *,
+    published_terms_by_surface: Mapping[str, dict[str, Any]] | None = None,
+    published_records_by_surface: Mapping[str, dict[str, Any]] | None = None,
+    publish_history_by_surface: Mapping[str, list[dict[str, Any]]] | None = None,
+) -> dict[str, Any]:
     cluster = _item_cluster(item)
     cluster_key = str(cluster.get("cluster_key", "") or "")
     priority = _item_priority(item)
     reasons_raw = _item_quality(item).get("priority_reasons", [])
+    decision_provenance = (
+        _review_decision_provenance_as_ui_dict(item.review_decision)
+        if item.review_decision is not None
+        else None
+    )
+    published_term = (published_terms_by_surface or {}).get(item.surface.casefold())
+    publish_record = (published_records_by_surface or {}).get(item.surface.casefold()) or (published_records_by_surface or {}).get(item.normalized_surface.casefold())
+    publish_history = (publish_history_by_surface or {}).get(item.surface.casefold()) or (publish_history_by_surface or {}).get(item.normalized_surface.casefold()) or []
+    included_by_record = bool((publish_record or {}).get("included_in_lexicon", False))
+    is_published = bool(published_term or included_by_record)
+    published_snapshot_id = str((published_term or {}).get("snapshot_id", "") or ((publish_record or {}).get("snapshot_id", "") if is_published else "") or "")
+    published_source = str((published_term or {}).get("source", "") or ("snapshot" if published_snapshot_id else ""))
+    published = {
+        "is_published": is_published,
+        "snapshot_id": published_snapshot_id,
+        "source": published_source,
+        "created_at": str((published_term or {}).get("snapshot_created_at", "") or ((publish_record or {}).get("created_at", "") if is_published else "") or ""),
+        "provenance": publish_record if is_published else None,
+    }
     return {
         "surface": item.surface,
         "normalized_surface": item.normalized_surface,
@@ -1033,6 +1950,11 @@ def _item_as_dict(item: WorkspaceReviewItem) -> dict[str, Any]:
         "status": item.review_status,
         "decision": item.review_decision.decision.value if item.review_decision else None,
         "note": item.review_decision.note if item.review_decision else "",
+        "decision_metadata": dict(item.review_decision.metadata) if item.review_decision else {},
+        "decision_provenance": decision_provenance,
+        "published": published,
+        "publish_checkpoint": publish_record,
+        "publish_history": list(publish_history),
         "nums": {
             "Score": round(float(item.score), 3),
             "Jargon": round(float(item.jargon_score), 3),
@@ -1045,6 +1967,35 @@ def _item_as_dict(item: WorkspaceReviewItem) -> dict[str, Any]:
     }
 
 
+def _review_decision_provenance_as_ui_dict(decision: Any) -> dict[str, Any]:
+    metadata = decision.metadata if isinstance(decision.metadata, dict) else {}
+    actor = metadata.get("actor", {}) if isinstance(metadata, dict) else {}
+    git = metadata.get("git", {}) if isinstance(metadata, dict) else {}
+    if not isinstance(actor, dict):
+        actor = {}
+    if not isinstance(git, dict):
+        git = {}
+    return {
+        "decision": decision.decision.value,
+        "note": decision.note,
+        "reviewer": decision.reviewer,
+        "created_at": decision.updated_at,
+        "actor": {
+            "type": str(actor.get("type", "unknown") or "unknown"),
+            "id": str(actor.get("id", decision.reviewer) or decision.reviewer),
+            "source": str(actor.get("source", "unknown") or "unknown"),
+            "display_id": _display_actor_id(actor, git, decision.reviewer),
+            "display_source": _display_actor_source(actor),
+        },
+        "git": {
+            "branch": str(git.get("branch", "") or ""),
+            "commit": str(git.get("commit", "") or ""),
+            "dirty": bool(git.get("dirty", False)),
+            "available": bool(git.get("available", False)),
+        },
+    }
+
+
 def _render_page(
     *,
     items: tuple[WorkspaceReviewItem, ...],
@@ -1052,13 +2003,25 @@ def _render_page(
     root: str,
     policy_decision: PolicyDecision,
 ) -> str:
+    lexicon_terms = _accepted_terms(root)
+    published_terms_by_surface = _published_terms_by_surface(lexicon_terms)
+    publish_history_by_surface = _publish_history_by_surface(root)
+    published_records_by_surface = _published_records_by_surface(root)
     payload = {
-        "items": [_item_as_dict(item) for item in items],
+        "items": [
+            _item_as_dict(
+                item,
+                published_terms_by_surface=published_terms_by_surface,
+                published_records_by_surface=published_records_by_surface,
+                publish_history_by_surface=publish_history_by_surface,
+            )
+            for item in items
+        ],
         "root": root,
         "readOnly": not policy_decision.is_allowed,
         "policy": f"{policy_decision.mode.value} · {policy_decision.role.value}",
         "selected": selected.normalized_surface if selected is not None else "",
-        "lexicon": _accepted_terms(root),
+        "lexicon": lexicon_terms,
     }
     data_json = json.dumps(payload).replace("</", "<\\/")
     return "\n".join(
@@ -1069,6 +2032,7 @@ def _render_page(
             '<meta charset="utf-8">',
             '<meta name="viewport" content="width=device-width, initial-scale=1">',
             "<title>Agent Lexicon Review</title>",
+            f"<script>{_THEME_BOOTSTRAP_JS}</script>",
             f"<style>{_CSS}</style>",
             "</head>",
             "<body>",
