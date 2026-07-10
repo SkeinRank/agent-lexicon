@@ -1013,7 +1013,7 @@ class WorkspaceState:
                 SELECT snapshot_id, created_at, term_count, accepted_count,
                        generated_term_count, skipped_count, output_path, payload_json
                 FROM snapshots
-                ORDER BY created_at DESC, snapshot_id DESC
+                ORDER BY created_at DESC, rowid DESC, snapshot_id DESC
                 LIMIT ?
                 """,
                 (limit,),

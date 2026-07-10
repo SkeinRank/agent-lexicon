@@ -208,15 +208,26 @@ def _published_terms_by_surface(terms: list[dict[str, Any]]) -> dict[str, dict[s
 
 
 def _published_records_by_surface(root: str | Path) -> dict[str, dict[str, Any]]:
-    """Return latest publish provenance indexed by candidate surface keys."""
+    """Return publish provenance for candidates in the current snapshot.
+
+    The UI treats the newest snapshot as the currently published vocabulary.
+    Older snapshots remain available in the workspace decision log, but they
+    must not make a candidate look published after a newer snapshot replaced it.
+    """
     try:
         state = open_workspace(root, create=False)
+        latest_snapshots = state.list_snapshots(limit=1)
+        if not latest_snapshots:
+            return {}
+        latest_snapshot_id = latest_snapshots[0].snapshot_id
         records = state.list_decision_records(action=WorkspaceDecisionAction.SNAPSHOT_PUBLISHED)
     except (WorkspaceError, OSError, ValueError):
         return {}
 
     published: dict[str, dict[str, Any]] = {}
     for record in reversed(records):
+        if record.subject != latest_snapshot_id:
+            continue
         payload = record.payload if isinstance(record.payload, Mapping) else {}
         decisions = payload.get("published_decisions")
         if not isinstance(decisions, list):

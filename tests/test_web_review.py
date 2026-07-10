@@ -551,3 +551,40 @@ def test_review_inbox_normalizes_legacy_local_actor_display(tmp_path: Path) -> N
     assert actor["display_id"] == "Maxim"
     assert actor["display_source"] == "web"
     assert "local via unknown" not in html
+
+
+def test_review_inbox_only_marks_terms_from_latest_snapshot_as_published(tmp_path: Path) -> None:
+    import json as _json
+    from agent_lexicon import publish_local_snapshot
+
+    state = _workspace_with_evidence(tmp_path)
+    items = state.list_review_items(limit=10)
+    first = items[0]
+    second = items[1]
+
+    state.save_review_decision(first.normalized_surface, "accepted")
+    first_snapshot = publish_local_snapshot(state, snapshot_id="snapshot_first")
+
+    state.clear_review_decision(first.normalized_surface)
+    state.save_review_decision(second.normalized_surface, "accepted")
+    second_snapshot = publish_local_snapshot(state, snapshot_id="snapshot_second")
+
+    html = build_review_inbox_html(state, selected_surface=first.normalized_surface)
+    start = html.index('<script id="review-data" type="application/json">') + len(
+        '<script id="review-data" type="application/json">'
+    )
+    end = html.index("</script>", start)
+    payload = _json.loads(html[start:end])
+
+    first_item = next(i for i in payload["items"] if i["normalized_surface"] == first.normalized_surface)
+    second_item = next(i for i in payload["items"] if i["normalized_surface"] == second.normalized_surface)
+
+    assert first_snapshot.snapshot_id == "snapshot_first"
+    assert second_snapshot.snapshot_id == "snapshot_second"
+    assert first_item["decision"] is None
+    assert first_item["published"]["is_published"] is False
+    assert first_item["published"]["provenance"] is None
+    assert second_item["decision"] == "accepted"
+    assert second_item["published"]["is_published"] is True
+    assert second_item["published"]["snapshot_id"] == "snapshot_second"
+    assert second_item["published"]["provenance"]["snapshot_id"] == "snapshot_second"
