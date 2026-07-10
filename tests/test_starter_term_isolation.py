@@ -69,3 +69,43 @@ def test_context_hides_starter_terms(tmp_path: Path, capsys) -> None:
     assert exit_code == 0
     assert "example term" not in output
     assert "example concept" not in output
+
+
+def test_review_tab_hides_legacy_unflagged_starter_term(tmp_path: Path) -> None:
+    import json as _json
+    from agent_lexicon import build_review_inbox_html, init_dictionary_layout, init_workspace
+
+    init_dictionary_layout(tmp_path)
+    lexicon_path = tmp_path / "lexicon" / "lexicon.yaml"
+    lexicon_path.write_text(
+        """version: 1
+metadata:
+  name: Project terminology
+scopes:
+  - id: project
+    label: Project
+terms:
+  - id: project.example_term
+    canonical: example term
+    description: Starter term used to verify the dictionary-as-code layout.
+    scopes: [project]
+    aliases:
+      - surface: example concept
+        scopes: [project]
+proposals: []
+""",
+        encoding="utf-8",
+    )
+    state = init_workspace(tmp_path)
+
+    html = build_review_inbox_html(state)
+    start = html.index('<script id="review-data" type="application/json">') + len(
+        '<script id="review-data" type="application/json">'
+    )
+    end = html.index("</script>", start)
+    payload = _json.loads(html[start:end])
+
+    assert payload["lexicon"] == []
+    assert "project.example_term" not in html
+    assert "example concept" not in html
+

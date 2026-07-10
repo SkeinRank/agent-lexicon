@@ -31,11 +31,31 @@ from agent_lexicon.workspace import (
 )
 
 
-def _accepted_terms(root: str | Path) -> list[dict[str, Any]]:
-    """Read the published lexicon for this workspace and return its terms.
+_LEGACY_STARTER_TERM_ID = "project.example_term"
+_LEGACY_STARTER_CANONICAL = "example term"
 
-    Returns an empty list when no lexicon file exists yet, so the Lexicon tab
-    can show an inviting empty state instead of an error.
+
+def _is_web_hidden_starter_term(term: Any) -> bool:
+    """Return True for starter placeholder terms that should not be shown.
+
+    Current dictionaries mark generated starter terms with metadata.starter.
+    Older workspaces can still contain the original starter term without that
+    flag, so the web UI also recognizes the legacy id/canonical pair.
+    """
+    if bool(getattr(term, "is_starter", False)):
+        return True
+    return (
+        getattr(term, "id", "") == _LEGACY_STARTER_TERM_ID
+        and getattr(term, "canonical", "").casefold() == _LEGACY_STARTER_CANONICAL
+    )
+
+
+def _accepted_terms(root: str | Path) -> list[dict[str, Any]]:
+    """Read the published lexicon for this workspace and return real terms.
+
+    Returns an empty list when no lexicon file exists yet, or when the only
+    dictionary entry is the generated starter placeholder, so the Lexicon tab
+    can show an inviting empty state instead of demo terminology.
     """
     try:
         from agent_lexicon.dictionary import dictionary_layout_path
@@ -52,6 +72,8 @@ def _accepted_terms(root: str | Path) -> list[dict[str, Any]]:
         return []
     terms: list[dict[str, Any]] = []
     for term in lexicon.terms:
+        if _is_web_hidden_starter_term(term):
+            continue
         terms.append(
             {
                 "id": term.id,
