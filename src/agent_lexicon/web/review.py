@@ -26,7 +26,6 @@ from agent_lexicon.policy import (
 from agent_lexicon.workspace import (
     ReviewDecisionStatus,
     WorkspaceError,
-    WorkspaceReviewEvent,
     WorkspaceReviewItem,
     WorkspaceStore,
     open_workspace,
@@ -348,13 +347,7 @@ h1 {
   font-size: 12px;
 }
 .provenance-line strong { color: var(--text); font-weight: 600; }
-.history-toggle { cursor: pointer; color: var(--muted); font-size: 12px; margin-top: 12px; }
-.history-box { margin-top: 10px; border: 1px solid var(--line); border-radius: var(--radius-md); overflow: hidden; }
-.history-row { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 10px; padding: 10px 12px; border-top: 1px solid var(--subtle); font-size: 12px; }
-.history-row:first-child { border-top: 0; }
-.history-time { color: var(--muted); font-variant-numeric: tabular-nums; }
-.history-main { min-width: 0; }
-.history-note { color: var(--muted); margin-top: 3px; word-break: break-word; }
+.provenance-state { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
 .metrics {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -523,7 +516,6 @@ _APP_JS = r"""
   var search = '';
   var filter = 'all';
   var collapsed = {};
-  var historyOpen = {};
 
   items.forEach(function(it){
     if (it.cluster_key && it.cluster_size > 1) {
@@ -532,7 +524,6 @@ _APP_JS = r"""
   });
   var sel = DATA.selected;
   if (sel) { for (var i=0;i<items.length;i++){ if(items[i].normalized_surface===sel){ idx=i; break; } } }
-  if (DATA.historyOpen && sel) historyOpen[sel] = true;
 
   function esc(s){ return String(s).replace(/[&<>"]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
   function isDecided(it){ return it.decision != null; }
@@ -645,7 +636,6 @@ _APP_JS = r"""
     h += '<h3 class="section-title">Where it appears</h3>';
     h += pos || '<div class="meta">No positive evidence stored.</div>';
     if (neg){ h += '<h3 class="section-title">Low-confidence matches</h3>' + neg; }
-    h += renderDecisionHistory(it);
     h += '<details style="margin-top:12px"><summary class="scores-toggle">Show scores</summary><div class="scores-box">'+nums+'</div></details>';
     if (!ro){
       h += '<div class="actionbar">';
@@ -680,13 +670,8 @@ _APP_JS = r"""
     return 'Reviewed';
   }
 
-  function latestDecisionEvent(it){
-    var history = it.history || [];
-    for (var i = history.length - 1; i >= 0; i--){
-      var ev = history[i];
-      if (ev.event_type === 'review_decision_saved' && ev.decision === it.decision) return ev;
-    }
-    return null;
+  function currentDecisionEvent(it){
+    return it.decision_provenance || null;
   }
 
   function isLocalActorId(value){
@@ -721,27 +706,18 @@ _APP_JS = r"""
 
   function currentProvenanceLine(it){
     if (!isDecided(it)) return '';
-    var ev = latestDecisionEvent(it);
-    if (!ev) return '<div class="provenance-line"><strong>'+esc(statusLabel(it))+'</strong> · actor unknown</div>';
-    var bits = ['<strong>'+esc(decisionVerb(ev))+'</strong>', esc(actorLabel(ev))];
-    var git = gitLabel(ev);
-    if (git) bits.push(esc(git));
-    if (ev.created_at) bits.push(esc(shortDate(ev.created_at)));
-    return '<div class="provenance-line">'+bits.join(' · ')+'</div>';
-  }
-
-  function renderDecisionHistory(it){
-    var history = it.history || [];
-    if (!history.length) return '';
-    var rows = history.slice().reverse().map(function(ev){
-      var mainBits = ['<strong>'+esc(decisionVerb(ev))+'</strong>', esc(actorLabel(ev))];
+    var ev = currentDecisionEvent(it);
+    var bits = ['<span class="provenance-state">Current decision</span>', '<strong>'+esc(statusLabel(it))+'</strong>'];
+    if (ev) {
+      bits.push(esc(actorLabel(ev)));
       var git = gitLabel(ev);
-      if (git) mainBits.push(esc(git));
-      var note = ev.note ? '<div class="history-note">'+esc(ev.note)+'</div>' : '';
-      return '<div class="history-row"><div class="history-time">'+esc(shortDate(ev.created_at))+'</div><div class="history-main">'+mainBits.join(' · ')+note+'</div></div>';
-    }).join('');
-    var open = historyOpen[it.normalized_surface] ? ' open' : '';
-    return '<details data-history-surface="'+esc(it.normalized_surface)+'"'+open+'><summary class="history-toggle">Show decision history</summary><div class="history-box">'+rows+'</div></details>';
+      if (git) bits.push(esc(git));
+      if (ev.created_at) bits.push(esc(shortDate(ev.created_at)));
+    } else {
+      bits.push('Local decision');
+    }
+    if (it.decision === 'accepted') bits.push('publish pending');
+    return '<div class="provenance-line">'+bits.join(' · ')+'</div>';
   }
 
   function statusClass(it){ if(it.decision==='accepted')return'accepted'; if(it.decision==='rejected')return'rejected'; if(it.decision)return'ambiguous'; return''; }
@@ -823,7 +799,6 @@ _APP_JS = r"""
     var f = document.getElementById('f');
     if (f) f.onchange = function(){ filter = f.value; var v=visibleIndexes(); if(v.indexOf(idx)===-1 && v.length) idx=v[0]; updateList(); };
     bindList();
-    bindHistoryToggles();
     app.querySelectorAll('[data-act]').forEach(function(b){ b.onclick = function(){ decide(idx, b.dataset.act); }; });
     var sk = app.querySelector('[data-skip]'); if (sk) sk.onclick = function(){ next(); };
     var un = app.querySelector('[data-undo]'); if (un) un.onclick = function(){ undo(); };
@@ -835,11 +810,6 @@ _APP_JS = r"""
     app.querySelectorAll('.cluster-head').forEach(function(c){ c.onclick = function(){ var k=c.dataset.cluster; collapsed[k]=!collapsed[k]; updateList(); }; });
   }
 
-  function bindHistoryToggles(){
-    app.querySelectorAll('[data-history-surface]').forEach(function(d){
-      d.ontoggle = function(){ historyOpen[d.dataset.historySurface] = d.open; };
-    });
-  }
 
   function updateList(){
     var listEl = document.getElementById('sblist');
@@ -880,19 +850,19 @@ _APP_JS = r"""
     return postAction(body);
   }
 
-  var history = [];
+  var undoHistory = [];
 
   function rememberDecisionChange(i){
     var it = items[i];
     if (!it) return;
-    history.push({i:i, surface: it.normalized_surface, prev: it.decision || null});
+    undoHistory.push({i:i, surface: it.normalized_surface, prev: it.decision || null});
   }
 
   function lastHistoryIndexFor(i){
     var it = items[i];
     if (!it) return -1;
-    for (var h = history.length - 1; h >= 0; h--){
-      if (history[h].surface === it.normalized_surface || history[h].i === i) return h;
+    for (var h = undoHistory.length - 1; h >= 0; h--){
+      if (undoHistory[h].surface === it.normalized_surface || undoHistory[h].i === i) return h;
     }
     return -1;
   }
@@ -920,7 +890,7 @@ _APP_JS = r"""
     if (!current) return;
     var historyIndex = lastHistoryIndexFor(idx);
     if (historyIndex > -1){
-      var last = history.splice(historyIndex, 1)[0];
+      var last = undoHistory.splice(historyIndex, 1)[0];
       var targetIndex = itemIndexForHistoryEntry(last);
       var it = items[targetIndex];
       if (!it) return;
@@ -979,11 +949,11 @@ def build_review_inbox_html(
     history_open: bool = False,
 ) -> str:
     """Render the local proposal inbox as a complete HTML document."""
+    _ = history_open  # Backward-compatible no-op; raw click history is not shown in the UI.
     if not isinstance(state, WorkspaceStore):
         raise ReviewInboxError("state must implement WorkspaceStore")
     items = state.list_review_items(limit=limit)
     selected = _select_item(state, items, selected_surface=selected_surface)
-    review_events = state.list_review_events(limit=2000)
     policy = load_local_policy(state.root, mode=policy_mode)
     policy_decision = check_local_policy(policy, PolicyAction.REVIEW_CANDIDATE, actor=actor, role=role)
     return _render_page(
@@ -991,8 +961,6 @@ def build_review_inbox_html(
         selected=selected,
         root=str(state.root),
         policy_decision=policy_decision,
-        review_events=review_events,
-        history_open=history_open,
     )
 
 
@@ -1071,7 +1039,6 @@ def _handler_for_state(
                 return
             params = parse_qs(parsed.query)
             selected_surface = params.get("surface", [None])[0]
-            history_open = params.get("history", [""])[0] in {"1", "true", "yes"}
             try:
                 content = build_review_inbox_html(
                     state,
@@ -1079,7 +1046,6 @@ def _handler_for_state(
                     actor=policy_decision.actor,
                     role=policy_decision.role.value,
                     policy_mode=policy_decision.mode.value,
-                    history_open=history_open,
                 )
             except (ReviewInboxError, WorkspaceError, LocalPolicyError) as exc:
                 self._send_text(f"Review inbox error: {exc}\n", status=500)
@@ -1114,7 +1080,6 @@ def _handler_for_state(
             action = form.get("action", ["save"])[0]
             note = form.get("note", [""])[0]
             response_mode = form.get("response", ["redirect"])[0]
-            history_open = form.get("history", [""])[0] in {"1", "true", "yes"}
             if not policy_decision.is_allowed:
                 self._send_text(f"Policy denied review decision: {policy_decision.reason}\n", status=403)
                 return
@@ -1146,18 +1111,15 @@ def _handler_for_state(
                 return
             if response_mode == "json":
                 item = state.get_review_item(normalized_surface)
-                review_events = state.list_review_events(limit=2000)
                 self._send_json(
                     {
                         "ok": True,
                         "surface": normalized_surface,
-                        "item": _item_as_dict(item, review_events=review_events) if item else None,
+                        "item": _item_as_dict(item) if item else None,
                     }
                 )
                 return
             location = f"/?surface={quote(normalized_surface)}"
-            if history_open:
-                location += "&history=1"
             self.send_response(303)
             self.send_header("Location", location)
             self.end_headers()
@@ -1258,20 +1220,16 @@ def _snippets_as_dicts(snippets: Any) -> list[dict[str, Any]]:
     return result
 
 
-def _item_as_dict(
-    item: WorkspaceReviewItem,
-    *,
-    review_events: tuple[WorkspaceReviewEvent, ...] = (),
-) -> dict[str, Any]:
+def _item_as_dict(item: WorkspaceReviewItem) -> dict[str, Any]:
     cluster = _item_cluster(item)
     cluster_key = str(cluster.get("cluster_key", "") or "")
     priority = _item_priority(item)
     reasons_raw = _item_quality(item).get("priority_reasons", [])
-    history = [
-        _review_event_as_ui_dict(event)
-        for event in review_events
-        if event.normalized_surface == item.normalized_surface
-    ]
+    decision_provenance = (
+        _review_decision_provenance_as_ui_dict(item.review_decision)
+        if item.review_decision is not None
+        else None
+    )
     return {
         "surface": item.surface,
         "normalized_surface": item.normalized_surface,
@@ -1289,7 +1247,7 @@ def _item_as_dict(
         "decision": item.review_decision.decision.value if item.review_decision else None,
         "note": item.review_decision.note if item.review_decision else "",
         "decision_metadata": dict(item.review_decision.metadata) if item.review_decision else {},
-        "history": history,
+        "decision_provenance": decision_provenance,
         "nums": {
             "Score": round(float(item.score), 3),
             "Jargon": round(float(item.jargon_score), 3),
@@ -1302,8 +1260,8 @@ def _item_as_dict(
     }
 
 
-def _review_event_as_ui_dict(event: WorkspaceReviewEvent) -> dict[str, Any]:
-    metadata = event.metadata if isinstance(event.metadata, dict) else {}
+def _review_decision_provenance_as_ui_dict(decision: Any) -> dict[str, Any]:
+    metadata = decision.metadata if isinstance(decision.metadata, dict) else {}
     actor = metadata.get("actor", {}) if isinstance(metadata, dict) else {}
     git = metadata.get("git", {}) if isinstance(metadata, dict) else {}
     if not isinstance(actor, dict):
@@ -1311,16 +1269,15 @@ def _review_event_as_ui_dict(event: WorkspaceReviewEvent) -> dict[str, Any]:
     if not isinstance(git, dict):
         git = {}
     return {
-        "event_type": event.event_type.value,
-        "decision": event.decision.value,
-        "note": event.note,
-        "reviewer": event.reviewer,
-        "created_at": event.created_at,
+        "decision": decision.decision.value,
+        "note": decision.note,
+        "reviewer": decision.reviewer,
+        "created_at": decision.updated_at,
         "actor": {
             "type": str(actor.get("type", "unknown") or "unknown"),
-            "id": str(actor.get("id", event.reviewer) or event.reviewer),
+            "id": str(actor.get("id", decision.reviewer) or decision.reviewer),
             "source": str(actor.get("source", "unknown") or "unknown"),
-            "display_id": _display_actor_id(actor, git, event.reviewer),
+            "display_id": _display_actor_id(actor, git, decision.reviewer),
             "display_source": _display_actor_source(actor),
         },
         "git": {
@@ -1338,16 +1295,13 @@ def _render_page(
     selected: WorkspaceReviewItem | None,
     root: str,
     policy_decision: PolicyDecision,
-    review_events: tuple[WorkspaceReviewEvent, ...] = (),
-    history_open: bool = False,
 ) -> str:
     payload = {
-        "items": [_item_as_dict(item, review_events=review_events) for item in items],
+        "items": [_item_as_dict(item) for item in items],
         "root": root,
         "readOnly": not policy_decision.is_allowed,
         "policy": f"{policy_decision.mode.value} · {policy_decision.role.value}",
         "selected": selected.normalized_surface if selected is not None else "",
-        "historyOpen": bool(history_open),
         "lexicon": _accepted_terms(root),
     }
     data_json = json.dumps(payload).replace("</", "<\\/")

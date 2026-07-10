@@ -240,24 +240,26 @@ def _drive_post(state, body: bytes, headers: dict) -> str:
     return f"STATUS {status}"
 
 
-def test_review_inbox_undo_targets_selected_candidate_history(tmp_path: Path) -> None:
+def test_review_inbox_undo_targets_selected_candidate_undo_stack(tmp_path: Path) -> None:
     state = _workspace_with_evidence(tmp_path)
 
     html = build_review_inbox_html(state, selected_surface="billing.update_credit_limit")
 
     assert "var hasLocalUndo = lastHistoryIndexFor(idx) > -1" in html
     assert "var historyIndex = lastHistoryIndexFor(idx)" in html
-    assert "history.splice(historyIndex, 1)" in html
+    assert "undoHistory.splice(historyIndex, 1)" in html
+    assert "history.splice(historyIndex, 1)" not in html
     assert "history.pop()" not in html
 
 
-def test_review_inbox_cluster_accept_records_targeted_history_entries(tmp_path: Path) -> None:
+def test_review_inbox_cluster_accept_records_targeted_undo_entries(tmp_path: Path) -> None:
     state = _workspace_with_evidence(tmp_path)
 
     html = build_review_inbox_html(state, selected_surface="billing.update_credit_limit")
 
     assert "function rememberDecisionChange(i)" in html
     assert "surface: it.normalized_surface" in html
+    assert "undoHistory.push" in html
     assert "rememberDecisionChange(i); it.decision='accepted'" in html
 
 
@@ -306,7 +308,7 @@ def test_review_inbox_shows_clear_decision_control_for_saved_decision(tmp_path: 
     assert "clearDecision" in html
 
 
-def test_review_inbox_payload_includes_decision_history_actor_metadata(tmp_path: Path) -> None:
+def test_review_inbox_payload_includes_current_decision_provenance(tmp_path: Path) -> None:
     import json as _json
 
     state = _workspace_with_evidence(tmp_path)
@@ -335,14 +337,15 @@ def test_review_inbox_payload_includes_decision_history_actor_metadata(tmp_path:
     payload = _json.loads(html[start:end])
 
     target = next(i for i in payload["items"] if i["surface"] == "billing.update_credit_limit")
-    assert target["history"][0]["actor"] == {
+    assert "history" not in target
+    assert target["decision_provenance"]["actor"] == {
         "type": "human",
         "id": "Maxim Nikolaev",
         "source": "web",
         "display_id": "Maxim Nikolaev",
         "display_source": "web",
     }
-    assert target["history"][0]["git"] == {
+    assert target["decision_provenance"]["git"] == {
         "available": True,
         "branch": "main",
         "commit": "abc1234",
@@ -351,16 +354,18 @@ def test_review_inbox_payload_includes_decision_history_actor_metadata(tmp_path:
     assert target["decision_metadata"]["actor"]["id"] == "Maxim Nikolaev"
 
 
-def test_review_inbox_renders_provenance_ui_and_centered_status_styles(tmp_path: Path) -> None:
+def test_review_inbox_renders_current_decision_ui_without_raw_click_history(tmp_path: Path) -> None:
     state = _workspace_with_evidence(tmp_path)
 
     html = build_review_inbox_html(state, selected_surface="billing.update_credit_limit")
 
     assert "currentProvenanceLine" in html
-    assert "Show decision history" in html
-    assert "history-box" in html
-    assert "data-history-surface" in html
-    assert "historyOpen" in html
+    assert "Current decision" in html
+    assert "decision_provenance" in html
+    assert "Show decision history" not in html
+    assert "history-box" not in html
+    assert "data-history-surface" not in html
+    assert "historyOpen" not in html
     assert "align-items: center" in html
     assert "detail-head .status" in html
 
@@ -379,7 +384,7 @@ def test_review_post_resolves_web_actor_from_git_config(tmp_path: Path) -> None:
     assert event.metadata["git"]["author_name"] == "Maxim"
 
 
-def test_review_post_json_response_returns_updated_item_history(tmp_path: Path) -> None:
+def test_review_post_json_response_returns_updated_item_provenance(tmp_path: Path) -> None:
     import json as _json
 
     subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
@@ -395,21 +400,22 @@ def test_review_post_json_response_returns_updated_item_history(tmp_path: Path) 
     payload = _json.loads(response_body)
     assert payload["ok"] is True
     assert payload["item"]["decision"] == "accepted"
-    assert payload["item"]["history"][-1]["actor"]["display_id"] == "Maxim"
-    assert payload["item"]["history"][-1]["actor"]["display_source"] == "web"
+    assert "history" not in payload["item"]
+    assert payload["item"]["decision_provenance"]["actor"]["display_id"] == "Maxim"
+    assert payload["item"]["decision_provenance"]["actor"]["display_source"] == "web"
 
 
-def test_review_redirect_preserves_open_history_flag(tmp_path: Path) -> None:
+def test_review_redirect_ignores_legacy_history_flag(tmp_path: Path) -> None:
     state = _workspace_with_evidence(tmp_path)
 
     body = b"surface=billing.update_credit_limit&decision=accepted&note=&history=1"
     status, headers, _response_body = _drive_post_response(state, body, {"Content-Length": str(len(body))})
 
     assert status == 303
-    assert headers["Location"].endswith("&history=1")
+    assert headers["Location"] == "/?surface=billing.update_credit_limit"
 
 
-def test_review_inbox_can_render_history_open_for_selected_candidate(tmp_path: Path) -> None:
+def test_review_inbox_ignores_history_open_argument(tmp_path: Path) -> None:
     import json as _json
 
     state = _workspace_with_evidence(tmp_path)
@@ -426,9 +432,8 @@ def test_review_inbox_can_render_history_open_for_selected_candidate(tmp_path: P
     end = html.index("</script>", start)
     payload = _json.loads(html[start:end])
 
-    assert payload["historyOpen"] is True
-    assert "data-history-surface" in html
-    assert "if (DATA.historyOpen && sel) historyOpen[sel] = true" in html
+    assert "historyOpen" not in payload
+    assert "data-history-surface" not in html
 
 
 def test_review_inbox_actor_label_avoids_local_via_unknown_copy(tmp_path: Path) -> None:
@@ -464,7 +469,7 @@ def test_review_inbox_normalizes_legacy_local_actor_display(tmp_path: Path) -> N
     payload = _json.loads(html[start:end])
 
     target = next(i for i in payload["items"] if i["surface"] == "billing.update_credit_limit")
-    actor = target["history"][0]["actor"]
+    actor = target["decision_provenance"]["actor"]
     assert actor["id"] == "local"
     assert actor["display_id"] == "Maxim"
     assert actor["display_source"] == "web"
