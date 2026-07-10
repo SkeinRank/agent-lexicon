@@ -560,6 +560,7 @@ class Lexicon:
     terms: tuple[Term, ...] = ()
     proposals: tuple[ProposalCandidate, ...] = ()
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    _fingerprint_cache: Any | None = field(default=None, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "version", _clean_text(str(self.version), field_name="lexicon version"))
