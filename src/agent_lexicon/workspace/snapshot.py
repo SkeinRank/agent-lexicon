@@ -17,6 +17,10 @@ from .state import ReviewDecisionStatus, WorkspaceError, WorkspaceReviewItem
 from .storage import WorkspaceStore
 
 
+_LEGACY_STARTER_TERM_ID = "project.example_term"
+_LEGACY_STARTER_CANONICAL = "example term"
+
+
 class SnapshotPublishError(ValueError):
     """Raised when a local snapshot cannot be published."""
 
@@ -110,8 +114,8 @@ def publish_local_snapshot(
         raise SnapshotPublishError("no accepted review decisions are available to publish")
 
     all_base_terms = tuple(base_lexicon.terms) if base_lexicon is not None else ()
-    starter_terms = tuple(term for term in all_base_terms if term.is_starter)
-    base_terms = tuple(term for term in all_base_terms if not term.is_starter)
+    starter_terms = tuple(term for term in all_base_terms if _is_snapshot_hidden_starter_term(term))
+    base_terms = tuple(term for term in all_base_terms if not _is_snapshot_hidden_starter_term(term))
     base_scopes = tuple(base_lexicon.scopes) if base_lexicon is not None else ()
     base_metadata = dict(base_lexicon.metadata) if base_lexicon is not None else {}
     known_term_ids = {term.id for term in base_terms}
@@ -265,6 +269,23 @@ def _evidence_from_item(item: WorkspaceReviewItem, *, snapshot_id: str) -> tuple
             )
         )
     return tuple(evidence)
+
+
+def _is_snapshot_hidden_starter_term(term: Term) -> bool:
+    """Return True for starter placeholders excluded from published snapshots.
+
+    New dictionaries mark starter entries with ``metadata.starter``. Older
+    workspaces can still contain the original placeholder without that metadata,
+    so publish must apply the same legacy fallback as the web view. Otherwise a
+    normal ``alex publish`` can permanently carry ``example term`` into the
+    snapshot even though the UI hides it.
+    """
+    if term.is_starter:
+        return True
+    return (
+        term.id.strip().casefold() == _LEGACY_STARTER_TERM_ID
+        and term.canonical.strip().casefold() == _LEGACY_STARTER_CANONICAL
+    )
 
 
 def _known_surfaces(lexicon: Lexicon | None) -> set[str]:

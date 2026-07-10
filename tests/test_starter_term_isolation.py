@@ -60,6 +60,52 @@ def test_publish_drops_starter_terms(tmp_path: Path) -> None:
     assert snapshot.metadata["starter_terms_dropped"] == ["project.example_term"]
 
 
+def test_publish_drops_legacy_unflagged_starter_terms(tmp_path: Path) -> None:
+    from agent_lexicon import Lexicon, Term
+    from agent_lexicon.ingest import ingest_local_paths
+    from agent_lexicon.scout import build_evidence_packs, discover_scout_candidates
+    from agent_lexicon.workspace import init_workspace
+    from agent_lexicon.workspace.snapshot import publish_local_snapshot
+
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "notes.md").write_text(
+        "The ContextSpace snapshot owns every RuntimeSnapshot ContextSpace record.\n",
+        encoding="utf-8",
+    )
+    ingest_report = ingest_local_paths([docs], root=tmp_path)
+    candidate_report = discover_scout_candidates(ingest_report.documents, min_score=0.2, max_candidates=5)
+    evidence_report = build_evidence_packs(ingest_report.documents, candidate_report.candidates, context_lines=0)
+    state = init_workspace(tmp_path)
+    state.store_ingest_report(ingest_report)
+    state.store_candidate_report(candidate_report)
+    state.store_evidence_report(evidence_report)
+    state.save_review_decision("contextspace", "accepted")
+
+    legacy_base = Lexicon(
+        terms=(
+            Term(
+                id="project.example_term",
+                canonical="example term",
+                description="Starter term used to verify the dictionary-as-code layout.",
+                metadata={},
+            ),
+        )
+    )
+    snapshot = publish_local_snapshot(
+        state,
+        output_path=tmp_path / "legacy_starter_snap.json",
+        base_lexicon=legacy_base,
+    )
+
+    published = json.loads(Path(snapshot.output_path).read_text(encoding="utf-8"))
+    canonicals = [term["canonical"] for term in published["terms"]]
+    assert "example term" not in canonicals
+    assert any("contextspace" in canonical.casefold() for canonical in canonicals)
+    assert snapshot.term_count == 1
+    assert snapshot.metadata["starter_terms_dropped"] == ["project.example_term"]
+
+
 def test_context_hides_starter_terms(tmp_path: Path, capsys) -> None:
     from agent_lexicon.cli import main
 
