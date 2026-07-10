@@ -448,6 +448,24 @@ def test_review_inbox_renders_current_decision_ui_without_raw_click_history(tmp_
     assert "detail-head .status" in html
 
 
+def test_review_sidebar_groups_reviewed_terms_by_recency_and_adds_history_filter(tmp_path: Path) -> None:
+    state = _workspace_with_evidence(tmp_path)
+    state.save_review_decision("billing.update_credit_limit", "accepted", note="Ready")
+
+    html = build_review_inbox_html(state, selected_surface="billing.update_credit_limit")
+
+    assert '<option value="history"' in html
+    assert "History</option>" in html
+    assert "function hasReviewHistory" in html
+    assert "filter === 'history' && !hasReviewHistory(it)" in html
+    assert "function timelineSections" in html
+    assert "Needs review" in html
+    assert "Reviewed today" in html
+    assert "Reviewed yesterday" in html
+    assert "Reviewed earlier" in html
+    assert "timeline-section-head" in html
+
+
 def test_review_post_resolves_web_actor_from_git_config(tmp_path: Path) -> None:
     subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
     subprocess.run(["git", "config", "user.name", "Maxim"], cwd=tmp_path, check=True)

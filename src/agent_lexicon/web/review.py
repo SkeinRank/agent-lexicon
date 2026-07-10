@@ -665,6 +665,33 @@ button.primary { background: var(--accent); color: #fff; border-color: var(--acc
 .search:focus { border-color: var(--strong); background: #fff; }
 .filter { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 8px 10px; font: inherit; background: var(--soft); color: var(--text); cursor: pointer; }
 .sidebar-list { max-height: 62vh; overflow-y: auto; }
+.timeline-section { margin-bottom: 12px; }
+.timeline-section-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px 7px;
+  margin: 2px 0 6px;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  background: rgba(255, 255, 255, 0.92);
+  border-bottom: 1px solid var(--subtle);
+  backdrop-filter: blur(8px);
+}
+.timeline-section-head span:last-child {
+  letter-spacing: 0;
+  text-transform: none;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 1px 7px;
+  background: var(--soft);
+}
 .cluster-head { display: flex; align-items: center; gap: 8px; padding: 9px 10px; border-radius: var(--radius-sm); cursor: pointer; color: var(--muted); font-size: 12px; }
 .cluster-head:hover { background: var(--soft); }
 .cluster-head .caret { transition: transform 0.15s; }
@@ -722,12 +749,17 @@ _APP_JS = r"""
   function isDecided(it){ return it.decision != null; }
   function priorityWord(it){ return it.priority === 'important' ? (it.score >= 0.6 ? 'high' : 'medium') : 'low'; }
 
+  function hasReviewHistory(it){
+    return isDecided(it) || !!(it.publish_history && it.publish_history.length);
+  }
+
   function visibleIndexes(){
     var out = [];
     for (var i=0;i<items.length;i++){
       var it = items[i];
       if (filter === 'unreviewed' && isDecided(it)) continue;
       if (filter === 'important' && it.priority !== 'important') continue;
+      if (filter === 'history' && !hasReviewHistory(it)) continue;
       if (search && it.surface.toLowerCase().indexOf(search.toLowerCase()) === -1) continue;
       out.push(i);
     }
@@ -767,6 +799,7 @@ _APP_JS = r"""
     h += '<option value="all"'+(filter==='all'?' selected':'')+'>All</option>';
     h += '<option value="unreviewed"'+(filter==='unreviewed'?' selected':'')+'>Unreviewed</option>';
     h += '<option value="important"'+(filter==='important'?' selected':'')+'>Important</option>';
+    h += '<option value="history"'+(filter==='history'?' selected':'')+'>History</option>';
     h += '</select>';
     h += '</div>';
     return h;
@@ -774,9 +807,21 @@ _APP_JS = r"""
 
   function renderListInner(){
     var vis = visibleIndexes();
-    var groups = groupVisible(vis);
+    var sections = timelineSections(vis);
     var h = '';
     if (vis.length === 0){ h += '<div class="meta" style="padding:16px">No terms match.</div>'; }
+    sections.forEach(function(section){
+      h += '<div class="timeline-section">';
+      h += '<div class="timeline-section-head"><span>'+esc(section.label)+'</span><span>'+section.idxs.length+'</span></div>';
+      h += renderGroupedItems(section.idxs);
+      h += '</div>';
+    });
+    return h;
+  }
+
+  function renderGroupedItems(idxs){
+    var groups = groupVisible(idxs);
+    var h = '';
     groups.forEach(function(g){
       if (g.key === null){
         g.idxs.forEach(function(i){ h += itemRow(i); });
@@ -792,6 +837,43 @@ _APP_JS = r"""
       }
     });
     return h;
+  }
+
+  function timelineSections(vis){
+    var buckets = {needs: [], today: [], yesterday: [], older: []};
+    vis.forEach(function(i){ buckets[timelineBucket(items[i])].push(i); });
+    var defs = [
+      ['needs', 'Needs review'],
+      ['today', 'Reviewed today'],
+      ['yesterday', 'Reviewed yesterday'],
+      ['older', 'Reviewed earlier']
+    ];
+    return defs.filter(function(def){ return buckets[def[0]].length > 0; })
+      .map(function(def){ return {key:def[0], label:def[1], idxs:buckets[def[0]]}; });
+  }
+
+  function timelineBucket(it){
+    if (!hasReviewHistory(it)) return 'needs';
+    var d = itemTimelineDate(it);
+    if (!d) return 'older';
+    var now = new Date();
+    var today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    var yesterday = new Date(today);
+    yesterday.setDate(today.getDate() - 1);
+    var itemDay = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    if (itemDay.getTime() === today.getTime()) return 'today';
+    if (itemDay.getTime() === yesterday.getTime()) return 'yesterday';
+    return 'older';
+  }
+
+  function itemTimelineDate(it){
+    var raw = '';
+    if (it.decision_provenance && it.decision_provenance.created_at) raw = it.decision_provenance.created_at;
+    if (!raw && it.publish_history && it.publish_history.length && it.publish_history[0].created_at) raw = it.publish_history[0].created_at;
+    if (!raw) return null;
+    var parsed = new Date(raw);
+    if (isNaN(parsed.getTime())) return null;
+    return parsed;
   }
 
   function itemRow(i){
