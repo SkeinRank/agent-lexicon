@@ -144,7 +144,7 @@ agent-lexicon init                      # create lexicon/, workspace, policy, an
 agent-lexicon scan                      # discover candidate terms from configured paths
 agent-lexicon scan README.md docs src   # or override paths explicitly
 agent-lexicon review                    # open the local web inbox to accept/reject
-agent-lexicon publish                   # publish accepted decisions as a snapshot
+agent-lexicon publish --update-lexicon  # publish accepted decisions and update lexicon.yaml
 agent-lexicon resolve <lexicon> "text"  # resolve terminology in any text
 agent-lexicon guard   <lexicon> "text" --tool <name>   # gate a tool call
 agent-lexicon context <lexicon>         # print the canonical vocabulary brief for an agent

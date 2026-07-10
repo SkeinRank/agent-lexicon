@@ -495,8 +495,14 @@ def run_simple_publish(
     lexicon_path: str | Path | None = None,
     output_path: str | Path | None = None,
     snapshot_id: str | None = None,
+    update_lexicon: bool = False,
 ) -> SimplePublishReport:
-    """Publish accepted local review decisions as a lexicon-compatible snapshot."""
+    """Publish accepted local review decisions as a lexicon-compatible snapshot.
+
+    With ``update_lexicon=True`` the published terms are also written back to
+    the git-tracked lexicon file, keeping the dictionary-as-code YAML the
+    single source of truth instead of only the snapshot JSON.
+    """
     root_path = Path(root).expanduser().resolve()
     resolved_lexicon_path = _resolve_default_lexicon_path(root_path, layout_dir=layout_dir, lexicon_path=lexicon_path)
     try:
@@ -510,6 +516,19 @@ def run_simple_publish(
         )
     except (WorkspaceError, AgentLexiconLoadError, SnapshotPublishError, OSError) as exc:
         raise SimpleWorkflowError(str(exc)) from exc
+    lexicon_updated_path: str | None = None
+    if update_lexicon:
+        if resolved_lexicon_path is None:
+            raise SimpleWorkflowError(
+                "cannot update the lexicon file: no lexicon path is configured; "
+                "run `agent-lexicon init` or pass --lexicon"
+            )
+        try:
+            lexicon_updated_path = str(
+                _write_lexicon_file(snapshot.lexicon, resolved_lexicon_path)
+            )
+        except (OSError, SimpleWorkflowError) as exc:
+            raise SimpleWorkflowError(f"snapshot was published, but updating the lexicon file failed: {exc}") from exc
     return SimplePublishReport(
         snapshot_id=snapshot.snapshot_id,
         output_path=snapshot.output_path,
@@ -521,8 +540,35 @@ def run_simple_publish(
             "root": str(root_path),
             "lexicon_path": str(resolved_lexicon_path) if resolved_lexicon_path else None,
             "starter_terms_dropped": list(snapshot.metadata.get("starter_terms_dropped", [])),
+            "lexicon_updated_path": lexicon_updated_path,
         },
     )
+
+
+def _write_lexicon_file(lexicon: Any, path: Path) -> Path:
+    """Write a lexicon back to its git-tracked file in the file's own format.
+
+    YAML files require PyYAML - which is already guaranteed present, because
+    the same YAML file could not have been *loaded* without it. JSON files
+    use the standard library. The rewrite is atomic. Note: hand-written YAML
+    comments are not preserved by a rewrite.
+    """
+    from agent_lexicon.core.files import atomic_write_text
+
+    payload = lexicon.to_dict()
+    suffix = path.suffix.casefold()
+    if suffix in {".yaml", ".yml"}:
+        try:  # pragma: no cover - import branch depends on the environment
+            import yaml
+        except ModuleNotFoundError as exc:  # pragma: no cover
+            raise SimpleWorkflowError(
+                "PyYAML is required to update a YAML lexicon file; install pyyaml or use a JSON lexicon"
+            ) from exc
+        text = yaml.safe_dump(payload, sort_keys=False, allow_unicode=True, default_flow_style=False)
+    else:
+        text = json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True) + "\n"
+    atomic_write_text(path, text)
+    return path
 
 
 def _resolve_scan_paths(paths: Sequence[str | Path] | None, *, root: Path) -> tuple[Path, ...]:
