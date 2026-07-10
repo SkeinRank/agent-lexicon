@@ -147,7 +147,7 @@ def test_review_inbox_hides_starter_lexicon_term(tmp_path: Path) -> None:
     assert "example term" not in html
     # Lexicon tab button is present, but shows an empty accepted vocabulary.
     assert 'data-view="lexicon"' in html
-    assert "No accepted terminology yet" in html
+    assert "No published terminology yet" in html
     # Action bar is sticky and present for a writable policy.
     assert "actionbar" in html
 
@@ -190,6 +190,49 @@ proposals: []
     term = payload["lexicon"][0]
     assert term["canonical"] == "billing limit"
     assert term["aliases"] == ["credit limit"]
+
+
+def test_review_inbox_lexicon_tab_reads_latest_snapshot_after_publish(tmp_path: Path) -> None:
+    import json as _json
+    from agent_lexicon import publish_local_snapshot
+
+    state = _workspace_with_evidence(tmp_path)
+    state.save_review_decision("billing.update_credit_limit", "accepted", note="Promote canonical term")
+    snapshot = publish_local_snapshot(state)
+
+    html = build_review_inbox_html(state, selected_surface="billing.update_credit_limit")
+    start = html.index('<script id="review-data" type="application/json">') + len(
+        '<script id="review-data" type="application/json">'
+    )
+    end = html.index("</script>", start)
+    payload = _json.loads(html[start:end])
+
+    terms = payload["lexicon"]
+    assert terms, "expected published snapshot terms in the Lexicon tab"
+    generated = next(term for term in terms if term["canonical"] == "billing.update_credit_limit")
+    assert generated["source"] == "snapshot"
+    assert generated["snapshot_id"] == snapshot.snapshot_id
+
+
+def test_review_inbox_marks_current_accepted_decision_as_published(tmp_path: Path) -> None:
+    import json as _json
+    from agent_lexicon import publish_local_snapshot
+
+    state = _workspace_with_evidence(tmp_path)
+    state.save_review_decision("billing.update_credit_limit", "accepted")
+    snapshot = publish_local_snapshot(state)
+
+    html = build_review_inbox_html(state, selected_surface="billing.update_credit_limit")
+    start = html.index('<script id="review-data" type="application/json">') + len(
+        '<script id="review-data" type="application/json">'
+    )
+    end = html.index("</script>", start)
+    payload = _json.loads(html[start:end])
+
+    item = next(i for i in payload["items"] if i["surface"] == "billing.update_credit_limit")
+    assert item["decision"] == "accepted"
+    assert item["published"]["is_published"] is True
+    assert item["published"]["snapshot_id"] == snapshot.snapshot_id
 
 
 def _drive_post_response(state, body: bytes, headers: dict) -> tuple[int | None, dict[str, str], str]:

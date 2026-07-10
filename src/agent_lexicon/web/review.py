@@ -110,16 +110,70 @@ def _is_web_hidden_starter_term(term: Any) -> bool:
     )
 
 
-def _accepted_terms(root: str | Path) -> list[dict[str, Any]]:
-    """Read the published lexicon for this workspace and return real terms.
+def _term_as_lexicon_tab_dict(term: Any, *, source: str, snapshot_id: str = "", snapshot_created_at: str = "") -> dict[str, Any]:
+    return {
+        "id": term.id,
+        "canonical": term.canonical,
+        "scopes": list(term.scopes),
+        "tools": list(term.tools),
+        "aliases": [alias.surface for alias in term.aliases],
+        "deprecated": bool(term.deprecated),
+        "source": source,
+        "snapshot_id": snapshot_id,
+        "snapshot_created_at": snapshot_created_at,
+    }
 
-    Returns an empty list when no lexicon file exists yet, or when the only
-    dictionary entry is the generated starter placeholder, so the Lexicon tab
-    can show an inviting empty state instead of demo terminology.
-    """
+
+def _terms_from_lexicon(lexicon: Any, *, source: str, snapshot_id: str = "", snapshot_created_at: str = "") -> list[dict[str, Any]]:
+    terms: list[dict[str, Any]] = []
+    for term in lexicon.terms:
+        if _is_web_hidden_starter_term(term):
+            continue
+        terms.append(
+            _term_as_lexicon_tab_dict(
+                term,
+                source=source,
+                snapshot_id=snapshot_id,
+                snapshot_created_at=snapshot_created_at,
+            )
+        )
+    terms.sort(key=lambda t: t["id"])
+    return terms
+
+
+def _latest_published_snapshot_terms(root: str | Path) -> list[dict[str, Any]]:
+    """Return terms from the newest published workspace snapshot, if available."""
+    try:
+        from agent_lexicon.core import AgentLexiconLoadError, load_lexicon
+    except ImportError:
+        return []
+    try:
+        state = open_workspace(root, create=False)
+        snapshots = state.list_snapshots(limit=1)
+    except (WorkspaceError, OSError, ValueError):
+        return []
+    if not snapshots:
+        return []
+    snapshot = snapshots[0]
+    snapshot_path = Path(snapshot.output_path)
+    if not snapshot_path.exists():
+        return []
+    try:
+        lexicon = load_lexicon(snapshot_path, document_format="json")
+    except (AgentLexiconLoadError, OSError, ValueError):
+        return []
+    return _terms_from_lexicon(
+        lexicon,
+        source="snapshot",
+        snapshot_id=snapshot.snapshot_id,
+        snapshot_created_at=snapshot.created_at,
+    )
+
+
+def _dictionary_lexicon_terms(root: str | Path) -> list[dict[str, Any]]:
     try:
         from agent_lexicon.dictionary import dictionary_layout_path
-        from agent_lexicon.core import load_lexicon, AgentLexiconLoadError
+        from agent_lexicon.core import AgentLexiconLoadError, load_lexicon
     except ImportError:
         return []
     layout = dictionary_layout_path(root)
@@ -130,22 +184,26 @@ def _accepted_terms(root: str | Path) -> list[dict[str, Any]]:
         lexicon = load_lexicon(lexicon_path)
     except (AgentLexiconLoadError, OSError, ValueError):
         return []
-    terms: list[dict[str, Any]] = []
-    for term in lexicon.terms:
-        if _is_web_hidden_starter_term(term):
-            continue
-        terms.append(
-            {
-                "id": term.id,
-                "canonical": term.canonical,
-                "scopes": list(term.scopes),
-                "tools": list(term.tools),
-                "aliases": [alias.surface for alias in term.aliases],
-                "deprecated": bool(term.deprecated),
-            }
-        )
-    terms.sort(key=lambda t: t["id"])
-    return terms
+    return _terms_from_lexicon(lexicon, source="dictionary")
+
+
+def _accepted_terms(root: str | Path) -> list[dict[str, Any]]:
+    """Return the latest published terminology shown in the Lexicon tab.
+
+    ``agent-lexicon publish`` writes a local snapshot by default, while
+    ``agent-lexicon publish --update-lexicon`` also rewrites lexicon/lexicon.yaml.
+    The web UI treats the newest snapshot as the freshest published state so the
+    Lexicon tab updates immediately after the normal publish command. If no
+    snapshot exists yet, it falls back to the git-tracked dictionary file.
+    """
+    snapshot_terms = _latest_published_snapshot_terms(root)
+    if snapshot_terms:
+        return snapshot_terms
+    return _dictionary_lexicon_terms(root)
+
+
+def _published_terms_by_surface(terms: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    return {str(term.get("canonical", "")).casefold(): term for term in terms if str(term.get("canonical", "")).strip()}
 
 
 class ReviewInboxError(ValueError):
@@ -716,7 +774,13 @@ _APP_JS = r"""
     } else {
       bits.push('Local decision');
     }
-    if (it.decision === 'accepted') bits.push('publish pending');
+    if (it.decision === 'accepted') {
+      if (it.published && it.published.is_published) {
+        bits.push(it.published.snapshot_id ? 'published in '+esc(it.published.snapshot_id) : 'published');
+      } else {
+        bits.push('publish pending');
+      }
+    }
     return '<div class="provenance-line">'+bits.join(' · ')+'</div>';
   }
 
@@ -746,7 +810,7 @@ _APP_JS = r"""
 
   function renderLexicon(){
     if (!lexicon.length){
-      return '<section class="panel detail" style="max-height:none"><div class="empty"><strong>No accepted terminology yet</strong><span>Accept candidates in the Review tab, then run</span><span class="code">agent-lexicon publish</span></div></section>';
+      return '<section class="panel detail" style="max-height:none"><div class="empty"><strong>No published terminology yet</strong><span>Accept candidates in the Review tab, then run</span><span class="code">poetry run alex publish</span></div></section>';
     }
     var q = (search || '').toLowerCase();
     var shown = lexicon.filter(function(t){
@@ -755,10 +819,13 @@ _APP_JS = r"""
       if (t.id.toLowerCase().indexOf(q) > -1) return true;
       return t.aliases.some(function(a){ return a.toLowerCase().indexOf(q) > -1; });
     });
+    var source = lexicon[0] && lexicon[0].source === 'snapshot' ? 'latest snapshot' : 'dictionary file';
+    var snap = lexicon[0] && lexicon[0].snapshot_id ? ' · '+esc(lexicon[0].snapshot_id) : '';
     var rows = shown.map(function(t){
       var aliases = t.aliases.length ? t.aliases.map(function(a){ return '<span class="lex-alias">'+esc(a)+'</span>'; }).join('') : '<span class="meta">no aliases</span>';
       var scopes = t.scopes.map(function(s){ return '<span class="lex-scope">'+esc(s)+'</span>'; }).join('');
       var tools = t.tools.length ? '<div class="meta" style="margin-top:8px">tools: '+t.tools.map(esc).join(', ')+'</div>' : '';
+      var origin = t.source === 'snapshot' && t.snapshot_id ? '<div class="meta" style="margin-top:8px">published in '+esc(t.snapshot_id)+'</div>' : '';
       return '<div class="lex-term">'
         + '<div style="display:flex; justify-content:space-between; align-items:baseline; gap:12px;">'
         + '<span class="lex-canonical">'+esc(t.canonical)+(t.deprecated?' <span class="meta">(deprecated)</span>':'')+'</span>'
@@ -766,9 +833,10 @@ _APP_JS = r"""
         + '<div style="margin-top:8px">'+scopes+'</div>'
         + '<div style="margin-top:6px">'+aliases+'</div>'
         + tools
+        + origin
         + '</div>';
     }).join('');
-    return '<section class="panel detail" style="max-height:none"><div style="padding:4px 4px 12px"><input class="search" id="lq" placeholder="Search accepted terms" value="'+esc(search)+'" style="max-width:320px"></div>'
+    return '<section class="panel detail" style="max-height:none"><div style="display:flex; align-items:center; justify-content:space-between; gap:12px; padding:4px 4px 12px"><input class="search" id="lq" placeholder="Search published terms" value="'+esc(search)+'" style="max-width:320px"><span class="meta">Source: '+source+snap+'</span></div>'
       + (shown.length ? rows : '<div class="meta" style="padding:12px">No terms match.</div>')
       + '</section>';
   }
@@ -1115,7 +1183,7 @@ def _handler_for_state(
                     {
                         "ok": True,
                         "surface": normalized_surface,
-                        "item": _item_as_dict(item) if item else None,
+                        "item": _item_as_dict(item, published_terms_by_surface=_published_terms_by_surface(_accepted_terms(state.root))) if item else None,
                     }
                 )
                 return
@@ -1220,7 +1288,7 @@ def _snippets_as_dicts(snippets: Any) -> list[dict[str, Any]]:
     return result
 
 
-def _item_as_dict(item: WorkspaceReviewItem) -> dict[str, Any]:
+def _item_as_dict(item: WorkspaceReviewItem, *, published_terms_by_surface: Mapping[str, dict[str, Any]] | None = None) -> dict[str, Any]:
     cluster = _item_cluster(item)
     cluster_key = str(cluster.get("cluster_key", "") or "")
     priority = _item_priority(item)
@@ -1230,6 +1298,13 @@ def _item_as_dict(item: WorkspaceReviewItem) -> dict[str, Any]:
         if item.review_decision is not None
         else None
     )
+    published_term = (published_terms_by_surface or {}).get(item.surface.casefold())
+    published = {
+        "is_published": bool(published_term),
+        "snapshot_id": str((published_term or {}).get("snapshot_id", "") or ""),
+        "source": str((published_term or {}).get("source", "") or ""),
+        "created_at": str((published_term or {}).get("snapshot_created_at", "") or ""),
+    }
     return {
         "surface": item.surface,
         "normalized_surface": item.normalized_surface,
@@ -1248,6 +1323,7 @@ def _item_as_dict(item: WorkspaceReviewItem) -> dict[str, Any]:
         "note": item.review_decision.note if item.review_decision else "",
         "decision_metadata": dict(item.review_decision.metadata) if item.review_decision else {},
         "decision_provenance": decision_provenance,
+        "published": published,
         "nums": {
             "Score": round(float(item.score), 3),
             "Jargon": round(float(item.jargon_score), 3),
@@ -1296,13 +1372,15 @@ def _render_page(
     root: str,
     policy_decision: PolicyDecision,
 ) -> str:
+    lexicon_terms = _accepted_terms(root)
+    published_terms_by_surface = _published_terms_by_surface(lexicon_terms)
     payload = {
-        "items": [_item_as_dict(item) for item in items],
+        "items": [_item_as_dict(item, published_terms_by_surface=published_terms_by_surface) for item in items],
         "root": root,
         "readOnly": not policy_decision.is_allowed,
         "policy": f"{policy_decision.mode.value} · {policy_decision.role.value}",
         "selected": selected.normalized_surface if selected is not None else "",
-        "lexicon": _accepted_terms(root),
+        "lexicon": lexicon_terms,
     }
     data_json = json.dumps(payload).replace("</", "<\\/")
     return "\n".join(
