@@ -108,10 +108,14 @@ agent-lexicon workspace export-decision-log --action review_decision_saved
 ## 5. Publish a snapshot
 
 ```bash
-agent-lexicon publish
+agent-lexicon publish --update-lexicon
 ```
 
 Accepted decisions become a versioned lexicon snapshot. The publish summary includes immutable snapshot metadata, including a `lexicon_snapshot_ref` (`sha256:<digest>`), so later runtime and review decisions can point back to the exact vocabulary content they used.
+
+With `--update-lexicon`, the published terms are also written back to your git-tracked `lexicon/lexicon.yaml`, so the dictionary-as-code file stays the source of truth and the runtime commands below can keep pointing at it. Without the flag, `publish` only writes the snapshot JSON under `.agent-lexicon/snapshots/` and your YAML is left untouched - in that case, pass the snapshot path to the runtime commands instead of `lexicon/lexicon.yaml`. Note: `--update-lexicon` rewrites the file, so hand-written YAML comments are not preserved.
+
+Review tip: when the scanner offers both a bare attribute (`map_index`) and receiver-prefixed variants (`TaskInstance.map_index`), accept the bare form - it matches the identifier wherever it appears, while the dotted form only matches that exact attribute access.
 
 ## 6. Use it at runtime
 

@@ -250,6 +250,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional base lexicon. Defaults to lexicon/lexicon.yaml when present.",
     )
     publish_parser.add_argument("--output", default=None, help="Optional output path for the snapshot JSON file.")
+    publish_parser.add_argument(
+        "--update-lexicon",
+        action="store_true",
+        help=(
+            "Also write the published terms back to the git-tracked lexicon file "
+            "(lexicon/lexicon.yaml by default), so the dictionary-as-code file stays "
+            "the source of truth. Rewrites the file; YAML comments are not preserved."
+        ),
+    )
     publish_parser.add_argument("--snapshot-id", default=None, help="Optional stable snapshot id.")
     _add_local_policy_options(publish_parser)
     publish_parser.add_argument("--json", action="store_true", help="Print the publish report as JSON.")
@@ -2042,6 +2051,7 @@ def _simple_publish_command(args: argparse.Namespace) -> int:
             lexicon_path=Path(args.lexicon) if args.lexicon else None,
             output_path=Path(args.output) if args.output else None,
             snapshot_id=args.snapshot_id,
+            update_lexicon=args.update_lexicon,
         )
     except SimpleWorkflowError as exc:
         _error(f"Invalid publish input: {exc}")
@@ -2061,6 +2071,9 @@ def _simple_publish_command(args: argparse.Namespace) -> int:
     dropped = report.metadata.get("starter_terms_dropped") or []
     if dropped:
         print(f"Starter placeholders excluded from the snapshot: {', '.join(dropped)}")
+    updated = report.metadata.get("lexicon_updated_path")
+    if updated:
+        print(f"Lexicon updated: {updated}")
     return 0
 
 def _review_agent_command(args: argparse.Namespace) -> int:

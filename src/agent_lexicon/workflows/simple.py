@@ -11,6 +11,7 @@ intended for the common local loop:
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -495,8 +496,14 @@ def run_simple_publish(
     lexicon_path: str | Path | None = None,
     output_path: str | Path | None = None,
     snapshot_id: str | None = None,
+    update_lexicon: bool = False,
 ) -> SimplePublishReport:
-    """Publish accepted local review decisions as a lexicon-compatible snapshot."""
+    """Publish accepted local review decisions as a lexicon-compatible snapshot.
+
+    With ``update_lexicon=True`` the published terms are also written back to
+    the git-tracked lexicon file, keeping the dictionary-as-code YAML the
+    single source of truth instead of only the snapshot JSON.
+    """
     root_path = Path(root).expanduser().resolve()
     resolved_lexicon_path = _resolve_default_lexicon_path(root_path, layout_dir=layout_dir, lexicon_path=lexicon_path)
     try:
@@ -510,6 +517,19 @@ def run_simple_publish(
         )
     except (WorkspaceError, AgentLexiconLoadError, SnapshotPublishError, OSError) as exc:
         raise SimpleWorkflowError(str(exc)) from exc
+    lexicon_updated_path: str | None = None
+    if update_lexicon:
+        if resolved_lexicon_path is None:
+            raise SimpleWorkflowError(
+                "cannot update the lexicon file: no lexicon path is configured; "
+                "run `agent-lexicon init` or pass --lexicon"
+            )
+        try:
+            lexicon_updated_path = str(
+                _write_lexicon_file(snapshot.lexicon, resolved_lexicon_path)
+            )
+        except (OSError, SimpleWorkflowError) as exc:
+            raise SimpleWorkflowError(f"snapshot was published, but updating the lexicon file failed: {exc}") from exc
     return SimplePublishReport(
         snapshot_id=snapshot.snapshot_id,
         output_path=snapshot.output_path,
@@ -521,8 +541,116 @@ def run_simple_publish(
             "root": str(root_path),
             "lexicon_path": str(resolved_lexicon_path) if resolved_lexicon_path else None,
             "starter_terms_dropped": list(snapshot.metadata.get("starter_terms_dropped", [])),
+            "lexicon_updated_path": lexicon_updated_path,
         },
     )
+
+
+def _write_lexicon_file(lexicon: Any, path: Path) -> Path:
+    """Write a lexicon back to its git-tracked file in the file's own format.
+
+    Agent Lexicon is zero-dependency by design (see core.loader._load_basic_yaml
+    for the read-side equivalent), so this must not hard-require PyYAML. When
+    PyYAML is installed it is used for a fuller-featured dump; otherwise a
+    minimal built-in writer handles the plain mapping/list/scalar shape that
+    Lexicon.to_dict() always produces. JSON files use the standard library
+    either way. The rewrite is atomic. Note: hand-written YAML comments are
+    not preserved by a rewrite.
+    """
+    from agent_lexicon.core.files import atomic_write_text
+
+    payload = lexicon.to_dict()
+    suffix = path.suffix.casefold()
+    if suffix in {".yaml", ".yml"}:
+        try:
+            import yaml  # noqa: PLC0415 - optional dependency, imported lazily
+        except ModuleNotFoundError:
+            text = _dump_basic_yaml(payload)
+        else:
+            text = yaml.safe_dump(payload, sort_keys=False, allow_unicode=True, default_flow_style=False)
+    else:
+        text = json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True) + "\n"
+    atomic_write_text(path, text)
+    return path
+
+
+def _dump_basic_yaml(value: Any, *, indent: int = 0) -> str:
+    """Serialize the plain mapping/list/scalar shape produced by Lexicon.to_dict().
+
+    Mirrors core.loader._load_basic_yaml on the write side so the package
+    stays usable without PyYAML installed. Handles dict, list, str, bool,
+    int, float, and None - the only types Lexicon.to_dict() ever produces.
+    The basic reader has no inline "{}" support, so empty mappings are
+    omitted (round-trips fine: an absent key loads back as the model's
+    default empty mapping).
+    """
+    pad = "  " * indent
+    if isinstance(value, Mapping):
+        if not value:
+            return pad + "{}\n"
+        lines = []
+        for key, item in value.items():
+            rendered_key = _dump_scalar(key)
+            if isinstance(item, Mapping) and item:
+                lines.append(f"{pad}{rendered_key}:")
+                lines.append(_dump_basic_yaml(item, indent=indent + 1).rstrip("\n"))
+            elif isinstance(item, list) and item:
+                lines.append(f"{pad}{rendered_key}:")
+                lines.append(_dump_basic_yaml(item, indent=indent + 1).rstrip("\n"))
+            elif isinstance(item, Mapping):
+                continue  # empty mapping: omit key, loads back as default {}
+            elif isinstance(item, list):
+                lines.append(f"{pad}{rendered_key}: []")
+            else:
+                lines.append(f"{pad}{rendered_key}: {_dump_scalar(item)}")
+        return "\n".join(lines) + "\n"
+    if isinstance(value, list):
+        if not value:
+            return pad + "[]\n"
+        lines = []
+        for item in value:
+            if isinstance(item, Mapping) and item:
+                item_lines = _dump_basic_yaml(item, indent=indent + 1).rstrip("\n").splitlines()
+                # item_lines[0] is "<pad+2>key: value" or "<pad+2>key:"; fold the
+                # first field onto the "- " marker, keep the rest indented as-is.
+                first_line = item_lines[0].lstrip()
+                lines.append(f"{pad}- {first_line}")
+                lines.extend(item_lines[1:])
+            elif isinstance(item, Mapping):
+                lines.append(f"{pad}- {{}}")
+            elif isinstance(item, list):
+                nested = _dump_basic_yaml(item, indent=indent + 1).rstrip("\n").splitlines()
+                lines.append(f"{pad}- {nested[0].lstrip()}")
+                lines.extend(nested[1:])
+            else:
+                lines.append(f"{pad}- {_dump_scalar(item)}")
+        return "\n".join(lines) + "\n"
+    return pad + _dump_scalar(value) + "\n"
+
+
+_NUMERIC_LOOKING = re.compile(r"^[+-]?(\d+\.?\d*|\.\d+)$")
+
+
+def _dump_scalar(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    text = str(value)
+    needs_quoting = (
+        text == ""
+        or text.strip() != text
+        or text.casefold() in {"null", "true", "false", "~"}
+        or bool(_NUMERIC_LOOKING.match(text))
+        or any(character in text for character in ":#{}[]&*!|>'\"%@`,")
+        or text[:1] in "-?"
+    )
+    if needs_quoting:
+        escaped = text.replace("\\", "\\\\").replace('"', '\\"')
+        return f'"{escaped}"'
+    return text
 
 
 def _resolve_scan_paths(paths: Sequence[str | Path] | None, *, root: Path) -> tuple[Path, ...]:
