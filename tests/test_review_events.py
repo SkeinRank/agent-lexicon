@@ -141,3 +141,75 @@ def test_clear_review_decision_is_idempotent_for_unreviewed_candidate(tmp_path: 
     summary = state.summary()
     assert summary.review_decision_count == 0
     assert summary.review_event_count == 0
+
+
+def test_review_decision_records_actor_and_git_metadata(tmp_path: Path) -> None:
+    state = _workspace_with_candidate(tmp_path)
+
+    saved = state.save_review_decision(
+        "billing.update_credit_limit",
+        "accepted",
+        reviewer="local",
+        actor_type="human",
+        actor_source="web",
+        actor_id="Maxim Nikolaev",
+        git_metadata={
+            "available": True,
+            "author_name": "Maxim Nikolaev",
+            "author_email": "maxim@example.com",
+            "branch": "review-actor-provenance",
+            "commit": "abc1234",
+            "dirty": True,
+        },
+    )
+
+    assert saved.metadata["actor"] == {
+        "type": "human",
+        "id": "Maxim Nikolaev",
+        "source": "web",
+    }
+    assert saved.metadata["git"]["branch"] == "review-actor-provenance"
+    assert saved.metadata["git"]["commit"] == "abc1234"
+    assert saved.metadata["git"]["dirty"] is True
+
+    event = state.list_review_events()[0]
+    assert event.metadata["actor"]["id"] == "Maxim Nikolaev"
+    assert event.metadata["actor"]["source"] == "web"
+    assert event.metadata["git"]["author_email"] == "maxim@example.com"
+
+    record = state.list_decision_records()[0]
+    assert record.actor == "Maxim Nikolaev"
+    assert record.rule_id == "human_review"
+    assert record.metadata["actor"]["type"] == "human"
+    assert record.metadata["git"]["commit"] == "abc1234"
+
+
+def test_clear_review_decision_preserves_actor_metadata(tmp_path: Path) -> None:
+    state = _workspace_with_candidate(tmp_path)
+    state.save_review_decision("billing.update_credit_limit", "accepted")
+
+    assert state.clear_review_decision(
+        "billing.update_credit_limit",
+        reviewer="local",
+        actor_type="human",
+        actor_source="web",
+        actor_id="Maxim Nikolaev",
+        git_metadata={
+            "available": True,
+            "author_name": "Maxim Nikolaev",
+            "author_email": "maxim@example.com",
+            "branch": "main",
+            "commit": "def5678",
+            "dirty": False,
+        },
+    ) is True
+
+    clear_event = state.list_review_events()[-1]
+    assert clear_event.event_type == ReviewEventType.DECISION_CLEARED
+    assert clear_event.metadata["actor"] == {
+        "type": "human",
+        "id": "Maxim Nikolaev",
+        "source": "web",
+    }
+    assert clear_event.metadata["git"]["commit"] == "def5678"
+    assert clear_event.metadata["previous_decision"] == "accepted"

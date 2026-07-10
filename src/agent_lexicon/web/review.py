@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import html
 import json
+import subprocess
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -25,6 +26,7 @@ from agent_lexicon.policy import (
 from agent_lexicon.workspace import (
     ReviewDecisionStatus,
     WorkspaceError,
+    WorkspaceReviewEvent,
     WorkspaceReviewItem,
     WorkspaceStore,
     open_workspace,
@@ -33,6 +35,65 @@ from agent_lexicon.workspace import (
 
 _LEGACY_STARTER_TERM_ID = "project.example_term"
 _LEGACY_STARTER_CANONICAL = "example term"
+_LOCAL_DISPLAY_ACTOR_IDS = {"", "local", "unknown", "unknown-actor"}
+
+
+def _git_config_value(root: str | Path, key: str) -> str:
+    """Return a local git config value without failing outside git worktrees."""
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(Path(root).resolve()), "config", "--get", key],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if completed.returncode != 0:
+        return ""
+    return completed.stdout.strip()
+
+
+def _default_web_actor_id(root: str | Path) -> str | None:
+    """Resolve the human actor displayed for web review decisions."""
+    name = _git_config_value(root, "user.name")
+    if name:
+        return name
+    return None
+
+
+def _is_local_display_actor(value: str) -> bool:
+    return value.strip().casefold() in _LOCAL_DISPLAY_ACTOR_IDS
+
+
+def _display_actor_id(actor: dict[str, Any], git: dict[str, Any], reviewer: str) -> str:
+    actor_type = str(actor.get("type", "human") or "human")
+    actor_id = str(actor.get("id", reviewer) or reviewer).strip()
+    if actor_type == "agent" and _is_local_display_actor(actor_id):
+        return "Agent"
+    if actor_type == "system" and _is_local_display_actor(actor_id):
+        return "System"
+    if _is_local_display_actor(actor_id):
+        git_name = str(git.get("author_name", "") or "").strip()
+        if git_name:
+            return git_name
+        return "Human"
+    if actor_type == "human" and "@" in actor_id:
+        return "Human"
+    return actor_id
+
+
+def _display_actor_source(actor: dict[str, Any]) -> str:
+    actor_type = str(actor.get("type", "human") or "human")
+    actor_source = str(actor.get("source", "") or "").strip()
+    if actor_source and actor_source.casefold() != "unknown":
+        return actor_source
+    if actor_type == "agent":
+        return "mcp"
+    if actor_type == "system":
+        return "system"
+    return "local"
 
 
 def _is_web_hidden_starter_term(term: Any) -> bool:
@@ -239,12 +300,23 @@ h1 {
 }
 .status {
   display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border: 1px solid var(--line);
   border-radius: 999px;
-  padding: 3px 8px;
+  padding: 4px 10px;
   margin-top: 9px;
   color: var(--muted);
   font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+}
+.detail-head .status {
+  align-self: flex-start;
+  min-height: 44px;
+  min-width: 86px;
+  padding: 0 14px;
+  margin-top: 0;
 }
 .status.accepted { background: var(--ok); color: #1d5f2f; }
 .status.rejected { background: var(--danger); color: #87231d; }
@@ -253,6 +325,7 @@ h1 {
 .detail-head {
   display: flex;
   justify-content: space-between;
+  align-items: flex-start;
   gap: 18px;
   padding-bottom: 20px;
   border-bottom: 1px solid var(--line);
@@ -269,6 +342,19 @@ h1 {
   font-size: 13px;
   margin-top: 7px;
 }
+.provenance-line {
+  margin-top: 7px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.provenance-line strong { color: var(--text); font-weight: 600; }
+.history-toggle { cursor: pointer; color: var(--muted); font-size: 12px; margin-top: 12px; }
+.history-box { margin-top: 10px; border: 1px solid var(--line); border-radius: var(--radius-md); overflow: hidden; }
+.history-row { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 10px; padding: 10px 12px; border-top: 1px solid var(--subtle); font-size: 12px; }
+.history-row:first-child { border-top: 0; }
+.history-time { color: var(--muted); font-variant-numeric: tabular-nums; }
+.history-main { min-width: 0; }
+.history-note { color: var(--muted); margin-top: 3px; word-break: break-word; }
 .metrics {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -548,6 +634,7 @@ _APP_JS = r"""
     h += '<div class="detail-head"><div>';
     h += '<h2 class="detail-title" style="font-family:ui-monospace,Menlo,monospace">'+esc(it.surface)+'</h2>';
     h += '<div class="kind">'+esc(it.kind)+' \u00b7 appears '+it.occurrences+' times in '+it.documents+' files \u00b7 '+priorityWord(it)+' priority</div>';
+    h += currentProvenanceLine(it);
     h += clusterNote;
     h += '</div>';
     h += '<span class="status '+statusClass(it)+'">'+esc(statusLabel(it))+'</span>';
@@ -556,6 +643,7 @@ _APP_JS = r"""
     h += '<h3 class="section-title">Where it appears</h3>';
     h += pos || '<div class="meta">No positive evidence stored.</div>';
     if (neg){ h += '<h3 class="section-title">Low-confidence matches</h3>' + neg; }
+    h += renderDecisionHistory(it);
     h += '<details style="margin-top:12px"><summary class="scores-toggle">Show scores</summary><div class="scores-box">'+nums+'</div></details>';
     if (!ro){
       h += '<div class="actionbar">';
@@ -579,6 +667,71 @@ _APP_JS = r"""
   function snippet(s, kind){
     return '<article class="snippet '+kind+'"><div class="snippet-head"><span>'+esc(s.path)+':'+esc(s.start)+'-'+esc(s.end)+'</span><span>'+esc(s.reason)+'</span></div><pre>'+esc(s.text)+'</pre></article>';
   }
+
+  function decisionVerb(ev){
+    if (!ev) return 'Decision';
+    if (ev.event_type === 'review_decision_cleared') return 'Cleared';
+    if (ev.decision === 'accepted') return 'Accepted';
+    if (ev.decision === 'rejected') return 'Rejected';
+    if (ev.decision === 'ambiguous') return 'Marked ambiguous';
+    if (ev.decision === 'needs_split') return 'Marked needs split';
+    return 'Reviewed';
+  }
+
+  function latestDecisionEvent(it){
+    var history = it.history || [];
+    for (var i = history.length - 1; i >= 0; i--){
+      var ev = history[i];
+      if (ev.event_type === 'review_decision_saved' && ev.decision === it.decision) return ev;
+    }
+    return null;
+  }
+
+  function actorLabel(ev){
+    if (!ev || !ev.actor) return 'Local decision';
+    var id = ev.actor.display_id || ev.actor.id || ev.reviewer || 'Human';
+    var source = ev.actor.display_source || ev.actor.source || 'local';
+    if (source === 'local') return id === 'Human' ? 'Local decision' : id + ' via local';
+    return id + ' via ' + source;
+  }
+
+  function gitLabel(ev){
+    if (!ev || !ev.git || !ev.git.commit) return '';
+    var branch = ev.git.branch || 'detached';
+    var label = branch + '@' + ev.git.commit;
+    if (ev.git.dirty) label += ' · dirty';
+    return label;
+  }
+
+  function shortDate(value){
+    if (!value) return '';
+    return String(value).replace('T', ' ').replace('+00:00', ' UTC');
+  }
+
+  function currentProvenanceLine(it){
+    if (!isDecided(it)) return '';
+    var ev = latestDecisionEvent(it);
+    if (!ev) return '<div class="provenance-line"><strong>'+esc(statusLabel(it))+'</strong> · actor unknown</div>';
+    var bits = ['<strong>'+esc(decisionVerb(ev))+'</strong>', esc(actorLabel(ev))];
+    var git = gitLabel(ev);
+    if (git) bits.push(esc(git));
+    if (ev.created_at) bits.push(esc(shortDate(ev.created_at)));
+    return '<div class="provenance-line">'+bits.join(' · ')+'</div>';
+  }
+
+  function renderDecisionHistory(it){
+    var history = it.history || [];
+    if (!history.length) return '';
+    var rows = history.slice().reverse().map(function(ev){
+      var mainBits = ['<strong>'+esc(decisionVerb(ev))+'</strong>', esc(actorLabel(ev))];
+      var git = gitLabel(ev);
+      if (git) mainBits.push(esc(git));
+      var note = ev.note ? '<div class="history-note">'+esc(ev.note)+'</div>' : '';
+      return '<div class="history-row"><div class="history-time">'+esc(shortDate(ev.created_at))+'</div><div class="history-main">'+mainBits.join(' · ')+note+'</div></div>';
+    }).join('');
+    return '<details><summary class="history-toggle">Show decision history</summary><div class="history-box">'+rows+'</div></details>';
+  }
+
   function statusClass(it){ if(it.decision==='accepted')return'accepted'; if(it.decision==='rejected')return'rejected'; if(it.decision)return'ambiguous'; return''; }
   function statusLabel(it){ if(it.decision==='accepted')return'Accepted'; if(it.decision==='rejected')return'Rejected'; if(it.decision==='ambiguous')return'Ambiguous'; if(it.decision)return'Reviewed'; return'Unreviewed'; }
 
@@ -785,9 +938,16 @@ def build_review_inbox_html(
         raise ReviewInboxError("state must implement WorkspaceStore")
     items = state.list_review_items(limit=limit)
     selected = _select_item(state, items, selected_surface=selected_surface)
+    review_events = state.list_review_events(limit=2000)
     policy = load_local_policy(state.root, mode=policy_mode)
     policy_decision = check_local_policy(policy, PolicyAction.REVIEW_CANDIDATE, actor=actor, role=role)
-    return _render_page(items=items, selected=selected, root=str(state.root), policy_decision=policy_decision)
+    return _render_page(
+        items=items,
+        selected=selected,
+        root=str(state.root),
+        policy_decision=policy_decision,
+        review_events=review_events,
+    )
 
 
 def _is_unreviewed(item: WorkspaceReviewItem) -> bool:
@@ -910,9 +1070,24 @@ def _handler_for_state(
                 return
             try:
                 if action == "clear":
-                    state.clear_review_decision(normalized_surface, note=note, reviewer=policy_decision.actor)
+                    state.clear_review_decision(
+                        normalized_surface,
+                        note=note,
+                        reviewer=policy_decision.actor,
+                        actor_type="human",
+                        actor_source="web",
+                        actor_id=_default_web_actor_id(state.root),
+                    )
                 elif action in {"", "save"}:
-                    state.save_review_decision(normalized_surface, decision, note=note, reviewer=policy_decision.actor)
+                    state.save_review_decision(
+                        normalized_surface,
+                        decision,
+                        note=note,
+                        reviewer=policy_decision.actor,
+                        actor_type="human",
+                        actor_source="web",
+                        actor_id=_default_web_actor_id(state.root),
+                    )
                 else:
                     self._send_text(f"Invalid review action: {action}\n", status=400)
                     return
@@ -1012,11 +1187,20 @@ def _snippets_as_dicts(snippets: Any) -> list[dict[str, Any]]:
     return result
 
 
-def _item_as_dict(item: WorkspaceReviewItem) -> dict[str, Any]:
+def _item_as_dict(
+    item: WorkspaceReviewItem,
+    *,
+    review_events: tuple[WorkspaceReviewEvent, ...] = (),
+) -> dict[str, Any]:
     cluster = _item_cluster(item)
     cluster_key = str(cluster.get("cluster_key", "") or "")
     priority = _item_priority(item)
     reasons_raw = _item_quality(item).get("priority_reasons", [])
+    history = [
+        _review_event_as_ui_dict(event)
+        for event in review_events
+        if event.normalized_surface == item.normalized_surface
+    ]
     return {
         "surface": item.surface,
         "normalized_surface": item.normalized_surface,
@@ -1033,6 +1217,8 @@ def _item_as_dict(item: WorkspaceReviewItem) -> dict[str, Any]:
         "status": item.review_status,
         "decision": item.review_decision.decision.value if item.review_decision else None,
         "note": item.review_decision.note if item.review_decision else "",
+        "decision_metadata": dict(item.review_decision.metadata) if item.review_decision else {},
+        "history": history,
         "nums": {
             "Score": round(float(item.score), 3),
             "Jargon": round(float(item.jargon_score), 3),
@@ -1045,15 +1231,46 @@ def _item_as_dict(item: WorkspaceReviewItem) -> dict[str, Any]:
     }
 
 
+def _review_event_as_ui_dict(event: WorkspaceReviewEvent) -> dict[str, Any]:
+    metadata = event.metadata if isinstance(event.metadata, dict) else {}
+    actor = metadata.get("actor", {}) if isinstance(metadata, dict) else {}
+    git = metadata.get("git", {}) if isinstance(metadata, dict) else {}
+    if not isinstance(actor, dict):
+        actor = {}
+    if not isinstance(git, dict):
+        git = {}
+    return {
+        "event_type": event.event_type.value,
+        "decision": event.decision.value,
+        "note": event.note,
+        "reviewer": event.reviewer,
+        "created_at": event.created_at,
+        "actor": {
+            "type": str(actor.get("type", "unknown") or "unknown"),
+            "id": str(actor.get("id", event.reviewer) or event.reviewer),
+            "source": str(actor.get("source", "unknown") or "unknown"),
+            "display_id": _display_actor_id(actor, git, event.reviewer),
+            "display_source": _display_actor_source(actor),
+        },
+        "git": {
+            "branch": str(git.get("branch", "") or ""),
+            "commit": str(git.get("commit", "") or ""),
+            "dirty": bool(git.get("dirty", False)),
+            "available": bool(git.get("available", False)),
+        },
+    }
+
+
 def _render_page(
     *,
     items: tuple[WorkspaceReviewItem, ...],
     selected: WorkspaceReviewItem | None,
     root: str,
     policy_decision: PolicyDecision,
+    review_events: tuple[WorkspaceReviewEvent, ...] = (),
 ) -> str:
     payload = {
-        "items": [_item_as_dict(item) for item in items],
+        "items": [_item_as_dict(item, review_events=review_events) for item in items],
         "root": root,
         "readOnly": not policy_decision.is_allowed,
         "policy": f"{policy_decision.mode.value} · {policy_decision.role.value}",

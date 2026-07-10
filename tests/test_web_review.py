@@ -293,3 +293,103 @@ def test_review_inbox_shows_clear_decision_control_for_saved_decision(tmp_path: 
 
     assert "Clear decision" in html
     assert "clearDecision" in html
+
+
+def test_review_inbox_payload_includes_decision_history_actor_metadata(tmp_path: Path) -> None:
+    import json as _json
+
+    state = _workspace_with_evidence(tmp_path)
+    state.save_review_decision(
+        "billing.update_credit_limit",
+        "accepted",
+        reviewer="local",
+        actor_type="human",
+        actor_source="web",
+        actor_id="Maxim Nikolaev",
+        git_metadata={
+            "available": True,
+            "author_name": "Maxim Nikolaev",
+            "author_email": "maxim@example.com",
+            "branch": "main",
+            "commit": "abc1234",
+            "dirty": True,
+        },
+    )
+
+    html = build_review_inbox_html(state, selected_surface="billing.update_credit_limit")
+    start = html.index('<script id="review-data" type="application/json">') + len(
+        '<script id="review-data" type="application/json">'
+    )
+    end = html.index("</script>", start)
+    payload = _json.loads(html[start:end])
+
+    target = next(i for i in payload["items"] if i["surface"] == "billing.update_credit_limit")
+    assert target["history"][0]["actor"] == {
+        "type": "human",
+        "id": "Maxim Nikolaev",
+        "source": "web",
+        "display_id": "Maxim Nikolaev",
+        "display_source": "web",
+    }
+    assert target["history"][0]["git"] == {
+        "available": True,
+        "branch": "main",
+        "commit": "abc1234",
+        "dirty": True,
+    }
+    assert target["decision_metadata"]["actor"]["id"] == "Maxim Nikolaev"
+
+
+def test_review_inbox_renders_provenance_ui_and_centered_status_styles(tmp_path: Path) -> None:
+    state = _workspace_with_evidence(tmp_path)
+
+    html = build_review_inbox_html(state, selected_surface="billing.update_credit_limit")
+
+    assert "currentProvenanceLine" in html
+    assert "Show decision history" in html
+    assert "history-box" in html
+    assert "align-items: center" in html
+    assert "detail-head .status" in html
+
+
+def test_review_post_resolves_web_actor_from_git_config(tmp_path: Path) -> None:
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Maxim"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "nkvmaxim@gmail.com"], cwd=tmp_path, check=True)
+    state = _workspace_with_evidence(tmp_path)
+
+    body = b"surface=billing.update_credit_limit&decision=accepted&note="
+    assert _drive_post(state, body, {"Content-Length": str(len(body))}).startswith("STATUS 303")
+
+    event = state.list_review_events()[0]
+    assert event.metadata["actor"] == {"type": "human", "id": "Maxim", "source": "web"}
+    assert event.metadata["git"]["author_name"] == "Maxim"
+
+
+def test_review_inbox_normalizes_legacy_local_actor_display(tmp_path: Path) -> None:
+    import json as _json
+
+    state = _workspace_with_evidence(tmp_path)
+    state.save_review_decision(
+        "billing.update_credit_limit",
+        "accepted",
+        reviewer="local",
+        actor_type="human",
+        actor_source="web",
+        actor_id="local",
+        git_metadata={"available": False, "author_name": "Maxim", "author_email": "", "branch": "", "commit": "", "dirty": False},
+    )
+
+    html = build_review_inbox_html(state, selected_surface="billing.update_credit_limit")
+    start = html.index('<script id="review-data" type="application/json">') + len(
+        '<script id="review-data" type="application/json">'
+    )
+    end = html.index("</script>", start)
+    payload = _json.loads(html[start:end])
+
+    target = next(i for i in payload["items"] if i["surface"] == "billing.update_credit_limit")
+    actor = target["history"][0]["actor"]
+    assert actor["id"] == "local"
+    assert actor["display_id"] == "Maxim"
+    assert actor["display_source"] == "web"
+    assert "local via unknown" not in html
