@@ -448,6 +448,43 @@ def test_review_inbox_renders_current_decision_ui_without_raw_click_history(tmp_
     assert "detail-head .status" in html
 
 
+def test_review_inbox_undo_targets_selected_candidate_history(tmp_path: Path) -> None:
+    state = _workspace_with_evidence(tmp_path)
+
+    html = build_review_inbox_html(state, selected_surface="billing.update_credit_limit")
+
+    assert "var hasLocalUndo = lastHistoryIndexFor(idx) > -1" in html
+    assert "var historyIndex = lastHistoryIndexFor(idx)" in html
+    assert "undoHistory.splice(historyIndex, 1)" in html
+    assert "history.splice(historyIndex, 1)" not in html
+    assert "history.pop()" not in html
+
+
+def test_review_inbox_cluster_accept_records_targeted_history_entries(tmp_path: Path) -> None:
+    state = _workspace_with_evidence(tmp_path)
+
+    html = build_review_inbox_html(state, selected_surface="billing.update_credit_limit")
+
+    assert "function rememberDecisionChange(i)" in html
+    assert "surface: it.normalized_surface" in html
+    assert "rememberDecisionChange(i); it.decision='accepted'" in html
+
+def test_review_inbox_supports_persistent_theme_switcher(tmp_path: Path) -> None:
+    state = _workspace_with_evidence(tmp_path)
+
+    html = build_review_inbox_html(state, selected_surface="billing.update_credit_limit")
+
+    assert "agent-lexicon-theme" in html
+    assert "prefers-color-scheme: dark" in html
+    assert ':root[data-theme="dark"]' in html
+    assert "theme-switch" in html
+    assert "data-theme-choice" in html
+    assert "['system', 'System']" in html
+    assert "['light', 'Light']" in html
+    assert "['dark', 'Dark']" in html
+    assert "applyTheme(themeMode)" in html
+
+
 def test_review_sidebar_groups_reviewed_terms_by_recency_and_adds_history_filter(tmp_path: Path) -> None:
     state = _workspace_with_evidence(tmp_path)
     state.save_review_decision("billing.update_credit_limit", "accepted", note="Ready")
