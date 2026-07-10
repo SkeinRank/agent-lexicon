@@ -105,11 +105,16 @@ def publish_local_snapshot(
     if not accepted_items:
         raise SnapshotPublishError("no accepted review decisions are available to publish")
 
-    base_terms = tuple(base_lexicon.terms) if base_lexicon is not None else ()
+    all_base_terms = tuple(base_lexicon.terms) if base_lexicon is not None else ()
+    starter_terms = tuple(term for term in all_base_terms if term.is_starter)
+    base_terms = tuple(term for term in all_base_terms if not term.is_starter)
     base_scopes = tuple(base_lexicon.scopes) if base_lexicon is not None else ()
     base_metadata = dict(base_lexicon.metadata) if base_lexicon is not None else {}
     known_term_ids = {term.id for term in base_terms}
     known_surfaces = _known_surfaces(base_lexicon) if base_lexicon is not None else set()
+    # Starter surfaces stay in known_surfaces so an accepted candidate that
+    # happens to collide with the placeholder is still surfaced as skipped,
+    # but the placeholder itself never reaches the published snapshot.
 
     generated_terms: list[Term] = []
     skipped_surfaces: list[str] = []
@@ -185,7 +190,11 @@ def publish_local_snapshot(
         generated_term_count=len(generated_terms),
         skipped_count=len(skipped_surfaces),
         skipped_surfaces=tuple(skipped_surfaces),
-        metadata={"base_term_count": len(base_terms), **snapshot_runtime_metadata},
+        metadata={
+            "base_term_count": len(base_terms),
+            "starter_terms_dropped": [term.id for term in starter_terms],
+            **snapshot_runtime_metadata,
+        },
     )
     try:
         state.store_snapshot_record(snapshot)
