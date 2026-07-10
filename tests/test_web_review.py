@@ -127,11 +127,10 @@ def test_review_inbox_html_respects_read_only_policy(tmp_path: Path) -> None:
     assert payload["policy"] == "locked · reader"
 
 
-def test_review_inbox_includes_lexicon_terms(tmp_path: Path) -> None:
+def test_review_inbox_hides_starter_lexicon_term(tmp_path: Path) -> None:
     import json as _json
     from agent_lexicon import init_dictionary_layout, init_workspace
 
-    # A published lexicon file makes the Lexicon tab non-empty.
     init_dictionary_layout(tmp_path)
     state = init_workspace(tmp_path)
 
@@ -143,14 +142,54 @@ def test_review_inbox_includes_lexicon_terms(tmp_path: Path) -> None:
     payload = _json.loads(html[start:end])
 
     assert "lexicon" in payload
-    assert isinstance(payload["lexicon"], list)
-    # The starter lexicon ships one example term.
-    ids = {t["id"] for t in payload["lexicon"]}
-    assert "project.example_term" in ids
-    # Lexicon tab button is present in the page.
+    assert payload["lexicon"] == []
+    assert "project.example_term" not in html
+    assert "example term" not in html
+    # Lexicon tab button is present, but shows an empty accepted vocabulary.
     assert 'data-view="lexicon"' in html
+    assert "No accepted terminology yet" in html
     # Action bar is sticky and present for a writable policy.
     assert "actionbar" in html
+
+
+def test_review_inbox_includes_real_lexicon_terms(tmp_path: Path) -> None:
+    import json as _json
+    from agent_lexicon import init_dictionary_layout, init_workspace
+
+    init_dictionary_layout(tmp_path)
+    lexicon_path = tmp_path / "lexicon" / "lexicon.yaml"
+    lexicon_path.write_text(
+        """version: 1
+metadata:
+  name: Project terminology
+scopes:
+  - id: project
+    label: Project
+terms:
+  - id: project.billing_limit
+    canonical: billing limit
+    scopes: [project]
+    aliases:
+      - surface: credit limit
+        scopes: [project]
+proposals: []
+""",
+        encoding="utf-8",
+    )
+    state = init_workspace(tmp_path)
+
+    html = build_review_inbox_html(state)
+    start = html.index('<script id="review-data" type="application/json">') + len(
+        '<script id="review-data" type="application/json">'
+    )
+    end = html.index("</script>", start)
+    payload = _json.loads(html[start:end])
+
+    ids = {t["id"] for t in payload["lexicon"]}
+    assert ids == {"project.billing_limit"}
+    term = payload["lexicon"][0]
+    assert term["canonical"] == "billing limit"
+    assert term["aliases"] == ["credit limit"]
 
 
 def _drive_post(state, body: bytes, headers: dict) -> str:
