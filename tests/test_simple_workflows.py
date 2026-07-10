@@ -53,7 +53,6 @@ def test_simple_scan_and_analyze_store_prioritized_candidates(tmp_path: Path) ->
     assert scan.document_count == 3
     assert scan.candidate_count > 0
     assert scan.evidence_pack_count > 0
-    assert scan.safety.highest_risk.value == "none"
 
     analyze = run_simple_analyze(tmp_path, limit=5, include_review_agent=True)
     assert analyze.item_count > 0

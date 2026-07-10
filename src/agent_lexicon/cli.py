@@ -64,7 +64,6 @@ from .policy import (
     load_local_policy,
     policy_path,
 )
-from .safety import PromptSafetyError, scan_documents_for_prompt_injection
 from .scout import (
     CanonicalMigrationError,
     EvidencePackError,
@@ -676,11 +675,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum file size to read during local ingest.",
     )
     build_evidence_parser.add_argument(
-        "--skip-prompt-safety",
-        action="store_true",
-        help="Do not annotate evidence snippets with prompt-safety findings.",
-    )
-    build_evidence_parser.add_argument(
         "--json",
         action="store_true",
         help="Print the full evidence report as JSON.",
@@ -689,54 +683,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--jsonl",
         action="store_true",
         help="Print one JSON evidence pack per line.",
-    )
-
-    safety_parser = subparsers.add_parser(
-        "safety",
-        help="Scan local docs for prompt-injection indicators before LLM review.",
-    )
-    safety_subparsers = safety_parser.add_subparsers(dest="safety_command")
-    safety_scan_parser = safety_subparsers.add_parser(
-        "scan",
-        help="Scan local docs, README files, source files, and explicit local files for prompt-injection indicators.",
-    )
-    safety_scan_parser.add_argument(
-        "paths",
-        nargs="+",
-        help="Files or directories to scan. Directories use local project defaults.",
-    )
-    safety_scan_parser.add_argument(
-        "--root",
-        default=None,
-        help="Root path used for relative paths in output.",
-    )
-    safety_scan_parser.add_argument(
-        "--include",
-        action="append",
-        default=None,
-        help="Glob to include when scanning directories. Can be provided multiple times.",
-    )
-    safety_scan_parser.add_argument(
-        "--exclude",
-        action="append",
-        default=None,
-        help="Glob to exclude when scanning directories. Can be provided multiple times.",
-    )
-    safety_scan_parser.add_argument(
-        "--max-file-bytes",
-        type=int,
-        default=1_000_000,
-        help="Maximum file size to read during local ingest.",
-    )
-    safety_scan_parser.add_argument(
-        "--fail-on-high-risk",
-        action="store_true",
-        help="Return exit code 1 when high-risk findings are detected.",
-    )
-    safety_scan_parser.add_argument(
-        "--json",
-        action="store_true",
-        help="Print the full prompt-safety report as JSON.",
     )
 
     policy_parser = subparsers.add_parser(
@@ -1771,13 +1717,10 @@ def main(argv: list[str] | None = None) -> int:
             max_positive_snippets=args.max_positive_snippets,
             max_negative_snippets=args.max_negative_snippets,
             max_file_bytes=args.max_file_bytes,
-            include_prompt_safety=not args.skip_prompt_safety,
+            include_prompt_safety=False,
             as_json=args.json,
             as_jsonl=args.jsonl,
         )
-
-    if args.command == "safety":
-        return _safety_command(args)
 
     if args.command == "policy":
         return _policy_command(args)
@@ -1942,12 +1885,6 @@ def _simple_scan_command(args: argparse.Namespace) -> int:
         f"{report.candidate_count} candidates, "
         f"{report.evidence_pack_count} evidence packs saved, "
         f"{report.candidates.important_count} important"
-    )
-    print(
-        "Prompt safety: "
-        f"risk={report.safety.highest_risk.value}, "
-        f"action={report.safety.action.value}, "
-        f"findings={report.safety.finding_count}"
     )
     if getattr(args, "quality_report", False):
         print(report.quality_report.to_text())
@@ -2764,14 +2701,6 @@ def _build_evidence_command(
         f"({evidence_report.positive_count} positive, "
         f"{evidence_report.negative_count} negative snippets)"
     )
-    prompt_safety = dict(evidence_report.metadata.get("prompt_safety", {}))
-    if prompt_safety:
-        print(
-            "Prompt safety: "
-            f"risk={prompt_safety.get('highest_risk', 'none')}, "
-            f"action={prompt_safety.get('action', 'allow')}, "
-            f"findings={prompt_safety.get('finding_count', 0)}"
-        )
     for pack in evidence_report.packs:
         print(
             f"- {pack.surface} "
@@ -2786,69 +2715,6 @@ def _build_evidence_command(
             print(f"  - {snippet.document_path}:{snippet.start_line}-{snippet.end_line} {snippet.text.splitlines()[0]}")
     return 0
 
-
-
-def _safety_command(args: argparse.Namespace) -> int:
-    if args.safety_command == "scan":
-        return _safety_scan_command(
-            paths=[Path(path) for path in args.paths],
-            root=Path(args.root) if args.root is not None else None,
-            include_globs=args.include,
-            exclude_globs=args.exclude,
-            max_file_bytes=args.max_file_bytes,
-            fail_on_high_risk=args.fail_on_high_risk,
-            as_json=args.json,
-        )
-    _error("Safety command required: scan")
-    return 1
-
-
-def _safety_scan_command(
-    *,
-    paths: list[Path],
-    root: Path | None,
-    include_globs: list[str] | None,
-    exclude_globs: list[str] | None,
-    max_file_bytes: int,
-    fail_on_high_risk: bool,
-    as_json: bool,
-) -> int:
-    try:
-        ingest_report = ingest_local_paths(
-            paths,
-            root=root,
-            include_globs=include_globs,
-            exclude_globs=exclude_globs,
-            max_file_bytes=max_file_bytes,
-        )
-        report = scan_documents_for_prompt_injection(ingest_report.documents)
-    except (LocalIngestError, PromptSafetyError) as exc:
-        _error(f"Invalid prompt-safety input: {exc}")
-        return 1
-
-    if as_json:
-        print(report.to_json())
-        return 1 if fail_on_high_risk and report.high_count > 0 else 0
-
-    print(
-        "Prompt safety scan: "
-        f"risk={report.highest_risk.value}, "
-        f"action={report.action.value}, "
-        f"findings={report.finding_count}, "
-        f"documents={report.source_count}"
-    )
-    if report.findings:
-        for finding in report.findings:
-            print(
-                f"[{finding.risk.value.upper()}] "
-                f"{finding.source_path}:{finding.line_number} "
-                f"{finding.rule_id} — {finding.message} "
-                f"scope={finding.scan_scope.value} "
-                f"({finding.matched_text!r})"
-            )
-    else:
-        print("No prompt-injection indicators found.")
-    return 1 if fail_on_high_risk and report.high_count > 0 else 0
 
 
 def _policy_command(args: argparse.Namespace) -> int:

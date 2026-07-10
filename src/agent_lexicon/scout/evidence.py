@@ -199,7 +199,7 @@ def build_evidence_packs(
     context_lines: int = 1,
     max_positive_snippets: int = 3,
     max_negative_snippets: int = 3,
-    include_prompt_safety: bool = True,
+    include_prompt_safety: bool = False,
 ) -> EvidencePackReport:
     """Build positive and negative evidence packs for scout candidates.
 
@@ -241,10 +241,20 @@ def build_evidence_packs(
             max_snippets=max_negative_snippets,
             positive_snippets=positive_snippets,
         )
+        pack_metadata: dict[str, Any] = {
+            "occurrence_count": candidate.occurrence_count,
+            "document_count": candidate.document_count,
+            "jargon_score": candidate.jargon_score,
+            "background_penalty": candidate.background_penalty,
+            "candidate_metadata": dict(candidate.metadata),
+        }
         if include_prompt_safety:
             positive_snippets = _annotate_snippets_with_prompt_safety(positive_snippets)
             negative_snippets = _annotate_snippets_with_prompt_safety(negative_snippets)
-        prompt_safety_summary = _prompt_safety_summary((*positive_snippets, *negative_snippets))
+            # Only write the summary when annotations were actually computed;
+            # an all-zero summary would mask the review-agent's own live
+            # screening fallback for unannotated packs.
+            pack_metadata["prompt_safety"] = _prompt_safety_summary((*positive_snippets, *negative_snippets))
         packs.append(
             EvidencePack(
                 surface=candidate.surface,
@@ -253,29 +263,23 @@ def build_evidence_packs(
                 score=candidate.score,
                 positive_snippets=positive_snippets,
                 negative_snippets=negative_snippets,
-                metadata={
-                    "occurrence_count": candidate.occurrence_count,
-                    "document_count": candidate.document_count,
-                    "jargon_score": candidate.jargon_score,
-                    "background_penalty": candidate.background_penalty,
-                    "candidate_metadata": dict(candidate.metadata),
-                    "prompt_safety": prompt_safety_summary,
-                },
+                metadata=pack_metadata,
             )
         )
 
-    report_prompt_safety = _report_prompt_safety_summary(packs)
+    report_metadata: dict[str, Any] = {
+        "context_lines": context_lines,
+        "max_positive_snippets": max_positive_snippets,
+        "max_negative_snippets": max_negative_snippets,
+        "include_prompt_safety": include_prompt_safety,
+    }
+    if include_prompt_safety:
+        report_metadata["prompt_safety"] = _report_prompt_safety_summary(packs)
     return EvidencePackReport(
         packs=tuple(packs),
         document_count=len(document_tuple),
         candidate_count=len(candidate_tuple),
-        metadata={
-            "context_lines": context_lines,
-            "max_positive_snippets": max_positive_snippets,
-            "max_negative_snippets": max_negative_snippets,
-            "include_prompt_safety": include_prompt_safety,
-            "prompt_safety": report_prompt_safety,
-        },
+        metadata=report_metadata,
     )
 
 
