@@ -607,3 +607,45 @@ def test_review_inbox_only_marks_terms_from_latest_snapshot_as_published(tmp_pat
     assert second_item["published"]["is_published"] is True
     assert second_item["published"]["snapshot_id"] == "snapshot_second"
     assert second_item["published"]["provenance"]["snapshot_id"] == "snapshot_second"
+
+
+def test_lexicon_tab_exposes_published_term_details_and_review_link(tmp_path: Path) -> None:
+    import json as _json
+    from agent_lexicon import publish_local_snapshot
+
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Maxim"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "nkvmaxim@gmail.com"], cwd=tmp_path, check=True)
+    state = _workspace_with_evidence(tmp_path)
+    state.save_review_decision(
+        "billing.update_credit_limit",
+        "accepted",
+        actor_type="human",
+        actor_source="web",
+        actor_id="Maxim",
+    )
+    snapshot = publish_local_snapshot(state, snapshot_id="snapshot_lexicon_detail")
+
+    html = build_review_inbox_html(state, selected_surface="billing.update_credit_limit")
+    start = html.index('<script id="review-data" type="application/json">') + len(
+        '<script id="review-data" type="application/json">'
+    )
+    end = html.index("</script>", start)
+    payload = _json.loads(html[start:end])
+
+    term = next(t for t in payload["lexicon"] if t["canonical"] == "billing.update_credit_limit")
+    assert term["snapshot_id"] == snapshot.snapshot_id
+    assert term["review_surface"] == "billing.update_credit_limit"
+    assert term["review_normalized_surface"] == "billing.update_credit_limit"
+    assert term["publish_checkpoint"]["snapshot_id"] == snapshot.snapshot_id
+    assert term["publish_checkpoint"]["actor"]["display_id"] == "Maxim"
+    assert term["publish_checkpoint"]["actor"]["display_source"] == "cli"
+    assert term["review_decision_provenance"]["actor"]["display_id"] == "Maxim"
+    assert term["review_decision_provenance"]["actor"]["display_source"] == "web"
+
+    assert "Published source of truth" in html
+    assert "Read-only view of the terminology agents should use" in html
+    assert "function lexiconTermCard" in html
+    assert "data-view-review" in html
+    assert "View in Review" in html
+    assert "Lexicon is read-only" in html

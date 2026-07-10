@@ -111,7 +111,16 @@ def _is_web_hidden_starter_term(term: Any) -> bool:
     )
 
 
-def _term_as_lexicon_tab_dict(term: Any, *, source: str, snapshot_id: str = "", snapshot_created_at: str = "") -> dict[str, Any]:
+def _term_as_lexicon_tab_dict(
+    term: Any,
+    *,
+    source: str,
+    snapshot_id: str = "",
+    snapshot_created_at: str = "",
+    publish_checkpoint: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    checkpoint = dict(publish_checkpoint or {})
+    review_decision = checkpoint.get("review_decision")
     return {
         "id": term.id,
         "canonical": term.canonical,
@@ -122,20 +131,39 @@ def _term_as_lexicon_tab_dict(term: Any, *, source: str, snapshot_id: str = "", 
         "source": source,
         "snapshot_id": snapshot_id,
         "snapshot_created_at": snapshot_created_at,
+        "review_surface": str(checkpoint.get("surface", "") or getattr(term, "canonical", "") or ""),
+        "review_normalized_surface": str(checkpoint.get("normalized_surface", "") or getattr(term, "canonical", "") or ""),
+        "publish_checkpoint": checkpoint or None,
+        "review_decision_provenance": _review_decision_snapshot_as_ui_dict(review_decision)
+        if isinstance(review_decision, Mapping)
+        else None,
     }
 
 
-def _terms_from_lexicon(lexicon: Any, *, source: str, snapshot_id: str = "", snapshot_created_at: str = "") -> list[dict[str, Any]]:
+def _terms_from_lexicon(
+    lexicon: Any,
+    *,
+    source: str,
+    snapshot_id: str = "",
+    snapshot_created_at: str = "",
+    publish_records_by_surface: Mapping[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     terms: list[dict[str, Any]] = []
+    records = publish_records_by_surface or {}
     for term in lexicon.terms:
         if _is_web_hidden_starter_term(term):
             continue
+        publish_checkpoint = (
+            records.get(str(term.canonical).casefold())
+            or records.get(str(term.id).casefold())
+        )
         terms.append(
             _term_as_lexicon_tab_dict(
                 term,
                 source=source,
                 snapshot_id=snapshot_id,
                 snapshot_created_at=snapshot_created_at,
+                publish_checkpoint=publish_checkpoint,
             )
         )
     terms.sort(key=lambda t: t["id"])
@@ -168,6 +196,7 @@ def _latest_published_snapshot_terms(root: str | Path) -> list[dict[str, Any]]:
         source="snapshot",
         snapshot_id=snapshot.snapshot_id,
         snapshot_created_at=snapshot.created_at,
+        publish_records_by_surface=_published_records_by_surface(root),
     )
 
 
@@ -276,6 +305,32 @@ def _published_decisions_from_record(record: Any) -> list[Mapping[str, Any]]:
     return [decision for decision in decisions if isinstance(decision, Mapping)]
 
 
+def _review_decision_snapshot_as_ui_dict(decision: Mapping[str, Any]) -> dict[str, Any]:
+    metadata = decision.get("metadata", {}) if isinstance(decision.get("metadata", {}), Mapping) else {}
+    actor = metadata.get("actor", {}) if isinstance(metadata.get("actor", {}), Mapping) else {}
+    git = metadata.get("git", {}) if isinstance(metadata.get("git", {}), Mapping) else {}
+    reviewer = str(decision.get("reviewer", "local") or "local")
+    return {
+        "decision": str(decision.get("decision", "") or ""),
+        "note": str(decision.get("note", "") or ""),
+        "reviewer": reviewer,
+        "created_at": str(decision.get("updated_at", decision.get("created_at", "")) or ""),
+        "actor": {
+            "type": str(actor.get("type", "human") or "human"),
+            "id": str(actor.get("id", reviewer) or reviewer),
+            "source": str(actor.get("source", "web") or "web"),
+            "display_id": _display_actor_id(dict(actor), dict(git), reviewer),
+            "display_source": _display_actor_source(dict(actor)),
+        },
+        "git": {
+            "branch": str(git.get("branch", "") or ""),
+            "commit": str(git.get("commit", "") or ""),
+            "dirty": bool(git.get("dirty", False)),
+            "available": bool(git.get("available", False)),
+        },
+    }
+
+
 def _publish_record_as_ui_dict(record: Any, decision: Mapping[str, Any]) -> dict[str, Any]:
     metadata = record.metadata if isinstance(record.metadata, Mapping) else {}
     payload = record.payload if isinstance(record.payload, Mapping) else {}
@@ -285,6 +340,8 @@ def _publish_record_as_ui_dict(record: Any, decision: Mapping[str, Any]) -> dict
     publish_metadata = metadata.get("publish", {}) if isinstance(metadata.get("publish", {}), Mapping) else {}
     reviewer = str(actor.get("id", "local") or "local")
     return {
+        "surface": str(decision.get("surface", "") or ""),
+        "normalized_surface": str(decision.get("normalized_surface", "") or ""),
         "snapshot_id": str(record.subject or snapshot_payload.get("snapshot_id", "") or ""),
         "created_at": str(record.created_at or snapshot_payload.get("created_at", "") or ""),
         "decision": str(decision.get("decision", "") or ""),
@@ -721,6 +778,22 @@ button.primary { background: var(--accent); color: #fff; border-color: var(--acc
 .lex-id { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--muted); }
 .lex-alias { display: inline-block; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; background: var(--soft); border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; margin: 4px 4px 0 0; }
 .lex-scope { display: inline-block; font-size: 11px; background: #eef; border: 1px solid var(--line); border-radius: 999px; padding: 2px 9px; margin-right: 5px; color: #3730a3; }
+.lex-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 18px; padding: 4px 4px 16px; border-bottom: 1px solid var(--line); margin-bottom: 14px; }
+.lex-header h2 { margin: 0; font-size: 22px; line-height: 1.15; letter-spacing: -0.03em; }
+.lex-header .meta { max-width: 640px; }
+.lex-term { padding: 0; overflow: hidden; }
+.lex-term > summary { list-style: none; cursor: pointer; padding: 14px 16px; }
+.lex-term > summary::-webkit-details-marker { display: none; }
+.lex-term > summary:hover { background: var(--soft); }
+.lex-summary { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; }
+.lex-detail { border-top: 1px solid var(--line); padding: 14px 16px 16px; background: var(--soft); }
+.lex-detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 10px 0 12px; }
+.lex-detail-card { border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--panel); padding: 10px 12px; }
+.lex-detail-card strong { display:block; margin-bottom: 4px; }
+.lex-actions { display:flex; gap:8px; flex-wrap:wrap; margin-top: 12px; }
+.lex-actions button { padding: 8px 10px; font-size: 12px; }
+.lex-actions button.primary { color: #fff; }
+@media (max-width: 860px) { .lex-header { flex-direction: column; } .lex-detail-grid { grid-template-columns: 1fr; } }
 """
 
 
@@ -1083,31 +1156,81 @@ _APP_JS = r"""
       return t.aliases.some(function(a){ return a.toLowerCase().indexOf(q) > -1; });
     });
     var source = lexicon[0] && lexicon[0].source === 'snapshot' ? 'latest snapshot' : 'dictionary file';
-    var snap = lexicon[0] && lexicon[0].snapshot_id ? ' · '+esc(lexicon[0].snapshot_id) : '';
-    var rows = shown.map(function(t){
-      var aliases = t.aliases.length ? t.aliases.map(function(a){ return '<span class="lex-alias">'+esc(a)+'</span>'; }).join('') : '<span class="meta">no aliases</span>';
-      var scopes = t.scopes.map(function(s){ return '<span class="lex-scope">'+esc(s)+'</span>'; }).join('');
-      var tools = t.tools.length ? '<div class="meta" style="margin-top:8px">tools: '+t.tools.map(esc).join(', ')+'</div>' : '';
-      var origin = t.source === 'snapshot' && t.snapshot_id ? '<div class="meta" style="margin-top:8px">published in '+esc(t.snapshot_id)+'</div>' : '';
-      return '<div class="lex-term">'
-        + '<div style="display:flex; justify-content:space-between; align-items:baseline; gap:12px;">'
-        + '<span class="lex-canonical">'+esc(t.canonical)+(t.deprecated?' <span class="meta">(deprecated)</span>':'')+'</span>'
-        + '<span class="lex-id">'+esc(t.id)+'</span></div>'
-        + '<div style="margin-top:8px">'+scopes+'</div>'
-        + '<div style="margin-top:6px">'+aliases+'</div>'
-        + tools
-        + origin
-        + '</div>';
-    }).join('');
-    return '<section class="panel detail" style="max-height:none"><div style="display:flex; align-items:center; justify-content:space-between; gap:12px; padding:4px 4px 12px"><input class="search" id="lq" placeholder="Search published terms" value="'+esc(search)+'" style="max-width:320px"><span class="meta">Source: '+source+snap+'</span></div>'
+    var snap = lexicon[0] && lexicon[0].snapshot_id ? lexicon[0].snapshot_id : '';
+    var header = '<div class="lex-header"><div>'
+      + '<p class="eyebrow">Published lexicon</p>'
+      + '<h2>Published source of truth</h2>'
+      + '<div class="meta">Read-only view of the terminology agents should use. Change decisions in Review, then publish a new snapshot.</div>'
+      + '</div><div class="summary">'
+      + '<span class="pill">'+lexicon.length+' terms</span>'
+      + '<span class="pill">'+esc(source)+(snap ? ' · '+esc(shortSnapshot(snap)) : '')+'</span>'
+      + '</div></div>';
+    var rows = shown.map(function(t, i){ return lexiconTermCard(t, i); }).join('');
+    return '<section class="panel detail" style="max-height:none">'+header+'<div style="display:flex; align-items:center; justify-content:space-between; gap:12px; padding:0 4px 12px"><input class="search" id="lq" placeholder="Search published terms" value="'+esc(search)+'" style="max-width:320px"><span class="meta">Read-only</span></div>'
       + (shown.length ? rows : '<div class="meta" style="padding:12px">No terms match.</div>')
       + '</section>';
+  }
+
+  function lexiconTermCard(t, visibleIndex){
+    var aliases = t.aliases.length ? t.aliases.map(function(a){ return '<span class="lex-alias">'+esc(a)+'</span>'; }).join('') : '<span class="meta">no aliases</span>';
+    var scopes = t.scopes.length ? t.scopes.map(function(s){ return '<span class="lex-scope">'+esc(s)+'</span>'; }).join('') : '<span class="meta">no scopes</span>';
+    var tools = t.tools.length ? '<div class="meta" style="margin-top:8px">tools: '+t.tools.map(esc).join(', ')+'</div>' : '';
+    var publish = t.publish_checkpoint || null;
+    var review = t.review_decision_provenance || null;
+    var reviewIndex = findReviewIndexForLexiconTerm(t);
+    var origin = t.source === 'snapshot' && t.snapshot_id ? 'published in '+esc(shortSnapshot(t.snapshot_id)) : 'from dictionary file';
+    var summary = '<summary><div class="lex-summary"><div>'
+      + '<div class="lex-canonical">'+esc(t.canonical)+(t.deprecated?' <span class="meta">(deprecated)</span>':'')+'</div>'
+      + '<div class="meta">canonical term · '+(t.aliases.length ? t.aliases.length+' aliases' : 'no aliases')+' · '+origin+'</div>'
+      + '</div><span class="lex-id">'+esc(t.id)+'</span></div></summary>';
+    var publishCard = publish
+      ? lexiconProvenanceCard('Publish provenance', publishDecisionLabel(publish)+' · '+(publish.included_in_lexicon ? 'in lexicon' : 'not in lexicon'), actorLabel(publish), gitLabel(publish), publish.created_at, publish.snapshot_id)
+      : lexiconProvenanceCard('Publish provenance', origin, '', '', t.snapshot_created_at || '', t.snapshot_id || '');
+    var reviewCard = review
+      ? lexiconProvenanceCard('Review decision', publishDecisionLabel(review), actorLabel(review), gitLabel(review), review.created_at, '')
+      : lexiconProvenanceCard('Review decision', 'No linked review decision', '', '', '', '');
+    var action = reviewIndex > -1
+      ? '<button class="primary" data-view-review="'+reviewIndex+'">View in Review</button>'
+      : '<button disabled>View in Review</button>';
+    return '<details class="lex-term" data-lex-card="'+visibleIndex+'">'+summary+'<div class="lex-detail">'
+      + '<div class="lex-detail-grid">'+publishCard+reviewCard+'</div>'
+      + '<div><strong style="font-size:12px">Aliases</strong><div style="margin-top:6px">'+aliases+'</div></div>'
+      + '<div style="margin-top:10px"><strong style="font-size:12px">Scopes</strong><div style="margin-top:6px">'+scopes+'</div></div>'
+      + tools
+      + '<div class="lex-actions">'+action+'<span class="meta">Lexicon is read-only. Use Review to change the decision.</span></div>'
+      + '</div></details>';
+  }
+
+  function lexiconProvenanceCard(title, state, actor, git, createdAt, snapshotId){
+    var bits = [];
+    if (actor) bits.push(esc(actor));
+    if (git) bits.push(esc(git));
+    if (createdAt) bits.push(esc(shortDate(createdAt)));
+    if (snapshotId) bits.push(esc(shortSnapshot(snapshotId)));
+    return '<div class="lex-detail-card"><strong>'+esc(title)+'</strong><div>'+esc(state || 'Unknown')+'</div>'
+      + (bits.length ? '<div class="meta" style="margin-top:5px">'+bits.join(' · ')+'</div>' : '')
+      + '</div>';
+  }
+
+  function findReviewIndexForLexiconTerm(t){
+    var keys = [t.review_normalized_surface, t.review_surface, t.canonical, t.id]
+      .filter(function(v){ return String(v || '').trim(); })
+      .map(function(v){ return String(v).toLowerCase(); });
+    for (var i = 0; i < items.length; i++){
+      var it = items[i];
+      var itemKeys = [it.normalized_surface, it.surface].map(function(v){ return String(v || '').toLowerCase(); });
+      for (var k = 0; k < keys.length; k++){
+        if (itemKeys.indexOf(keys[k]) > -1) return i;
+      }
+    }
+    return -1;
   }
 
   function render(){
     if (view === 'lexicon'){
       app.innerHTML = renderHeader() + '<section class="grid" style="grid-template-columns:1fr">' + renderLexicon() + '</section>';
       bindTabs();
+      bindLexicon();
       var lq = document.getElementById('lq');
       if (lq) lq.oninput = function(){ search = lq.value; render(); var el=document.getElementById('lq'); if(el){el.focus(); el.setSelectionRange(el.value.length, el.value.length);} };
       return;
@@ -1122,6 +1245,22 @@ _APP_JS = r"""
 
   function bindTabs(){
     app.querySelectorAll('.tab').forEach(function(t){ t.onclick = function(){ view = t.dataset.view; search=''; render(); }; });
+  }
+
+  function bindLexicon(){
+    app.querySelectorAll('[data-view-review]').forEach(function(b){
+      b.onclick = function(ev){
+        ev.preventDefault();
+        var nextIdx = parseInt(b.dataset.viewReview);
+        if (!isNaN(nextIdx) && items[nextIdx]) {
+          idx = nextIdx;
+          view = 'review';
+          search = '';
+          filter = 'all';
+          render();
+        }
+      };
+    });
   }
 
   function bind(){
