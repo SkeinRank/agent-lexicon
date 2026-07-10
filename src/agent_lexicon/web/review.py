@@ -563,7 +563,10 @@ _APP_JS = r"""
       h += '<button data-act="rejected">\u2717 Reject <span class="kbd">r</span></button>';
       h += '<button data-act="ambiguous">Ambiguous <span class="kbd">m</span></button>';
       h += '<button data-skip="1">Skip <span class="kbd">s</span></button>';
-      h += '<button data-undo="1">\u21a9 Undo <span class="kbd">u</span></button>';
+      var hasLocalUndo = lastHistoryIndexFor(idx) > -1;
+      var undoLabel = hasLocalUndo ? '\u21a9 Undo' : '\u21a9 Clear decision';
+      var undoDisabled = (!hasLocalUndo && !isDecided(it)) ? ' disabled' : '';
+      h += '<button data-undo="1"'+undoDisabled+'>'+undoLabel+' <span class="kbd">u</span></button>';
       if (it.cluster_key && it.cluster_size > 1) h += '<button class="accept-cluster" data-cluster-accept="'+esc(it.cluster_key)+'">\u2713 Accept cluster <span class="kbd">A</span></button>';
       h += '</div>';
     } else {
@@ -677,12 +680,39 @@ _APP_JS = r"""
     return fetch('/decision', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body: body});
   }
 
+  function clearDecision(surface){
+    var body = 'surface='+encodeURIComponent(surface)+'&action=clear&note=';
+    return fetch('/decision', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body: body});
+  }
+
   var history = [];
+
+  function rememberDecisionChange(i){
+    var it = items[i];
+    if (!it) return;
+    history.push({i:i, surface: it.normalized_surface, prev: it.decision || null});
+  }
+
+  function lastHistoryIndexFor(i){
+    var it = items[i];
+    if (!it) return -1;
+    for (var h = history.length - 1; h >= 0; h--){
+      if (history[h].surface === it.normalized_surface || history[h].i === i) return h;
+    }
+    return -1;
+  }
+
+  function itemIndexForHistoryEntry(entry){
+    for (var i = 0; i < items.length; i++){
+      if (items[i].normalized_surface === entry.surface) return i;
+    }
+    return entry.i;
+  }
 
   function decide(i, decision){
     if (DATA.readOnly) return;
     var it = items[i];
-    history.push({i:i, prev: it.decision || null});
+    rememberDecisionChange(i);
     it.decision = decision;
     post(it.normalized_surface, decision);
     render();
@@ -690,20 +720,31 @@ _APP_JS = r"""
   }
 
   function undo(){
-    if (DATA.readOnly || !history.length) return;
-    var last = history.pop();
-    var it = items[last.i];
-    it.decision = last.prev;
-    // Re-post the previous decision when there was one; otherwise leave the
-    // server's last record (decisions are append-only) and re-open locally.
-    if (last.prev) post(it.normalized_surface, last.prev);
-    idx = last.i;
+    if (DATA.readOnly) return;
+    var current = items[idx];
+    if (!current) return;
+    var historyIndex = lastHistoryIndexFor(idx);
+    if (historyIndex > -1){
+      var last = history.splice(historyIndex, 1)[0];
+      var targetIndex = itemIndexForHistoryEntry(last);
+      var it = items[targetIndex];
+      if (!it) return;
+      it.decision = last.prev;
+      if (last.prev) post(it.normalized_surface, last.prev);
+      else clearDecision(it.normalized_surface);
+      idx = targetIndex;
+      render();
+      return;
+    }
+    if (!isDecided(current)) return;
+    current.decision = null;
+    clearDecision(current.normalized_surface);
     render();
   }
 
   function acceptCluster(key){
     if (DATA.readOnly) return;
-    items.forEach(function(it, i){ if (it.cluster_key === key){ history.push({i:i, prev: it.decision || null}); it.decision='accepted'; post(it.normalized_surface,'accepted'); } });
+    items.forEach(function(it, i){ if (it.cluster_key === key){ rememberDecisionChange(i); it.decision='accepted'; post(it.normalized_surface,'accepted'); } });
     render();
     setTimeout(next, 100);
   }
@@ -862,12 +903,19 @@ def _handler_for_state(
             form = parse_qs(payload)
             normalized_surface = form.get("surface", [""])[0]
             decision = form.get("decision", [""])[0]
+            action = form.get("action", ["save"])[0]
             note = form.get("note", [""])[0]
             if not policy_decision.is_allowed:
                 self._send_text(f"Policy denied review decision: {policy_decision.reason}\n", status=403)
                 return
             try:
-                state.save_review_decision(normalized_surface, decision, note=note, reviewer=policy_decision.actor)
+                if action == "clear":
+                    state.clear_review_decision(normalized_surface, note=note, reviewer=policy_decision.actor)
+                elif action in {"", "save"}:
+                    state.save_review_decision(normalized_surface, decision, note=note, reviewer=policy_decision.actor)
+                else:
+                    self._send_text(f"Invalid review action: {action}\n", status=400)
+                    return
             except (ValueError, WorkspaceError) as exc:
                 self._send_text(f"Invalid review decision: {exc}\n", status=400)
                 return

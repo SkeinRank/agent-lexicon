@@ -229,6 +229,27 @@ def _drive_post(state, body: bytes, headers: dict) -> str:
     return h.wfile.getvalue().decode(errors="replace").split("\n")[0]
 
 
+def test_review_inbox_undo_targets_selected_candidate_history(tmp_path: Path) -> None:
+    state = _workspace_with_evidence(tmp_path)
+
+    html = build_review_inbox_html(state, selected_surface="billing.update_credit_limit")
+
+    assert "var hasLocalUndo = lastHistoryIndexFor(idx) > -1" in html
+    assert "var historyIndex = lastHistoryIndexFor(idx)" in html
+    assert "history.splice(historyIndex, 1)" in html
+    assert "history.pop()" not in html
+
+
+def test_review_inbox_cluster_accept_records_targeted_history_entries(tmp_path: Path) -> None:
+    state = _workspace_with_evidence(tmp_path)
+
+    html = build_review_inbox_html(state, selected_surface="billing.update_credit_limit")
+
+    assert "function rememberDecisionChange(i)" in html
+    assert "surface: it.normalized_surface" in html
+    assert "rememberDecisionChange(i); it.decision='accepted'" in html
+
+
 def test_post_rejects_non_numeric_content_length(tmp_path: Path) -> None:
     state = _workspace_with_evidence(tmp_path)
     # Regression: a malformed Content-Length used to crash the handler thread.
@@ -249,3 +270,26 @@ def test_post_rejects_non_utf8_body(tmp_path: Path) -> None:
 def test_post_rejects_oversized_body(tmp_path: Path) -> None:
     state = _workspace_with_evidence(tmp_path)
     assert _drive_post(state, b"x", {"Content-Length": "99999999"}) .startswith("STATUS 413")
+
+
+def test_post_clear_decision_returns_item_to_unreviewed(tmp_path: Path) -> None:
+    state = _workspace_with_evidence(tmp_path)
+    state.save_review_decision("billing.update_credit_limit", "accepted", note="Ready")
+
+    body = b"surface=billing.update_credit_limit&action=clear&note=Reset"
+    assert _drive_post(state, body, {"Content-Length": str(len(body))}).startswith("STATUS 303")
+
+    item = state.get_review_item("billing.update_credit_limit")
+    assert item is not None
+    assert item.review_status == "unreviewed"
+    assert item.review_decision is None
+
+
+def test_review_inbox_shows_clear_decision_control_for_saved_decision(tmp_path: Path) -> None:
+    state = _workspace_with_evidence(tmp_path)
+    state.save_review_decision("billing.update_credit_limit", "accepted", note="Ready")
+
+    html = build_review_inbox_html(state, selected_surface="billing.update_credit_limit")
+
+    assert "Clear decision" in html
+    assert "clearDecision" in html

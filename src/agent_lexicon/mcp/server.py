@@ -34,6 +34,9 @@ DEFAULT_MCP_TOOLS = (
     "submit_proposal",
     "get_snapshot",
 )
+REVIEW_SUBMIT_DECISIONS = tuple(
+    status.value for status in ReviewDecisionStatus if status is not ReviewDecisionStatus.UNREVIEWED
+)
 
 
 class McpServerError(ValueError):
@@ -139,7 +142,7 @@ def mcp_tool_definitions() -> list[dict[str, Any]]:
                     "candidate_id": {"type": "string", "description": "Workspace candidate normalized surface."},
                     "decision": {
                         "type": "string",
-                        "enum": [status.value for status in ReviewDecisionStatus],
+                        "enum": list(REVIEW_SUBMIT_DECISIONS),
                     },
                     "note": {"type": "string"},
                     "reviewer": {"type": "string"},
@@ -390,6 +393,8 @@ def _find_evidence(args: Mapping[str, Any], *, config: McpServerConfig) -> dict[
 def _submit_proposal(args: Mapping[str, Any], *, config: McpServerConfig) -> dict[str, Any]:
     candidate_id = _required_string(args, "candidate_id")
     decision = ReviewDecisionStatus(_required_string(args, "decision"))
+    if decision is ReviewDecisionStatus.UNREVIEWED:
+        raise McpServerError("submit_proposal cannot save an unreviewed decision")
     note = _optional_string(args, "note") or ""
     reviewer = _optional_string(args, "reviewer") or config.actor
 

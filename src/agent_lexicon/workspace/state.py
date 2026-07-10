@@ -39,18 +39,21 @@ class ReviewDecisionStatus(str, Enum):
     REJECTED = "rejected"
     AMBIGUOUS = "ambiguous"
     NEEDS_SPLIT = "needs_split"
+    UNREVIEWED = "unreviewed"
 
 
 class ReviewEventType(str, Enum):
     """Review event type stored in the workspace event stream."""
 
     DECISION_SAVED = "review_decision_saved"
+    DECISION_CLEARED = "review_decision_cleared"
 
 
 class WorkspaceDecisionAction(str, Enum):
     """Append-only provenance action recorded in the workspace decision log."""
 
     REVIEW_DECISION_SAVED = "review_decision_saved"
+    REVIEW_DECISION_CLEARED = "review_decision_cleared"
     SNAPSHOT_PUBLISHED = "snapshot_published"
     RUNTIME_RESOLVE = "runtime_resolve"
     TOOL_GUARD = "tool_guard"
@@ -540,6 +543,8 @@ class WorkspaceState:
         """Save or replace a local review decision for one candidate."""
         normalized = _clean_text(normalized_surface, field_name="normalized_surface")
         status = ReviewDecisionStatus(decision.value if isinstance(decision, ReviewDecisionStatus) else str(decision))
+        if status is ReviewDecisionStatus.UNREVIEWED:
+            raise WorkspaceError("use clear_review_decision to return a candidate to unreviewed")
         reviewer_value = _clean_text(reviewer, field_name="reviewer")
         note_value = note.strip() if isinstance(note, str) else ""
         self.ensure_schema()
@@ -622,6 +627,93 @@ class WorkspaceState:
             created_at=created_at,
             updated_at=now,
         )
+
+    def clear_review_decision(
+        self,
+        normalized_surface: str,
+        *,
+        note: str = "",
+        reviewer: str = "local",
+    ) -> bool:
+        """Remove the current review decision for one candidate.
+
+        The current decision row is deleted so the candidate becomes unreviewed
+        again. A separate review event and provenance record are still appended
+        so local history keeps an audit trail of the reset.
+        """
+        normalized = _clean_text(normalized_surface, field_name="normalized_surface")
+        reviewer_value = _clean_text(reviewer, field_name="reviewer")
+        note_value = note.strip() if isinstance(note, str) else ""
+        self.ensure_schema()
+        now = _utc_now()
+        with _connect(self.db_path) as connection:
+            existing = connection.execute(
+                "SELECT decision, note, reviewer, created_at, updated_at FROM review_decisions WHERE normalized_surface = ?",
+                (normalized,),
+            ).fetchone()
+            if existing is None:
+                return False
+            previous_decision = str(existing[0])
+            previous_note = str(existing[1])
+            connection.execute("DELETE FROM review_decisions WHERE normalized_surface = ?", (normalized,))
+            event = _build_review_event(
+                connection,
+                normalized_surface=normalized,
+                decision=ReviewDecisionStatus.UNREVIEWED,
+                note=note_value,
+                reviewer=reviewer_value,
+                created_at=now,
+                event_type=ReviewEventType.DECISION_CLEARED,
+                metadata={
+                    "workspace_schema_version": SCHEMA_VERSION,
+                    "previous_decision": previous_decision,
+                    "previous_note": previous_note,
+                },
+            )
+            connection.execute(
+                """
+                INSERT INTO review_events (
+                    event_id,
+                    event_type,
+                    normalized_surface,
+                    decision,
+                    note,
+                    reviewer,
+                    created_at,
+                    event_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event.event_id,
+                    event.event_type.value,
+                    event.normalized_surface,
+                    event.decision.value,
+                    event.note,
+                    event.reviewer,
+                    event.created_at,
+                    _json_dumps(event.to_dict()),
+                ),
+            )
+            provenance = WorkspaceDecisionRecord(
+                decision_id=f"decision_{uuid.uuid4().hex}",
+                created_at=now,
+                actor=reviewer_value,
+                action=WorkspaceDecisionAction.REVIEW_DECISION_CLEARED,
+                subject=normalized,
+                input_text=normalized,
+                result=ReviewDecisionStatus.UNREVIEWED.value,
+                rule_id="human_review_clear",
+                payload={
+                    "review_event_id": event.event_id,
+                    "previous_decision": previous_decision,
+                    "previous_note": previous_note,
+                    "candidate_snapshot": event.candidate_snapshot,
+                    "evidence_snapshot": event.evidence_snapshot,
+                },
+                metadata={"workspace_schema_version": SCHEMA_VERSION},
+            )
+            _insert_decision_record(connection, provenance)
+        return True
 
     def append_decision_record(
         self,
@@ -1035,6 +1127,17 @@ def save_review_decision(
     return state.save_review_decision(normalized_surface, decision, note=note, reviewer=reviewer)
 
 
+def clear_review_decision(
+    state: WorkspaceState,
+    normalized_surface: str,
+    *,
+    note: str = "",
+    reviewer: str = "local",
+) -> bool:
+    """Return one candidate to the unreviewed state."""
+    return state.clear_review_decision(normalized_surface, note=note, reviewer=reviewer)
+
+
 def list_review_events(
     state: WorkspaceState,
     *,
@@ -1306,6 +1409,8 @@ def _build_review_event(
     note: str,
     reviewer: str,
     created_at: str,
+    event_type: ReviewEventType = ReviewEventType.DECISION_SAVED,
+    metadata: Mapping[str, Any] | None = None,
 ) -> WorkspaceReviewEvent:
     candidate_row = connection.execute(
         "SELECT payload_json FROM candidates WHERE normalized_surface = ?",
@@ -1319,7 +1424,7 @@ def _build_review_event(
     evidence_snapshot = _json_loads_mapping(str(evidence_row[0])) if evidence_row is not None else {}
     return WorkspaceReviewEvent(
         event_id=f"review_evt_{uuid.uuid4().hex}",
-        event_type=ReviewEventType.DECISION_SAVED,
+        event_type=event_type,
         normalized_surface=normalized_surface,
         decision=decision,
         note=note,
@@ -1327,7 +1432,7 @@ def _build_review_event(
         created_at=created_at,
         candidate_snapshot=candidate_snapshot,
         evidence_snapshot=evidence_snapshot,
-        metadata={"workspace_schema_version": SCHEMA_VERSION},
+        metadata=metadata or {"workspace_schema_version": SCHEMA_VERSION},
     )
 
 

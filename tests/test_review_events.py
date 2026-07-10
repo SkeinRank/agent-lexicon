@@ -106,3 +106,38 @@ def test_cli_workspace_export_review_events_stdout_and_file(tmp_path: Path, caps
     captured = capsys.readouterr()
     assert "Review events exported: 1 events" in captured.out
     assert output_path.exists()
+
+
+def test_clear_review_decision_returns_candidate_to_unreviewed(tmp_path: Path) -> None:
+    from agent_lexicon import ReviewDecisionStatus
+
+    state = _workspace_with_candidate(tmp_path)
+    state.save_review_decision("billing.update_credit_limit", "accepted", note="Looks canonical")
+
+    assert state.clear_review_decision("billing.update_credit_limit", note="Reset for another pass") is True
+
+    item = state.get_review_item("billing.update_credit_limit")
+    assert item is not None
+    assert item.review_status == "unreviewed"
+    assert item.review_decision is None
+
+    summary = state.summary()
+    assert summary.review_decision_count == 0
+    assert summary.review_event_count == 2
+
+    events = state.list_review_events()
+    assert events[0].event_type == ReviewEventType.DECISION_SAVED
+    assert events[1].event_type == ReviewEventType.DECISION_CLEARED
+    assert events[1].decision == ReviewDecisionStatus.UNREVIEWED
+    assert events[1].metadata["previous_decision"] == "accepted"
+    assert events[1].note == "Reset for another pass"
+
+
+def test_clear_review_decision_is_idempotent_for_unreviewed_candidate(tmp_path: Path) -> None:
+    state = _workspace_with_candidate(tmp_path)
+
+    assert state.clear_review_decision("billing.update_credit_limit") is False
+
+    summary = state.summary()
+    assert summary.review_decision_count == 0
+    assert summary.review_event_count == 0
