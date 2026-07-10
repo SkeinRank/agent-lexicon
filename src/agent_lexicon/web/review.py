@@ -424,6 +424,9 @@ _CSS = """
   --scope-bg: #eef;
   --scope-text: #3730a3;
   --code-text: #252522;
+  --term-hit-bg: rgba(245, 190, 70, 0.28);
+  --term-hit-border: rgba(190, 120, 20, 0.45);
+  --term-hit-text: inherit;
   --focus-bg: #ffffff;
   --timeline-sticky-bg: rgba(255, 255, 255, 0.92);
   --shadow: 0 18px 60px rgba(0, 0, 0, 0.035);
@@ -454,6 +457,9 @@ _CSS = """
   --scope-bg: #191d3a;
   --scope-text: #aeb8ff;
   --code-text: #d9deea;
+  --term-hit-bg: rgba(245, 190, 70, 0.22);
+  --term-hit-border: rgba(245, 190, 70, 0.55);
+  --term-hit-text: #f8e6b0;
   --focus-bg: #1d2330;
   --timeline-sticky-bg: rgba(23, 26, 33, 0.92);
   --shadow: 0 20px 70px rgba(0, 0, 0, 0.36);
@@ -702,6 +708,13 @@ pre {
   white-space: pre-wrap;
   color: var(--code-text);
   font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+mark.term-hit {
+  background: var(--term-hit-bg);
+  border-bottom: 1px solid var(--term-hit-border);
+  border-radius: 4px;
+  color: var(--term-hit-text);
+  padding: 0 2px;
 }
 .actions {
   margin-top: 24px;
@@ -1071,8 +1084,8 @@ _APP_JS = r"""
     var it = items[idx];
     if (!it) return '<section class="panel detail"><div class="empty"><strong>Nothing to review</strong><span>Run a scan first.</span></div></section>';
     var chips = it.reasons.map(function(r){ return '<span class="chip accent">'+esc(r)+'</span>'; }).join('');
-    var pos = it.positive.map(function(s){ return snippet(s, 'positive'); }).join('');
-    var neg = it.negative.map(function(s){ return snippet(s, 'negative'); }).join('');
+    var pos = it.positive.map(function(s){ return snippet(s, 'positive', it); }).join('');
+    var neg = it.negative.map(function(s){ return snippet(s, 'negative', it); }).join('');
     var nums = Object.keys(it.nums).map(function(k){ return '<div class="scores-row"><span>'+esc(k)+'</span><span>'+it.nums[k].toFixed(3)+'</span></div>'; }).join('');
     var clusterNote = (it.cluster_key && it.cluster_size > 1) ? '<div class="cluster-note">\u25c8 part of '+esc(it.cluster_key)+' ('+it.cluster_size+' variants)</div>' : '';
     var ro = DATA.readOnly;
@@ -1110,8 +1123,63 @@ _APP_JS = r"""
     return h;
   }
 
-  function snippet(s, kind){
-    return '<article class="snippet '+kind+'"><div class="snippet-head"><span>'+esc(s.path)+':'+esc(s.start)+'-'+esc(s.end)+'</span><span>'+esc(s.reason)+'</span></div><pre>'+esc(s.text)+'</pre></article>';
+  function evidenceHighlightTerms(it){
+    var terms = [];
+    function add(value){
+      var v = String(value || '').trim();
+      if (v.length < 3) return;
+      var key = v.toLowerCase();
+      for (var i = 0; i < terms.length; i++) {
+        if (terms[i].toLowerCase() === key) return;
+      }
+      terms.push(v);
+    }
+    if (it) {
+      add(it.surface);
+      add(it.normalized_surface);
+    }
+    terms.sort(function(a, b){ return b.length - a.length; });
+    return terms;
+  }
+
+  function highlightEvidenceText(text, terms){
+    var raw = String(text || '');
+    var hits = [];
+    var lower = raw.toLowerCase();
+    (terms || []).forEach(function(term){
+      var needle = String(term || '').toLowerCase();
+      if (!needle) return;
+      var at = lower.indexOf(needle);
+      while (at !== -1) {
+        hits.push({start: at, end: at + needle.length});
+        at = lower.indexOf(needle, at + Math.max(needle.length, 1));
+      }
+    });
+    if (!hits.length) return esc(raw);
+    hits.sort(function(a, b){
+      if (a.start !== b.start) return a.start - b.start;
+      return (b.end - b.start) - (a.end - a.start);
+    });
+    var selected = [];
+    var cursor = -1;
+    hits.forEach(function(hit){
+      if (hit.start < cursor) return;
+      selected.push(hit);
+      cursor = hit.end;
+    });
+    var out = '';
+    var pos = 0;
+    selected.forEach(function(hit){
+      out += esc(raw.slice(pos, hit.start));
+      out += '<mark class="term-hit">' + esc(raw.slice(hit.start, hit.end)) + '</mark>';
+      pos = hit.end;
+    });
+    out += esc(raw.slice(pos));
+    return out;
+  }
+
+  function snippet(s, kind, it){
+    return '<article class="snippet '+kind+'"><div class="snippet-head"><span>'+esc(s.path)+':'+esc(s.start)+'-'+esc(s.end)+'</span><span>'+esc(s.reason)+'</span></div><pre>'+highlightEvidenceText(s.text, evidenceHighlightTerms(it))+'</pre></article>';
   }
 
   function decisionVerb(ev){

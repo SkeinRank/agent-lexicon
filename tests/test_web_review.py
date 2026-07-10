@@ -485,6 +485,19 @@ def test_review_inbox_supports_persistent_theme_switcher(tmp_path: Path) -> None
     assert "applyTheme(themeMode)" in html
 
 
+def test_review_inbox_highlights_candidate_terms_in_evidence(tmp_path: Path) -> None:
+    state = _workspace_with_evidence(tmp_path)
+
+    html = build_review_inbox_html(state, selected_surface="billing.update_credit_limit")
+
+    assert "mark.term-hit" in html
+    assert "--term-hit-bg" in html
+    assert "function evidenceHighlightTerms" in html
+    assert "function highlightEvidenceText" in html
+    assert "highlightEvidenceText(s.text, evidenceHighlightTerms(it))" in html
+    assert "<mark class=\"term-hit\">" in html
+
+
 def test_review_sidebar_groups_reviewed_terms_by_recency_and_adds_history_filter(tmp_path: Path) -> None:
     state = _workspace_with_evidence(tmp_path)
     state.save_review_decision("billing.update_credit_limit", "accepted", note="Ready")
