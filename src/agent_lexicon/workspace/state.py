@@ -40,6 +40,7 @@ class ReviewDecisionStatus(str, Enum):
     REJECTED = "rejected"
     AMBIGUOUS = "ambiguous"
     NEEDS_SPLIT = "needs_split"
+    DEPRECATE_ALIAS = "deprecate_alias"
     UNREVIEWED = "unreviewed"
 
 

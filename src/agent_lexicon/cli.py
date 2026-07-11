@@ -32,6 +32,8 @@ from .dictionary import (
     validate_dictionary_layout,
     write_dictionary_manifest,
     write_merged_lexicon_json,
+    TermEditError,
+    deprecate_alias_in_lexicon_file,
 )
 from .core import (
     AgentLexiconLoadError,
@@ -783,6 +785,30 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print the refreshed baseline document as JSON.",
     )
+
+    term_parser = subparsers.add_parser(
+        "term",
+        help="Edit git-tracked terminology entries.",
+    )
+    term_subparsers = term_parser.add_subparsers(dest="term_command")
+    term_deprecate_parser = term_subparsers.add_parser(
+        "deprecate",
+        help="Add a deprecated alias that points to an existing canonical term.",
+    )
+    term_deprecate_parser.add_argument("surface", help="Deprecated surface form to redirect.")
+    term_deprecate_parser.add_argument(
+        "--canonical",
+        required=True,
+        help="Target canonical term id that should replace the deprecated surface.",
+    )
+    term_deprecate_parser.add_argument("--root", default=".", help="Project root.")
+    term_deprecate_parser.add_argument(
+        "--lexicon",
+        default=None,
+        help="Lexicon file. Defaults to lexicon/lexicon.yaml under --root.",
+    )
+    term_deprecate_parser.add_argument("--note", default="", help="Optional reviewer note stored on the alias metadata.")
+    term_deprecate_parser.add_argument("--json", action="store_true", help="Print the edit summary as JSON.")
 
     policy_parser = subparsers.add_parser(
         "policy",
@@ -1897,6 +1923,9 @@ def _run(argv: list[str] | None = None) -> int:
     if args.command == "baseline":
         return _baseline_command(args)
 
+    if args.command == "term":
+        return _term_command(args)
+
     if args.command == "policy":
         return _policy_command(args)
 
@@ -2193,6 +2222,36 @@ def _simple_publish_command(args: argparse.Namespace) -> int:
     if updated:
         print(f"Lexicon updated: {updated}")
     return 0
+
+def _term_command(args: argparse.Namespace) -> int:
+    if args.term_command != "deprecate":
+        _error("Term command required: deprecate")
+        return 1
+    root = Path(args.root).resolve()
+    lexicon_path = Path(args.lexicon) if args.lexicon else root / "lexicon" / "lexicon.yaml"
+    if not lexicon_path.is_absolute():
+        lexicon_path = root / lexicon_path
+    try:
+        result = deprecate_alias_in_lexicon_file(
+            lexicon_path,
+            surface=args.surface,
+            target_term_id=args.canonical,
+            note=args.note,
+            source="cli",
+        )
+    except TermEditError as exc:
+        _error(f"Invalid term edit: {exc}")
+        return 1
+    if args.json:
+        print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+        return 0
+    if result.already_present:
+        print(f"Deprecated alias already present: {result.surface} -> {result.target_term_id}")
+    else:
+        print(f"Deprecated alias added: {result.surface} -> {result.target_term_id}")
+    print(f"Lexicon updated: {result.lexicon_path}")
+    return 0
+
 
 def _baseline_command(args: argparse.Namespace) -> int:
     if args.baseline_command not in {"create", "update"}:

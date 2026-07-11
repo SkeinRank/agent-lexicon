@@ -255,10 +255,11 @@ def _published_records_by_surface(root: str | Path) -> dict[str, dict[str, Any]]
         for decision in _published_decisions_from_record(record):
             surface = str(decision.get("surface", "") or "").strip()
             normalized_surface = str(decision.get("normalized_surface", "") or "").strip()
-            if not surface and not normalized_surface:
+            term_id = str(decision.get("term_id", "") or "").strip()
+            if not surface and not normalized_surface and not term_id:
                 continue
             ui_record = _publish_record_as_ui_dict(record, decision)
-            for key in {surface.casefold(), normalized_surface.casefold()}:
+            for key in {surface.casefold(), normalized_surface.casefold(), term_id.casefold()}:
                 if key and key not in published:
                     published[key] = ui_record
     return published
@@ -284,10 +285,11 @@ def _publish_history_by_surface(root: str | Path) -> dict[str, list[dict[str, An
                 continue
             surface = str(decision.get("surface", "") or "").strip()
             normalized_surface = str(decision.get("normalized_surface", "") or "").strip()
-            if not surface and not normalized_surface:
+            term_id = str(decision.get("term_id", "") or "").strip()
+            if not surface and not normalized_surface and not term_id:
                 continue
             ui_record = _publish_record_as_ui_dict(record, decision)
-            for key in {surface.casefold(), normalized_surface.casefold()}:
+            for key in {surface.casefold(), normalized_surface.casefold(), term_id.casefold()}:
                 if key:
                     history.setdefault(key, []).append(ui_record)
     return history
@@ -466,7 +468,10 @@ _CSS = """
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
+html { height: 100%; }
 body {
+  height: 100vh;
+  overflow: hidden;
   margin: 0;
   background: var(--bg);
   color: var(--text);
@@ -475,10 +480,16 @@ body {
 a { color: inherit; text-decoration: none; }
 .shell {
   width: min(1180px, calc(100vw - 48px));
+  height: 100vh;
   margin: 0 auto;
-  padding: 20px 0 48px;
+  padding: 20px 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
 }
 .topbar {
+  flex: 0 0 auto;
   display: flex;
   justify-content: space-between;
   align-items: flex-end;
@@ -519,18 +530,26 @@ h1 {
   font-size: 12px;
 }
 .grid {
+  flex: 1 1 auto;
+  min-height: 0;
   display: grid;
   grid-template-columns: 340px minmax(0, 1fr);
   gap: 20px;
-  align-items: start;
+  align-items: stretch;
 }
 .panel {
+  min-height: 0;
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow);
 }
-.sidebar { padding: 12px; }
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 12px;
+}
 .list-title {
   display: flex;
   justify-content: space-between;
@@ -603,7 +622,14 @@ h1 {
 .status.accepted { background: var(--ok); color: var(--ok-text); }
 .status.rejected { background: var(--danger); color: var(--danger-text); }
 .status.ambiguous, .status.needs_split { background: var(--warn); color: var(--warn-text); }
-.detail { padding: 24px; }
+.detail {
+  min-height: 0;
+  max-height: 100%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scroll-padding-bottom: 96px;
+  padding: 24px;
+}
 .detail-head {
   display: flex;
   justify-content: space-between;
@@ -777,10 +803,12 @@ button.primary { background: var(--accent); color: var(--accent-contrast); borde
   font-size: 12px;
 }
 @media (max-width: 860px) {
-  .shell { width: min(100vw - 28px, 1180px); padding-top: 20px; }
+  body { height: auto; min-height: 100vh; overflow: auto; }
+  .shell { width: min(100vw - 28px, 1180px); height: auto; min-height: 100vh; overflow: visible; padding-top: 20px; }
   .topbar { align-items: flex-start; flex-direction: column; }
   .summary { justify-content: flex-start; }
-  .grid { grid-template-columns: 1fr; }
+  .grid { grid-template-columns: 1fr; min-height: auto; }
+  .sidebar, .detail { max-height: none; overflow: visible; }
   .metrics, .button-row { grid-template-columns: 1fr; }
   .detail-head { flex-direction: column; }
 }
@@ -791,7 +819,7 @@ button.primary { background: var(--accent); color: var(--accent-contrast); borde
 .search { flex: 1; border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 8px 11px; font: inherit; background: var(--soft); color: var(--text); outline: none; }
 .search:focus { border-color: var(--strong); background: var(--focus-bg); }
 .filter { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 8px 10px; font: inherit; background: var(--soft); color: var(--text); cursor: pointer; }
-.sidebar-list { max-height: 62vh; overflow-y: auto; }
+.sidebar-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding-right: 2px; }
 .timeline-section { margin-bottom: 12px; }
 .timeline-section-head {
   position: sticky;
@@ -863,7 +891,8 @@ button.primary { background: var(--accent); color: var(--accent-contrast); borde
 .theme-switch button:hover { color: var(--text); background: var(--soft); }
 .theme-switch button.active { background: var(--accent); color: var(--accent-contrast); }
 .theme-switch-label { color: var(--muted); font-size: 11px; padding: 0 4px 0 7px; }
-.actionbar { position: sticky; bottom: 0; z-index: 5; background: var(--panel); border-top: 1px solid var(--line); padding: 14px 24px; margin: 18px -24px -24px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; border-bottom-left-radius: var(--radius-lg); border-bottom-right-radius: var(--radius-lg); }
+.actionbar { position: sticky; bottom: 0; z-index: 5; background: var(--panel); border-top: 1px solid var(--line); padding: 14px 24px; margin: 18px -24px -24px; display: flex; gap: 10px; align-items: center; flex-wrap: nowrap; overflow-x: auto; border-bottom-left-radius: var(--radius-lg); border-bottom-right-radius: var(--radius-lg); scrollbar-width: thin; }
+.actionbar button { flex: 0 0 auto; white-space: nowrap; }
 .lex-term { border: 1px solid var(--line); border-radius: var(--radius-md); padding: 14px 16px; margin-bottom: 10px; background: var(--panel); }
 .lex-canonical { font-size: 16px; font-weight: 650; }
 .lex-id { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--muted); }
@@ -895,6 +924,7 @@ _APP_JS = r"""
   var app = document.getElementById('app');
   var items = DATA.items;
   var lexicon = DATA.lexicon || [];
+  var termTargets = DATA.termTargets || [];
   var view = 'review';
   var idx = 0;
   var search = '';
@@ -1109,6 +1139,7 @@ _APP_JS = r"""
       h += '<button class="primary" data-act="accepted">\u2713 Accept <span class="kbd" style="border-color:currentColor;background:transparent">a</span></button>';
       h += '<button data-act="rejected">\u2717 Reject <span class="kbd">r</span></button>';
       h += '<button data-act="ambiguous">Ambiguous <span class="kbd">m</span></button>';
+      h += '<button data-deprecate="1">Deprecate alias <span class="kbd">d</span></button>';
       h += '<button data-skip="1">Skip <span class="kbd">s</span></button>';
       var hasLocalUndo = lastHistoryIndexFor(idx) > -1;
       var undoLabel = hasLocalUndo ? '\u21a9 Undo' : '\u21a9 Clear decision';
@@ -1189,6 +1220,7 @@ _APP_JS = r"""
     if (ev.decision === 'rejected') return 'Rejected';
     if (ev.decision === 'ambiguous') return 'Marked ambiguous';
     if (ev.decision === 'needs_split') return 'Marked needs split';
+    if (ev.decision === 'deprecate_alias') return 'Marked deprecated alias';
     return 'Reviewed';
   }
 
@@ -1243,10 +1275,13 @@ _APP_JS = r"""
     } else {
       bits.push('Local decision');
     }
-    if (it.decision === 'accepted') {
+    if (it.decision === 'accepted' || it.decision === 'deprecate_alias') {
       var cls = (it.published && it.published.is_published) ? 'ok' : 'warn';
       var label = (it.published && it.published.is_published) ? 'published' : 'publish pending';
       bits.push('<span class="state-badge '+cls+'">'+label+'</span>');
+    }
+    if (it.decision === 'deprecate_alias' && it.decision_metadata && it.decision_metadata.deprecate_alias) {
+      bits.push('target ' + esc(it.decision_metadata.deprecate_alias.target_term_id || ''));
     }
     return '<div class="state-row">'+bits.join(' · ')+'</div>';
   }
@@ -1274,6 +1309,7 @@ _APP_JS = r"""
     if (p.decision === 'rejected') return 'Rejected';
     if (p.decision === 'ambiguous') return 'Ambiguous';
     if (p.decision === 'needs_split') return 'Needs split';
+    if (p.decision === 'deprecate_alias') return 'Deprecated alias';
     return p.included_in_lexicon ? 'Accepted' : 'Reviewed';
   }
 
@@ -1294,7 +1330,7 @@ _APP_JS = r"""
   }
 
   function statusClass(it){ if(it.decision==='accepted')return'accepted'; if(it.decision==='rejected')return'rejected'; if(it.decision)return'ambiguous'; return''; }
-  function statusLabel(it){ if(it.decision==='accepted')return'Accepted'; if(it.decision==='rejected')return'Rejected'; if(it.decision==='ambiguous')return'Ambiguous'; if(it.decision)return'Reviewed'; return'Unreviewed'; }
+  function statusLabel(it){ if(it.decision==='accepted')return'Accepted'; if(it.decision==='rejected')return'Rejected'; if(it.decision==='ambiguous')return'Ambiguous'; if(it.decision==='deprecate_alias')return'Deprecated alias'; if(it.decision)return'Reviewed'; return'Unreviewed'; }
 
   function renderThemeSwitch(){
     var options = [
@@ -1472,6 +1508,7 @@ _APP_JS = r"""
     if (f) f.onchange = function(){ filter = f.value; var v=visibleIndexes(); if(v.indexOf(idx)===-1 && v.length) idx=v[0]; updateList(); };
     bindList();
     app.querySelectorAll('[data-act]').forEach(function(b){ b.onclick = function(){ decide(idx, b.dataset.act); }; });
+    var dep = app.querySelector('[data-deprecate]'); if (dep) dep.onclick = function(){ deprecateAlias(idx); };
     var sk = app.querySelector('[data-skip]'); if (sk) sk.onclick = function(){ next(); };
     var un = app.querySelector('[data-undo]'); if (un) un.onclick = function(){ undo(); };
     var ca = app.querySelector('[data-cluster-accept]'); if (ca) ca.onclick = function(){ acceptCluster(ca.dataset.clusterAccept); };
@@ -1515,6 +1552,53 @@ _APP_JS = r"""
   function post(surface, decision){
     var body = 'surface='+encodeURIComponent(surface)+'&decision='+encodeURIComponent(decision)+'&note=';
     return postAction(body);
+  }
+
+  function postDeprecatedAlias(surface, targetTermId){
+    var body = 'surface='+encodeURIComponent(surface)
+      + '&decision=deprecate_alias&target_term_id='+encodeURIComponent(targetTermId)+'&note=';
+    return postAction(body);
+  }
+
+  function targetScore(surface, target){
+    var hay = (String(target.id || '') + ' ' + String(target.canonical || '')).toLowerCase();
+    var words = String(surface || '').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+    var score = 0;
+    words.forEach(function(w){ if (w.length > 2 && hay.indexOf(w) > -1) score += w.length; });
+    return score;
+  }
+
+  function suggestedTargets(surface){
+    return termTargets.slice().sort(function(a, b){
+      return targetScore(surface, b) - targetScore(surface, a) || String(a.id).localeCompare(String(b.id));
+    });
+  }
+
+  function chooseDeprecationTarget(it){
+    if (!termTargets.length) {
+      window.alert('No published terms are available yet. Accept and publish a canonical term first.');
+      return '';
+    }
+    var suggestions = suggestedTargets(it.surface).slice(0, 5);
+    var lines = suggestions.map(function(t){ return '  ' + t.id + (t.canonical ? ' — ' + t.canonical : ''); });
+    var promptText = 'Target canonical term id for deprecated alias "' + it.surface + '":';
+    if (lines.length) promptText += '\n\nSuggestions:\n' + lines.join('\n');
+    var initial = suggestions[0] ? suggestions[0].id : '';
+    return String(window.prompt(promptText, initial) || '').trim();
+  }
+
+  function deprecateAlias(i){
+    if (DATA.readOnly) return;
+    var it = items[i];
+    if (!it) return;
+    var target = chooseDeprecationTarget(it);
+    if (!target) return;
+    rememberDecisionChange(i);
+    it.decision = 'deprecate_alias';
+    it.decision_metadata = {deprecate_alias: {target_term_id: target}};
+    postDeprecatedAlias(it.normalized_surface, target).then(function(){ render(); }).catch(function(){ window.location = '/?surface=' + encodeURIComponent(it.normalized_surface); });
+    render();
+    setTimeout(next, 100);
   }
 
   function clearDecision(surface){
@@ -1600,6 +1684,7 @@ _APP_JS = r"""
     else if (k==='a'){ decide(idx,'accepted'); e.preventDefault(); }
     else if (k==='r'){ decide(idx,'rejected'); e.preventDefault(); }
     else if (k==='m'){ decide(idx,'ambiguous'); e.preventDefault(); }
+    else if (k==='d'){ deprecateAlias(idx); e.preventDefault(); }
     else if (k==='s'){ next(); e.preventDefault(); }
     else if (k==='u'){ undo(); e.preventDefault(); }
     else if (k==='A'){ var it=items[idx]; if(it.cluster_key && it.cluster_size>1) acceptCluster(it.cluster_key); e.preventDefault(); }
@@ -1758,6 +1843,7 @@ def _handler_for_state(
             decision = form.get("decision", [""])[0]
             action = form.get("action", ["save"])[0]
             note = form.get("note", [""])[0]
+            target_term_id = form.get("target_term_id", [""])[0].strip()
             response_mode = form.get("response", ["redirect"])[0]
             if not policy_decision.is_allowed:
                 self._send_text(f"Policy denied review decision: {policy_decision.reason}\n", status=403)
@@ -1773,6 +1859,12 @@ def _handler_for_state(
                         actor_id=_default_web_actor_id(state.root),
                     )
                 elif action in {"", "save"}:
+                    metadata: dict[str, Any] = {}
+                    if decision == ReviewDecisionStatus.DEPRECATE_ALIAS.value:
+                        if not target_term_id:
+                            self._send_text("Deprecated alias decisions require target_term_id\n", status=400)
+                            return
+                        metadata["deprecate_alias"] = {"target_term_id": target_term_id}
                     state.save_review_decision(
                         normalized_surface,
                         decision,
@@ -1781,6 +1873,7 @@ def _handler_for_state(
                         actor_type="human",
                         actor_source="web",
                         actor_id=_default_web_actor_id(state.root),
+                        metadata=metadata,
                     )
                 else:
                     self._send_text(f"Invalid review action: {action}\n", status=400)
@@ -2022,6 +2115,11 @@ def _render_page(
         "policy": f"{policy_decision.mode.value} · {policy_decision.role.value}",
         "selected": selected.normalized_surface if selected is not None else "",
         "lexicon": lexicon_terms,
+        "termTargets": [
+            {"id": str(term.get("id", "")), "canonical": str(term.get("canonical", ""))}
+            for term in lexicon_terms
+            if str(term.get("id", "")).strip()
+        ],
     }
     data_json = json.dumps(payload).replace("</", "<\\/")
     return "\n".join(

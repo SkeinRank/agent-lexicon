@@ -148,8 +148,10 @@ def test_review_inbox_hides_starter_lexicon_term(tmp_path: Path) -> None:
     # Lexicon tab button is present, but shows an empty accepted vocabulary.
     assert 'data-view="lexicon"' in html
     assert "No published terminology yet" in html
-    # Action bar is sticky and present for a writable policy.
+    # Action bar is sticky and keeps review controls on one row when space allows.
     assert "actionbar" in html
+    assert "flex-wrap: nowrap" in html
+    assert ".actionbar button" in html
 
 
 def test_review_inbox_includes_real_lexicon_terms(tmp_path: Path) -> None:
@@ -699,3 +701,21 @@ def test_lexicon_tab_exposes_published_term_details_and_review_link(tmp_path: Pa
     assert "data-view-review" in html
     assert "View in Review" in html
     assert "Lexicon is read-only" in html
+
+
+def test_review_inbox_scrolls_panes_without_page_jitter(tmp_path: Path) -> None:
+    state = _workspace_with_evidence(tmp_path)
+
+    html = build_review_inbox_html(state, selected_surface="billing.update_credit_limit")
+
+    assert "body {" in html
+    assert "height: 100vh" in html
+    assert "overflow: hidden" in html
+    assert ".shell {" in html
+    assert "display: flex" in html
+    assert ".grid {" in html
+    assert "align-items: stretch" in html
+    assert ".detail {" in html
+    assert "overflow-y: auto" in html
+    assert "overscroll-behavior: contain" in html
+    assert ".sidebar-list { flex: 1 1 auto" in html

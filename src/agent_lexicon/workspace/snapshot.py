@@ -5,12 +5,12 @@ from __future__ import annotations
 import json
 import re
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-from agent_lexicon.core import EvidenceKind, EvidenceSpan, Lexicon, Term, lexicon_runtime_metadata
+from agent_lexicon.core import Alias, EvidenceKind, EvidenceSpan, Lexicon, Term, lexicon_runtime_metadata
 from agent_lexicon.core.files import atomic_write_text
 
 from .state import ReviewDecisionStatus, WorkspaceError, WorkspaceReviewItem
@@ -94,9 +94,10 @@ def publish_local_snapshot(
 ) -> PublishedSnapshot:
     """Publish accepted local review decisions to a lexicon snapshot JSON file.
 
-    Accepted review items become canonical terms. Rejected, ambiguous, and
-    needs-split items remain in the workspace but are not promoted into the
-    published lexicon snapshot.
+    Accepted review items become canonical terms. Deprecated-alias decisions
+    attach a deprecated surface to an existing canonical term. Rejected,
+    ambiguous, and needs-split items remain in the workspace but are not
+    promoted into the published lexicon snapshot.
     """
     if not isinstance(state, WorkspaceStore):
         raise SnapshotPublishError("state must implement WorkspaceStore")
@@ -122,8 +123,10 @@ def publish_local_snapshot(
     base_terms = tuple(term for term in all_base_terms if not _is_snapshot_hidden_starter_term(term))
     base_scopes = tuple(base_lexicon.scopes) if base_lexicon is not None else ()
     base_metadata = dict(base_lexicon.metadata) if base_lexicon is not None else {}
-    known_term_ids = {term.id for term in base_terms}
+    published_terms = list(base_terms)
+    known_term_ids = {term.id for term in published_terms}
     known_surfaces = _known_surfaces(base_lexicon) if base_lexicon is not None else set()
+    known_deprecated_surfaces = _known_deprecated_alias_surfaces(base_lexicon) if base_lexicon is not None else set()
     # Starter surfaces stay in known_surfaces so an accepted candidate that
     # happens to collide with the placeholder is still surfaced as skipped,
     # but the placeholder itself never reaches the published snapshot.
@@ -135,6 +138,32 @@ def publish_local_snapshot(
         if item.review_decision is None:
             continue
         decision = item.review_decision.decision
+        if decision != ReviewDecisionStatus.DEPRECATE_ALIAS:
+            continue
+        result, target_term_id, included = _apply_deprecated_alias_decision(
+            published_terms,
+            item,
+            snapshot_id=resolved_snapshot_id,
+            known_non_deprecated_surfaces=known_surfaces,
+            known_deprecated_surfaces=known_deprecated_surfaces,
+        )
+        if included:
+            known_deprecated_surfaces.add(item.surface.casefold())
+        published_decisions.append(
+            _publish_decision_entry(
+                item,
+                result=result,
+                term_id=target_term_id,
+                included_in_lexicon=included,
+            )
+        )
+
+    for item in sorted(reviewed_items, key=lambda value: value.normalized_surface):
+        if item.review_decision is None:
+            continue
+        decision = item.review_decision.decision
+        if decision == ReviewDecisionStatus.DEPRECATE_ALIAS:
+            continue
         if decision != ReviewDecisionStatus.ACCEPTED:
             published_decisions.append(
                 _publish_decision_entry(
@@ -146,7 +175,7 @@ def publish_local_snapshot(
             )
             continue
         surface_key = item.surface.casefold()
-        if surface_key in known_surfaces:
+        if surface_key in known_surfaces or surface_key in known_deprecated_surfaces:
             skipped_surfaces.append(item.surface)
             published_decisions.append(
                 _publish_decision_entry(
@@ -210,7 +239,7 @@ def publish_local_snapshot(
     lexicon = Lexicon(
         version="1",
         scopes=base_scopes,
-        terms=(*base_terms, *generated_terms),
+        terms=(*published_terms, *generated_terms),
         proposals=(),
         metadata=snapshot_metadata,
     )
@@ -235,7 +264,7 @@ def publish_local_snapshot(
         skipped_count=len(skipped_surfaces),
         skipped_surfaces=tuple(skipped_surfaces),
         metadata={
-            "base_term_count": len(base_terms),
+            "base_term_count": len(published_terms),
             "starter_terms_dropped": [term.id for term in starter_terms],
             "reviewed_count": len(reviewed_items),
             "published_decisions": list(published_decisions),
@@ -254,6 +283,58 @@ def publish_local_snapshot(
         raise SnapshotPublishError(str(exc)) from exc
     return snapshot
 
+
+
+def _apply_deprecated_alias_decision(
+    terms: list[Term],
+    item: WorkspaceReviewItem,
+    *,
+    snapshot_id: str,
+    known_non_deprecated_surfaces: set[str],
+    known_deprecated_surfaces: set[str],
+) -> tuple[str, str, bool]:
+    if item.review_decision is None:
+        return "deprecate_alias_missing_decision", "", False
+    target_term_id = _deprecated_alias_target_term_id(item.review_decision.metadata)
+    if not target_term_id:
+        return "deprecate_alias_missing_target", "", False
+    surface_key = item.surface.casefold()
+    if surface_key in known_non_deprecated_surfaces:
+        return "deprecate_alias_surface_active", target_term_id, False
+    if surface_key in known_deprecated_surfaces:
+        return "deprecated_alias_existing", target_term_id, True
+    for index, term in enumerate(terms):
+        if term.id != target_term_id:
+            continue
+        alias = Alias(
+            surface=item.surface,
+            term_id=target_term_id,
+            deprecated=True,
+            metadata={
+                "source": "review_publish",
+                "snapshot_id": snapshot_id,
+                "normalized_surface": item.normalized_surface,
+                "review_decision": item.review_decision.to_dict(),
+            },
+        )
+        terms[index] = replace(term, aliases=(*term.aliases, alias))
+        return "deprecated_alias_added", target_term_id, True
+    return "deprecate_alias_target_not_found", target_term_id, False
+
+
+def _deprecated_alias_target_term_id(metadata: Mapping[str, Any]) -> str:
+    if not isinstance(metadata, Mapping):
+        return ""
+    nested = metadata.get("deprecate_alias", {})
+    if isinstance(nested, Mapping):
+        value = nested.get("target_term_id") or nested.get("canonical_term_id")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    for key in ("target_term_id", "canonical_term_id"):
+        value = metadata.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
 
 def _publish_decision_entry(
     item: WorkspaceReviewItem,
@@ -337,6 +418,17 @@ def _known_surfaces(lexicon: Lexicon | None) -> set[str]:
                 surfaces.add(alias.surface.casefold())
     return surfaces
 
+
+
+def _known_deprecated_alias_surfaces(lexicon: Lexicon | None) -> set[str]:
+    if lexicon is None:
+        return set()
+    surfaces: set[str] = set()
+    for term in lexicon.terms:
+        for alias in term.aliases:
+            if alias.deprecated:
+                surfaces.add(alias.surface.casefold())
+    return surfaces
 
 def _term_id_from_surface(surface: str) -> str:
     cleaned = _clean_text(surface, field_name="surface")
