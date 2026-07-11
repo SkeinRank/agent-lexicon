@@ -86,6 +86,10 @@ def fingerprint_lexicon(lexicon: Lexicon) -> LexiconFingerprint:
     """Return a stable content fingerprint for a loaded lexicon."""
     if not isinstance(lexicon, Lexicon):
         raise TypeError("lexicon must be a Lexicon")
+    cached = getattr(lexicon, "_fingerprint_cache", None)
+    if isinstance(cached, LexiconFingerprint):
+        return cached
+
     payload = json.dumps(
         lexicon.to_dict(),
         ensure_ascii=False,
@@ -94,7 +98,7 @@ def fingerprint_lexicon(lexicon: Lexicon) -> LexiconFingerprint:
         default=str,
     )
     digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-    return LexiconFingerprint(
+    fingerprint = LexiconFingerprint(
         algorithm=LEXICON_FINGERPRINT_ALGORITHM,
         value=digest,
         version=lexicon.version,
@@ -103,6 +107,8 @@ def fingerprint_lexicon(lexicon: Lexicon) -> LexiconFingerprint:
         proposal_count=len(lexicon.proposals),
         surface_count=sum(len(term.surfaces(include_deprecated=True)) for term in lexicon.terms),
     )
+    object.__setattr__(lexicon, "_fingerprint_cache", fingerprint)
+    return fingerprint
 
 
 def lexicon_snapshot_ref(lexicon: Lexicon) -> str:

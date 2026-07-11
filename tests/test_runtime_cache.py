@@ -34,6 +34,24 @@ def test_fingerprint_is_stable_for_equal_lexicons() -> None:
     assert left_fingerprint.to_dict()["value"] == left_fingerprint.value
 
 
+
+
+def test_fingerprint_is_cached_on_immutable_lexicon(monkeypatch) -> None:
+    lexicon = Lexicon(terms=(Term(id="auth.access_token", canonical="access token"),))
+
+    first = fingerprint_lexicon(lexicon)
+
+    from agent_lexicon.core import snapshots
+
+    def fail_json_dumps(*args, **kwargs):
+        raise AssertionError("fingerprint should be reused from the loaded lexicon")
+
+    monkeypatch.setattr(snapshots.json, "dumps", fail_json_dumps)
+
+    second = fingerprint_lexicon(lexicon)
+
+    assert second is first
+
 def test_cached_matcher_and_resolver_reuse_compiled_instances() -> None:
     lexicon = Lexicon(terms=(Term(id="auth.access_token", canonical="access token"),))
     cache = LexiconRuntimeCache(max_size=4)
@@ -62,6 +80,27 @@ def test_cache_key_separates_deprecated_option() -> None:
     assert with_deprecated is not without_deprecated
     assert cache.stats().resolver_misses == 2
 
+
+
+
+def test_warm_resolve_reuses_cached_lexicon_fingerprint(monkeypatch) -> None:
+    clear_runtime_cache()
+    lexicon = Lexicon(terms=(Term(id="auth.access_token", canonical="access token"),))
+
+    first = resolve_text(lexicon, "rotate access token")
+    assert first.primary_term_id == "auth.access_token"
+
+    from agent_lexicon.core import snapshots
+
+    def fail_json_dumps(*args, **kwargs):
+        raise AssertionError("warm resolve should not fingerprint the lexicon again")
+
+    monkeypatch.setattr(snapshots.json, "dumps", fail_json_dumps)
+
+    second = resolve_text(lexicon, "rotate access token")
+
+    assert second.primary_term_id == "auth.access_token"
+    clear_runtime_cache()
 
 def test_resolve_text_uses_default_runtime_cache() -> None:
     clear_runtime_cache()
