@@ -27,7 +27,7 @@ from agent_lexicon.scout.near_miss import (
 )
 from agent_lexicon.ingest.local import GitIgnoreRule, load_gitignore_rules, relative_path_matches_gitignore
 from agent_lexicon.scout.semantic import SemanticNearMissBackend
-from agent_lexicon.text import surface_fragments
+from agent_lexicon.text import normalized_fragment_surface, surface_fragments
 
 
 class GitMergeCheckError(RuntimeError):
@@ -307,6 +307,11 @@ class GitMergeTerminologyReport:
         """Return whether the report contains items that should be reviewed."""
         return self.needs_review_count > 0
 
+    @property
+    def cold_start(self) -> bool:
+        """Return whether this looks like an early run on a nearly empty lexicon."""
+        return bool(self.metadata.get("cold_start", False))
+
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-serializable report payload."""
         return {
@@ -325,6 +330,7 @@ class GitMergeTerminologyReport:
             "unresolved_unknown_count": self.unresolved_unknown_count,
             "hidden_unresolved_count": self.hidden_unresolved_count,
             "has_review_items": self.has_review_items,
+            "cold_start": self.cold_start,
             "added_lines": [line.to_dict() for line in self.added_lines],
             "known_occurrences": [occurrence.to_dict() for occurrence in self.known_occurrences],
             "needs_review": [identifier.to_dict() for identifier in self.needs_review],
@@ -334,7 +340,7 @@ class GitMergeTerminologyReport:
             "metadata": dict(self.metadata),
         }
 
-    def to_text(self) -> str:
+    def to_text(self, *, grouped: bool = True, full_report: bool = False) -> str:
         """Return a human-readable report."""
         lines = [
             "Git merge terminology check: "
@@ -349,6 +355,31 @@ class GitMergeTerminologyReport:
             f"unresolved_unknown={self.unresolved_unknown_count}, "
             f"hidden_unresolved={self.hidden_unresolved_count}",
         ]
+        baseline = self.metadata.get("baseline")
+        if isinstance(baseline, Mapping):
+            lines.append(
+                "Baseline: "
+                f"{baseline.get('baseline_total', 0)} -> {baseline.get('current_total', 0)}; "
+                f"new violations={baseline.get('new_count', 0)}, "
+                f"suppressed={baseline.get('suppressed_count', 0)}"
+            )
+        if self.cold_start and not full_report:
+            lines.append("")
+            lines.append("Cold start: many possible new terms were found while the lexicon is still small.")
+            lines.append("Run with --full-report to inspect every candidate, or review the highest-signal items first.")
+            if self.likely_aliases:
+                lines.append("")
+                lines.append("Likely aliases:")
+                lines.extend(_render_identifier_groups(self.likely_aliases, grouped=grouped))
+            if self.likely_new_terms:
+                lines.append("")
+                lines.append("New terminology candidates:")
+                lines.extend(_render_identifier_groups(self.likely_new_terms[:10], grouped=grouped))
+                remaining = len(self.likely_new_terms) - 10
+                if remaining > 0:
+                    lines.append(f"... {remaining} more new-term candidates hidden in cold-start summary")
+            return "\n".join(lines)
+
         if self.known_occurrences:
             lines.append("Known terminology:")
             for occurrence in self.known_occurrences:
@@ -357,22 +388,31 @@ class GitMergeTerminologyReport:
             lines.append("Needs review:")
         if self.likely_aliases:
             lines.append("Likely aliases:")
-            for identifier in self.likely_aliases:
-                lines.append(f"- {identifier.to_text()}")
-                for suggestion in identifier.suggestions[1:]:
-                    lines.append(
-                        "  alternative: "
-                        f"{suggestion.target_term_id} ({suggestion.target_canonical}) "
-                        f"confidence={suggestion.confidence:.3f} via {suggestion.matched_surface!r}"
-                    )
+            if grouped:
+                lines.extend(_render_identifier_groups(self.likely_aliases, grouped=True))
+            else:
+                for identifier in self.likely_aliases:
+                    lines.append(f"- {identifier.to_text()}")
+                    for suggestion in identifier.suggestions[1:]:
+                        lines.append(
+                            "  alternative: "
+                            f"{suggestion.target_term_id} ({suggestion.target_canonical}) "
+                            f"confidence={suggestion.confidence:.3f} via {suggestion.matched_surface!r}"
+                        )
         if self.likely_new_terms:
             lines.append("New terminology candidates:")
-            for identifier in self.likely_new_terms:
-                lines.append(f"- {identifier.to_text()}")
+            if grouped:
+                lines.extend(_render_identifier_groups(self.likely_new_terms, grouped=True))
+            else:
+                for identifier in self.likely_new_terms:
+                    lines.append(f"- {identifier.to_text()}")
         if self.unresolved_unknowns:
             lines.append("Low-signal unknown identifiers:")
-            for identifier in self.unresolved_unknowns:
-                lines.append(f"- {identifier.to_text()}")
+            if grouped:
+                lines.extend(_render_identifier_groups(self.unresolved_unknowns, grouped=True))
+            else:
+                for identifier in self.unresolved_unknowns:
+                    lines.append(f"- {identifier.to_text()}")
         if self.hidden_unresolved_count:
             lines.append(
                 "Hidden unresolved identifiers: "
@@ -382,6 +422,35 @@ class GitMergeTerminologyReport:
         if not self.known_occurrences and not self.unknown_identifiers and not self.hidden_unresolved_count:
             lines.append("No terminology surfaces found in added lines.")
         return "\n".join(lines)
+
+
+def _render_identifier_groups(identifiers: Sequence[GitMergeUnknownIdentifier], *, grouped: bool) -> list[str]:
+    if not grouped:
+        return [f"- {identifier.to_text()}" for identifier in identifiers]
+    buckets: dict[tuple[str, str, str], list[GitMergeUnknownIdentifier]] = {}
+    for identifier in identifiers:
+        best = identifier.suggestions[0] if identifier.suggestions else None
+        target = best.target_term_id if best else ""
+        key = (normalized_fragment_surface(identifier.surface), identifier.review_kind.value, target)
+        buckets.setdefault(key, []).append(identifier)
+    rows = sorted(buckets.items(), key=lambda item: (-len(item[1]), item[0][1], item[0][0]))
+    lines: list[str] = []
+    for (_normalized, review_kind, _target), group in rows:
+        first = sorted(group, key=lambda i: (i.path, i.line_number))[0]
+        locations = sorted((item.path, item.line_number) for item in group)
+        shown = ", ".join(f"{path}:{line}" for path, line in locations[:3])
+        remaining = len(locations) - 3
+        if remaining > 0:
+            shown = f"{shown} (+{remaining} more)"
+        if first.suggestions:
+            best = first.suggestions[0]
+            semantic_label = _semantic_escalation_label(best.metadata)
+            suffix = f" [{review_kind} -> {best.target_term_id}, conf {best.confidence:.2f}{semantic_label}]"
+        else:
+            suffix = f" [{review_kind}]"
+        count_label = f" ×{len(group)}" if len(group) > 1 else ""
+        lines.append(f"- {first.surface!r}{count_label} — {shown}{suffix}")
+    return lines
 
 
 _HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
@@ -590,6 +659,9 @@ def build_git_merge_terminology_report(
     report_metadata.update(lexicon_runtime_metadata(lexicon, source_path=lexicon_path))
     report_metadata["include_unresolved_unknowns"] = include_unresolved_unknowns
     report_metadata["hidden_unresolved_count"] = hidden_unresolved_count
+    report_metadata["cold_start"] = len(lexicon.terms) < 5 and sum(
+        1 for identifier in unknown_identifiers if identifier.review_kind == GitMergeReviewKind.LIKELY_NEW_TERM
+    ) > 50
 
     return GitMergeTerminologyReport(
         root=str(Path(root)),

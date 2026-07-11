@@ -63,6 +63,19 @@ from .lint_diff import (
     lint_working_diff,
 )
 
+from .baseline import (
+    BASELINE_SCHEMA_VERSION,
+    BaselineComparison,
+    BaselineError,
+    BaselineIssue,
+    TerminologyBaseline,
+    build_baseline,
+    compare_baseline,
+    default_baseline_path,
+    load_baseline,
+    write_baseline,
+)
+
 from .quality import (
     CandidateCluster,
     CandidatePriority,
@@ -145,6 +158,16 @@ __all__ = [
     "LintDiffReport",
     "LintFinding",
     "lint_working_diff",
+    "BASELINE_SCHEMA_VERSION",
+    "BaselineComparison",
+    "BaselineError",
+    "BaselineIssue",
+    "TerminologyBaseline",
+    "build_baseline",
+    "compare_baseline",
+    "default_baseline_path",
+    "load_baseline",
+    "write_baseline",
     "parse_git_added_lines",
     "CandidateCluster",
     "CandidatePriority",
