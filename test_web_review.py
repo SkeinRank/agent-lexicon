@@ -719,3 +719,9 @@ def test_review_inbox_scrolls_panes_without_page_jitter(tmp_path: Path) -> None:
     assert "overflow-y: auto" in html
     assert "overscroll-behavior: contain" in html
     assert ".sidebar-list { flex: 1 1 auto" in html
+
+
+def test_review_page_includes_scores_panel_class(tmp_path):
+    state = _workspace_with_evidence(tmp_path)
+    html = build_review_inbox_html(state, selected_surface="billing.update_credit_limit")
+    assert "scores-panel" in html

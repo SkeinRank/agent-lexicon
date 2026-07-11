@@ -50,6 +50,13 @@ from .layout import (
     write_dictionary_manifest,
 )
 
+from .terms import (
+    DeprecatedAliasEdit,
+    TermEditError,
+    deprecate_alias_in_lexicon,
+    deprecate_alias_in_lexicon_file,
+)
+
 __all__ = [
     "DictionaryCheckError",
     "DictionaryCheckItem",
@@ -74,6 +81,10 @@ __all__ = [
     "merge_lexicon_files",
     "merge_lexicons",
     "write_merged_lexicon_json",
+    "deprecate_alias_in_lexicon_file",
+    "deprecate_alias_in_lexicon",
+    "TermEditError",
+    "DeprecatedAliasEdit",
     "DEFAULT_DICTIONARY_DIR",
     "DEFAULT_LEXICON_FILENAME",
     "DEFAULT_PROPOSALS_DIR",

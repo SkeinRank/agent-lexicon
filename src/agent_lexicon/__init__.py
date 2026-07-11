@@ -503,6 +503,10 @@ __all__ = [
     "merge_lexicon_files",
     "merge_lexicons",
     "write_merged_lexicon_json",
+    "deprecate_alias_in_lexicon_file",
+    "deprecate_alias_in_lexicon",
+    "TermEditError",
+    "DeprecatedAliasEdit",
     "DEFAULT_DICTIONARY_DIR",
     "DEFAULT_LEXICON_FILENAME",
     "DEFAULT_PROPOSALS_DIR",
@@ -682,7 +686,7 @@ __all__ = [
     "resolve_text",
 ]
 
-__version__ = "0.9.0"
+__version__ = "0.10.0"
 
 
 def about() -> str:

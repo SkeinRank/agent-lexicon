@@ -860,6 +860,7 @@ button.primary { background: var(--accent); color: var(--accent-contrast); borde
 .kbd { font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--soft); border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; color: var(--muted); }
 .hint-bar { display: flex; justify-content: space-between; align-items: center; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
 .hint-bar .keys { display: flex; gap: 14px; flex-wrap: wrap; }
+.scores-panel { margin-top: 12px; margin-bottom: 12px; }
 .scores-toggle { cursor: pointer; color: var(--muted); font-size: 12px; margin-top: 6px; }
 .scores-box { margin-top: 10px; max-width: 320px; }
 .scores-row { display: flex; justify-content: space-between; padding: 5px 0; font-size: 12px; border-bottom: 1px solid var(--subtle); }
@@ -1133,7 +1134,7 @@ _APP_JS = r"""
     h += '<h3 class="section-title">Where it appears</h3>';
     h += pos || '<div class="meta">No positive evidence stored.</div>';
     if (neg){ h += '<h3 class="section-title">Low-confidence matches</h3>' + neg; }
-    h += '<details style="margin-top:12px"><summary class="scores-toggle">Show scores</summary><div class="scores-box">'+nums+'</div></details>';
+    h += '<details class="scores-panel"><summary class="scores-toggle">Show scores</summary><div class="scores-box">'+nums+'</div></details>';
     if (!ro){
       h += '<div class="actionbar">';
       h += '<button class="primary" data-act="accepted">\u2713 Accept <span class="kbd" style="border-color:currentColor;background:transparent">a</span></button>';
