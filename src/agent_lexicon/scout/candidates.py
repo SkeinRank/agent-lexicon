@@ -15,6 +15,12 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Iterable, Mapping, Sequence
 
+from agent_lexicon.scout.line_context import (
+    LINE_CONTEXT_VERSION,
+    DocumentContextClassifier,
+    LineContext,
+    PROSE_CONTEXTS,
+)
 from agent_lexicon.scout.oov import OovScorer, OovScorerError, build_oov_scorer
 from agent_lexicon.core import Lexicon
 from agent_lexicon.ingest import IngestDocument
@@ -41,6 +47,7 @@ class ScoutCandidateOccurrence:
     document_path: str
     line_number: int
     line_text: str
+    context: str = "code"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "document_path", _clean_text(self.document_path, field_name="document_path"))
@@ -54,6 +61,7 @@ class ScoutCandidateOccurrence:
             "document_path": self.document_path,
             "line_number": self.line_number,
             "line_text": self.line_text,
+            "context": self.context,
         }
 
 
@@ -470,10 +478,12 @@ def discover_scout_candidates(
     import_lines_skipped = 0
 
     for document in document_tuple:
+        classifier = DocumentContextClassifier(relative_path=document.relative_path)
         for line_number, raw_line in enumerate(document.text.splitlines(), start=1):
             line = raw_line.strip()
             if not line:
                 continue
+            context = classifier.classify(line)
             if _normalize_line(line) in boilerplate_lines:
                 boilerplate_skipped += 1
                 continue
@@ -494,7 +504,7 @@ def discover_scout_candidates(
                     normalized,
                     _CandidateAccumulator(surface=surface, normalized_surface=normalized, kind=kind),
                 )
-                accumulator.add(document.relative_path, line_number, line)
+                accumulator.add(document.relative_path, line_number, line, context)
 
     candidates: list[ScoutCandidate] = []
     total_documents = len(document_tuple)
@@ -528,6 +538,7 @@ def discover_scout_candidates(
             "max_occurrences_per_candidate": max_occurrences_per_candidate,
             "existing_surface_count": len(known_surfaces),
             "quality_signal_version": "quality-v2",
+            "line_context_version": LINE_CONTEXT_VERSION,
             "oov_tokenizer": oov_tokenizer,
             "boilerplate_line_patterns": len(boilerplate_lines),
             "boilerplate_lines_skipped": boilerplate_skipped,
@@ -650,16 +661,19 @@ class _CandidateAccumulator:
     occurrence_count: int = 0
     documents: set[str] = field(default_factory=set)
     occurrences: list[ScoutCandidateOccurrence] = field(default_factory=list)
+    context_counts: dict[str, int] = field(default_factory=dict)
 
-    def add(self, document_path: str, line_number: int, line_text: str) -> None:
+    def add(self, document_path: str, line_number: int, line_text: str, context: LineContext = LineContext.CODE) -> None:
         self.occurrence_count += 1
         self.documents.add(document_path)
+        self.context_counts[context.value] = self.context_counts.get(context.value, 0) + 1
         if len(self.occurrences) < 20:
             self.occurrences.append(
                 ScoutCandidateOccurrence(
                     document_path=document_path,
                     line_number=line_number,
                     line_text=_compact_line(line_text),
+                    context=context.value,
                 )
             )
 
@@ -730,7 +744,8 @@ def _score_candidate(
     length_score = min(1.0, len(tokens) / 3)
     jargon_score = _jargon_score(accumulator.surface, tokens, accumulator.kind)
     background_penalty = _background_penalty(tokens, accumulator.kind)
-    raw_score = (0.42 * jargon_score) + (0.24 * occurrence_score) + (0.20 * diversity_score) + (0.14 * length_score) - background_penalty
+    context_adjustment = _context_adjustment(accumulator.context_counts)
+    raw_score = (0.42 * jargon_score) + (0.24 * occurrence_score) + (0.20 * diversity_score) + (0.14 * length_score) - background_penalty + context_adjustment
     score = round(max(0.0, min(1.0, raw_score)), 4)
 
     occurrences = tuple(accumulator.occurrences[:max_occurrences_per_candidate])
@@ -746,13 +761,43 @@ def _score_candidate(
         occurrences=occurrences,
         metadata={
             "documents": sorted(accumulator.documents),
+            "context_counts": dict(sorted(accumulator.context_counts.items())),
             "score_breakdown": {
                 "occurrence_score": round(occurrence_score, 4),
                 "diversity_score": round(diversity_score, 4),
                 "length_score": round(length_score, 4),
+                "context_adjustment": round(context_adjustment, 4),
             },
         },
     )
+
+
+_PROSE_CONTEXT_VALUES = frozenset(context.value for context in PROSE_CONTEXTS)
+_WEAK_CONTEXT_VALUES = frozenset({LineContext.STRING.value, LineContext.DECORATOR.value})
+
+_CONTEXT_PROSE_AND_CODE_BONUS = 0.06
+_CONTEXT_WEAK_ONLY_PENALTY = 0.05
+
+
+def _context_adjustment(context_counts: Mapping[str, int]) -> float:
+    """Deterministic score adjustment from where a surface appears.
+
+    A surface seen both in human-facing prose (comments, docstrings, doc files)
+    and in code is very likely a real domain concept that someone bothered to
+    explain, so it gets a small bonus. A surface seen only in string literals
+    and decorators is likely configuration or framework plumbing, so it gets a
+    small penalty. Everything else is left untouched.
+    """
+    if not context_counts:
+        return 0.0
+    seen = {context for context, count in context_counts.items() if count > 0}
+    has_prose = bool(seen & _PROSE_CONTEXT_VALUES)
+    has_code = LineContext.CODE.value in seen
+    if has_prose and has_code:
+        return _CONTEXT_PROSE_AND_CODE_BONUS
+    if seen and seen <= _WEAK_CONTEXT_VALUES:
+        return -_CONTEXT_WEAK_ONLY_PENALTY
+    return 0.0
 
 
 def _jargon_score(surface: str, tokens: tuple[str, ...], kind: CandidateSurfaceKind) -> float:
