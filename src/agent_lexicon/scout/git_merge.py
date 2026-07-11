@@ -601,6 +601,8 @@ def build_git_merge_terminology_report(
     hidden_unresolved_count = 0
     seen_known: set[tuple[str, int, str, str]] = set()
     seen_unknown: set[tuple[str, int, str]] = set()
+    suggestion_cache: dict[tuple[str, tuple[str, ...] | None, bool], tuple[NearMissSuggestion, ...]] = {}
+    known_cache: dict[tuple[str, tuple[str, ...] | None, bool], bool] = {}
 
     for line in line_tuple:
         active_scopes = global_scopes if global_scopes is not None else scopes_for_path(binding_config, line.path)
@@ -628,25 +630,35 @@ def build_git_merge_terminology_report(
         for surface in discover_unknown_identifier_surfaces(line.text, max_surfaces=25):
             if not _is_merge_identifier_surface(surface):
                 continue
-            if _surface_is_known(surface, matcher, scopes=active_scopes, include_deprecated=include_deprecated):
-                continue
             key = (line.path, line.line_number, surface)
             if key in seen_unknown:
                 continue
             seen_unknown.add(key)
-            try:
-                near_miss_report = suggest_near_misses(
-                    lexicon,
-                    surface,
-                    scopes=active_scopes,
-                    include_deprecated=include_deprecated,
-                    max_suggestions=max_suggestions_per_identifier,
-                    min_confidence=min_confidence,
-                    semantic_backend=semantic_backend,
-                )
-                suggestions = near_miss_report.suggestions
-            except NearMissError:
-                suggestions = ()
+            known_key = (surface, active_scopes, include_deprecated)
+            is_known = known_cache.get(known_key)
+            if is_known is None:
+                is_known = _surface_is_known(surface, matcher, scopes=active_scopes, include_deprecated=include_deprecated)
+                known_cache[known_key] = is_known
+            if is_known:
+                continue
+            cache_key = known_key
+            if cache_key in suggestion_cache:
+                suggestions = suggestion_cache[cache_key]
+            else:
+                try:
+                    near_miss_report = suggest_near_misses(
+                        lexicon,
+                        surface,
+                        scopes=active_scopes,
+                        include_deprecated=include_deprecated,
+                        max_suggestions=max_suggestions_per_identifier,
+                        min_confidence=min_confidence,
+                        semantic_backend=semantic_backend,
+                    )
+                    suggestions = near_miss_report.suggestions
+                except NearMissError:
+                    suggestions = ()
+                suggestion_cache[cache_key] = suggestions
             review_kind = _unknown_review_kind(surface, text=line.text, suggestions=suggestions)
             if review_kind == GitMergeReviewKind.UNRESOLVED_IDENTIFIER and not include_unresolved_unknowns:
                 hidden_unresolved_count += 1

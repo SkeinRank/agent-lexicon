@@ -14,6 +14,7 @@ import re
 from typing import Any, Iterable, Mapping
 
 from agent_lexicon.core.models import Alias, Lexicon, Term
+from agent_lexicon.core.snapshots import fingerprint_lexicon
 from agent_lexicon.text import code_identifier_variants, normalized_fragment_surface, surface_fragments
 from agent_lexicon.scout.semantic import (
     NoopSemanticNearMissBackend,
@@ -239,6 +240,17 @@ class _KnownSurface:
     surface: str
     scopes: tuple[str, ...]
     deprecated: bool
+    fragments: tuple[str, ...] = ()
+    fragment_set: frozenset[str] = frozenset()
+    normalized: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.fragments:
+            object.__setattr__(self, "fragments", surface_fragments(self.surface))
+        if not self.fragment_set:
+            object.__setattr__(self, "fragment_set", frozenset(self.fragments))
+        if not self.normalized:
+            object.__setattr__(self, "normalized", normalized_fragment_surface(self.surface))
 
 
 def discover_unknown_identifier_surfaces(text: str, *, max_surfaces: int = 10) -> tuple[str, ...]:
@@ -304,6 +316,7 @@ def suggest_near_misses(
             query_fragments=query_fragments,
             known=known,
             semantic_confidence_band=semantic_confidence_band,
+            min_confidence=min_confidence,
         )
         if suggestion is None or suggestion.confidence < min_confidence:
             continue
@@ -367,7 +380,30 @@ def suggest_near_misses_for_text(
     return tuple(reports)
 
 
+_KNOWN_SURFACES_CACHE: dict[tuple[str, bool], tuple[_KnownSurface, ...]] = {}
+_KNOWN_SURFACES_CACHE_MAX = 8
+
+
 def _iter_known_surfaces(lexicon: Lexicon, *, include_deprecated: bool) -> Iterable[_KnownSurface]:
+    """Yield known surfaces, cached per lexicon fingerprint.
+
+    Building the surface list (with derived fragments and normalization) is
+    linear in lexicon size; near-miss scoring calls this once per unknown
+    identifier, so repository-wide scans would otherwise rebuild it thousands
+    of times. The fingerprint is cached on the Lexicon object, so the cache
+    key lookup is cheap, and fingerprint identity guarantees identical output.
+    """
+    key = (fingerprint_lexicon(lexicon).value, include_deprecated)
+    cached = _KNOWN_SURFACES_CACHE.get(key)
+    if cached is None:
+        cached = tuple(_build_known_surfaces(lexicon, include_deprecated=include_deprecated))
+        if len(_KNOWN_SURFACES_CACHE) >= _KNOWN_SURFACES_CACHE_MAX:
+            _KNOWN_SURFACES_CACHE.pop(next(iter(_KNOWN_SURFACES_CACHE)))
+        _KNOWN_SURFACES_CACHE[key] = cached
+    return cached
+
+
+def _build_known_surfaces(lexicon: Lexicon, *, include_deprecated: bool) -> Iterable[_KnownSurface]:
     for term in lexicon.terms:
         if term.deprecated and not include_deprecated:
             continue
@@ -409,26 +445,52 @@ def _score_known_surface(
     query_fragments: tuple[str, ...],
     known: _KnownSurface,
     semantic_confidence_band: tuple[float, float],
+    min_confidence: float = 0.0,
 ) -> NearMissSuggestion | None:
-    target_fragments = surface_fragments(known.surface)
+    target_fragments = known.fragments
     if len(target_fragments) < 1:
         return None
 
-    shared = tuple(fragment for fragment in query_fragments if fragment in set(target_fragments))
+    target_fragment_set = known.fragment_set
+    shared = tuple(fragment for fragment in query_fragments if fragment in target_fragment_set)
     shared_set = frozenset(shared)
-    union = frozenset(query_fragments) | frozenset(target_fragments)
+    union = frozenset(query_fragments) | target_fragment_set
     shared_fragment_score = sum(_fragment_weight(fragment) for fragment in shared_set) / max(
         sum(_fragment_weight(fragment) for fragment in union),
         1.0,
     )
     raw_jaccard = len(shared_set) / max(len(union), 1)
-    normalized_target = normalized_fragment_surface(known.surface)
-    edit_similarity = SequenceMatcher(None, normalized_query, normalized_target).ratio()
+    normalized_target = known.normalized
     same_prefix = bool(query_fragments and target_fragments and query_fragments[0] == target_fragments[0])
     same_suffix = bool(query_fragments and target_fragments and query_fragments[-1] == target_fragments[-1])
     related = _related_fragment_matches(query_fragments, target_fragments)
     related_score = min(0.25, len(related) * 0.125)
     shape_score = _code_shape_similarity(query_surface, known.surface, query_fragments, target_fragments)
+
+    matcher = SequenceMatcher(None, normalized_query, normalized_target)
+    # Exact fast path: quick_ratio() is a proven upper bound on ratio(), so if
+    # even the upper bound cannot produce a reason (EDIT_SIMILARITY needs
+    # >= 0.58) and no cheap reason fired, the full ratio() call can never
+    # change the outcome — the suggestion would have no reasons and be dropped.
+    # Likewise, if the confidence upper bound stays below min_confidence, the
+    # caller would filter the suggestion anyway. Both skips are lossless.
+    edit_upper_bound = matcher.quick_ratio()
+    cheap_reasons_possible = bool(shared) or same_prefix or same_suffix or bool(related) or shape_score >= 0.6
+    if not cheap_reasons_possible and edit_upper_bound < 0.58:
+        return None
+    if min_confidence > 0.0:
+        confidence_upper_bound = (
+            (0.34 * shared_fragment_score)
+            + (0.18 * raw_jaccard)
+            + (0.24 * edit_upper_bound)
+            + (0.08 if same_prefix else 0.0)
+            + (0.10 if same_suffix else 0.0)
+            + (0.08 * shape_score)
+            + related_score
+        )
+        if confidence_upper_bound < min_confidence:
+            return None
+    edit_similarity = matcher.ratio()
 
     confidence = (
         (0.34 * shared_fragment_score)
