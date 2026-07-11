@@ -109,6 +109,14 @@ class LintDiffReport:
             f"Terminology lint: {self.scanned_file_count} files, "
             f"{self.added_line_count} added lines"
         ]
+        baseline = self.metadata.get("baseline")
+        if isinstance(baseline, Mapping):
+            lines.append(
+                "Baseline: "
+                f"{baseline.get('baseline_total', 0)} -> {baseline.get('current_total', 0)}; "
+                f"new violations={baseline.get('new_count', 0)}, "
+                f"suppressed={baseline.get('suppressed_count', 0)}"
+            )
         fails = [f for f in self.findings if f.severity == "fail"]
         warns = [f for f in self.findings if f.severity == "warn"]
         infos = [f for f in self.findings if f.severity == "info"]

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import signal
+import subprocess
 import sys
 from pathlib import Path
 from typing import Mapping
@@ -81,9 +82,23 @@ from .scout import (
     check_git_merge_terminology,
     lint_working_diff,
     LintDiffError,
+    LintDiffReport,
     discover_canonical_migration_candidates,
     discover_scout_candidates,
     existing_surfaces_from_lexicon,
+)
+from .scout.baseline import (
+    BaselineError,
+    build_baseline,
+    changed_paths_from_lint_findings,
+    changed_paths_from_merge_report,
+    collect_repository_issues,
+    compare_baseline,
+    default_baseline_path,
+    filter_lint_findings_with_baseline,
+    filter_merge_report_with_baseline,
+    load_baseline,
+    write_baseline,
 )
 from .web import ReviewInboxError, run_review_inbox
 from .workflows import (
@@ -421,6 +436,26 @@ def build_parser() -> argparse.ArgumentParser:
         help="Minimum semantic similarity used with --semantic-near-miss.",
     )
     check_merge_parser.add_argument(
+        "--flat",
+        action="store_true",
+        help="Print one review item per line instead of grouped human output.",
+    )
+    check_merge_parser.add_argument(
+        "--full-report",
+        action="store_true",
+        help="Print all review items even when the report is in cold-start summary mode.",
+    )
+    check_merge_parser.add_argument(
+        "--baseline",
+        default=None,
+        help="Terminology baseline file. Defaults to lexicon/baseline.json when present.",
+    )
+    check_merge_parser.add_argument(
+        "--no-baseline",
+        action="store_true",
+        help="Do not apply lexicon/baseline.json for this check.",
+    )
+    check_merge_parser.add_argument(
         "--json",
         action="store_true",
         help="Print the merge terminology report as JSON.",
@@ -488,6 +523,16 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=DEFAULT_BGE_SEMANTIC_THRESHOLD,
         help="Minimum semantic similarity used with --semantic.",
+    )
+    lint_diff_parser.add_argument(
+        "--baseline",
+        default=None,
+        help="Terminology baseline file. Defaults to lexicon/baseline.json when present.",
+    )
+    lint_diff_parser.add_argument(
+        "--no-baseline",
+        action="store_true",
+        help="Do not apply lexicon/baseline.json for this lint run.",
     )
     lint_diff_parser.add_argument(
         "--json",
@@ -684,6 +729,59 @@ def build_parser() -> argparse.ArgumentParser:
         "--jsonl",
         action="store_true",
         help="Print one JSON evidence pack per line.",
+    )
+
+    baseline_parser = subparsers.add_parser(
+        "baseline",
+        help="Manage the terminology baseline used to adopt Agent Lexicon on existing repositories.",
+    )
+    baseline_subparsers = baseline_parser.add_subparsers(dest="baseline_command")
+
+    baseline_create_parser = baseline_subparsers.add_parser(
+        "create",
+        help="Capture the current terminology findings as the adoption baseline.",
+    )
+    baseline_create_parser.add_argument("--root", default=".", help="Project root.")
+    baseline_create_parser.add_argument(
+        "--lexicon",
+        default=None,
+        help="Lexicon file. Defaults to lexicon/lexicon.yaml under --root.",
+    )
+    baseline_create_parser.add_argument(
+        "--output",
+        default=None,
+        help="Baseline output file. Defaults to lexicon/baseline.json under --root.",
+    )
+    baseline_create_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the baseline document as JSON.",
+    )
+
+    baseline_update_parser = baseline_subparsers.add_parser(
+        "update",
+        help="Refresh the baseline after terminology debt is reduced.",
+    )
+    baseline_update_parser.add_argument("--root", default=".", help="Project root.")
+    baseline_update_parser.add_argument(
+        "--lexicon",
+        default=None,
+        help="Lexicon file. Defaults to lexicon/lexicon.yaml under --root.",
+    )
+    baseline_update_parser.add_argument(
+        "--baseline",
+        default=None,
+        help="Baseline file. Defaults to lexicon/baseline.json under --root.",
+    )
+    baseline_update_parser.add_argument(
+        "--allow-growth",
+        action="store_true",
+        help="Allow the refreshed baseline to contain more findings than the stored baseline.",
+    )
+    baseline_update_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the refreshed baseline document as JSON.",
     )
 
     policy_parser = subparsers.add_parser(
@@ -1588,6 +1686,46 @@ def _scan_hint_for_root(root: Path) -> str:
     return "agent-lexicon scan <files or directories>"
 
 
+def _repository_file_count(root: Path) -> int:
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(root), "ls-files"],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except OSError:
+        completed = None
+    if completed is not None and completed.returncode == 0:
+        return len([line for line in completed.stdout.splitlines() if line.strip()])
+    count = 0
+    for path in root.rglob("*"):
+        if path.is_file() and ".git" not in path.parts and ".agent-lexicon" not in path.parts:
+            count += 1
+    return count
+
+
+def _warn_if_scan_looks_too_narrow(*, root: Path, document_count: int, explicit_paths: Sequence[str]) -> None:
+    if explicit_paths or document_count >= 20:
+        return
+    missing_roots = [candidate for candidate in DEFAULT_SCAN_PATHS if not (root / candidate).exists()]
+    if not missing_roots:
+        return
+    total_files = _repository_file_count(root)
+    if document_count <= 0 or total_files <= document_count * 10:
+        return
+    print(
+        "Warning: scanned "
+        f"{document_count} documents, but the repository has ~{total_files} files.",
+        file=sys.stderr,
+    )
+    print(f"Roots not found: {', '.join(missing_roots)}.", file=sys.stderr)
+    print("Try: agent-lexicon scan <paths>", file=sys.stderr)
+
+
 def _configure_sigpipe() -> None:
     """Use the platform pipe behavior when the CLI is part of a shell pipeline."""
     if not hasattr(signal, "SIGPIPE"):
@@ -1684,6 +1822,10 @@ def _run(argv: list[str] | None = None) -> int:
             semantic_threshold=args.semantic_threshold,
             as_json=args.json,
             semantic_check=args.semantic_check,
+            flat=args.flat,
+            full_report=args.full_report,
+            baseline_path=Path(args.baseline) if args.baseline else None,
+            use_baseline=not args.no_baseline,
         )
 
     if args.command == "lint-diff":
@@ -1703,6 +1845,8 @@ def _run(argv: list[str] | None = None) -> int:
             semantic_model=args.semantic_model,
             semantic_threshold=args.semantic_threshold,
             as_json=args.json,
+            baseline_path=Path(args.baseline) if args.baseline else None,
+            use_baseline=not args.no_baseline,
         )
 
     if args.command == "ingest":
@@ -1749,6 +1893,9 @@ def _run(argv: list[str] | None = None) -> int:
             as_json=args.json,
             as_jsonl=args.jsonl,
         )
+
+    if args.command == "baseline":
+        return _baseline_command(args)
 
     if args.command == "policy":
         return _policy_command(args)
@@ -1907,6 +2054,11 @@ def _simple_scan_command(args: argparse.Namespace) -> int:
     if args.json:
         print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
         return 0
+    _warn_if_scan_looks_too_narrow(
+        root=Path(args.root).resolve(),
+        document_count=report.document_count,
+        explicit_paths=args.paths,
+    )
     print(
         "Agent Lexicon scan: "
         f"{report.document_count} documents, "
@@ -2041,6 +2193,63 @@ def _simple_publish_command(args: argparse.Namespace) -> int:
     if updated:
         print(f"Lexicon updated: {updated}")
     return 0
+
+def _baseline_command(args: argparse.Namespace) -> int:
+    if args.baseline_command not in {"create", "update"}:
+        _error("Baseline command required: create or update")
+        return 1
+    root = Path(args.root).resolve()
+    lexicon_path = Path(args.lexicon) if args.lexicon else root / "lexicon" / "lexicon.yaml"
+    if not lexicon_path.is_absolute():
+        lexicon_path = root / lexicon_path
+    try:
+        lexicon = load_lexicon(lexicon_path)
+    except AgentLexiconLoadError as exc:
+        _error(f"Invalid lexicon: {exc}")
+        return 1
+
+    if args.baseline_command == "create":
+        output_path = Path(args.output) if args.output else default_baseline_path(root)
+        if not output_path.is_absolute():
+            output_path = root / output_path
+        try:
+            baseline = build_baseline(lexicon, root=root)
+            write_baseline(output_path, baseline)
+        except BaselineError as exc:
+            _error(f"Invalid baseline input: {exc}")
+            return 1
+        if args.json:
+            print(json.dumps(baseline.to_dict(), indent=2, sort_keys=True))
+        else:
+            print(f"Baseline written: {output_path}")
+            print(
+                f"Captured {baseline.total_count} findings in "
+                f"{baseline.file_count} files."
+            )
+        return 0
+
+    baseline_path = Path(args.baseline) if args.baseline else default_baseline_path(root)
+    if not baseline_path.is_absolute():
+        baseline_path = root / baseline_path
+    try:
+        old = load_baseline(baseline_path)
+        new = build_baseline(lexicon, root=root)
+        comparison = compare_baseline(old, new.entries)
+        if comparison.has_growth and not args.allow_growth:
+            _error(comparison.to_text())
+            _error("Baseline grew. Fix new findings or rerun with --allow-growth.")
+            return 1
+        write_baseline(baseline_path, new)
+    except BaselineError as exc:
+        _error(f"Invalid baseline input: {exc}")
+        return 1
+    if args.json:
+        print(json.dumps(new.to_dict(), indent=2, sort_keys=True))
+    else:
+        print(f"Baseline updated: {baseline_path}")
+        print(comparison.to_text())
+    return 0
+
 
 def _review_agent_command(args: argparse.Namespace) -> int:
     if args.review_agent_command not in {"prompt", "assess", "consensus", "dataset"}:
@@ -2334,6 +2543,62 @@ def _semantic_backend_from_cli(
     )
 
 
+def _resolve_baseline_path(root: Path, baseline_path: Path | None) -> Path | None:
+    if baseline_path is not None:
+        return baseline_path if baseline_path.is_absolute() else root / baseline_path
+    path = default_baseline_path(root)
+    return path if path.exists() else None
+
+
+def _apply_baseline_to_merge_report(
+    report: GitMergeTerminologyReport,
+    *,
+    lexicon,
+    root: Path,
+    baseline_path: Path | None,
+) -> GitMergeTerminologyReport:
+    resolved = _resolve_baseline_path(root, baseline_path)
+    if resolved is None:
+        return report
+    baseline = load_baseline(resolved)
+    changed_paths = changed_paths_from_merge_report(report)
+    current_issues = collect_repository_issues(lexicon, root=root, paths=changed_paths) if changed_paths else ()
+    filtered, _summary = filter_merge_report_with_baseline(
+        report,
+        baseline=baseline,
+        current_issues=current_issues,
+    )
+    return filtered
+
+
+def _apply_baseline_to_lint_report(
+    report: LintDiffReport,
+    *,
+    lexicon,
+    root: Path,
+    baseline_path: Path | None,
+) -> LintDiffReport:
+    resolved = _resolve_baseline_path(root, baseline_path)
+    if resolved is None:
+        return report
+    baseline = load_baseline(resolved)
+    paths = changed_paths_from_lint_findings(report.findings)
+    current_issues = collect_repository_issues(lexicon, root=root, paths=paths) if paths else ()
+    findings, summary = filter_lint_findings_with_baseline(
+        report.findings,
+        baseline=baseline,
+        current_issues=current_issues,
+    )
+    metadata = dict(report.metadata)
+    metadata["baseline"] = summary.to_dict()
+    return LintDiffReport(
+        scanned_file_count=report.scanned_file_count,
+        added_line_count=report.added_line_count,
+        findings=findings,
+        metadata=metadata,
+    )
+
+
 def _check_merge_command(
     *,
     root: Path,
@@ -2355,6 +2620,10 @@ def _check_merge_command(
     semantic_threshold: float,
     as_json: bool,
     semantic_check: bool = False,
+    flat: bool = False,
+    full_report: bool = False,
+    baseline_path: Path | None = None,
+    use_baseline: bool = True,
 ) -> int:
     root_path = root.resolve()
     try:
@@ -2429,10 +2698,22 @@ def _check_merge_command(
             print(f"- {used} vs {canonical} (use \"{canonical}\")")
         return 1
 
+    if use_baseline:
+        try:
+            report = _apply_baseline_to_merge_report(
+                report,
+                lexicon=lexicon,
+                root=root_path,
+                baseline_path=baseline_path,
+            )
+        except BaselineError as exc:
+            _error(f"Invalid baseline: {exc}")
+            return 1
+
     if as_json:
         print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
     else:
-        print(report.to_text())
+        print(report.to_text(grouped=not flat, full_report=full_report))
     return 1 if fail_on_review and report.has_review_items else 0
 
 
@@ -2453,6 +2734,8 @@ def _lint_diff_command(
     semantic_model: str,
     semantic_threshold: float,
     as_json: bool,
+    baseline_path: Path | None = None,
+    use_baseline: bool = True,
 ) -> int:
     root_path = root.resolve()
     try:
@@ -2505,6 +2788,18 @@ def _lint_diff_command(
     except SemanticNearMissError as exc:
         _error(f"Invalid semantic input: {exc}")
         return 1
+
+    if use_baseline:
+        try:
+            report = _apply_baseline_to_lint_report(
+                report,
+                lexicon=lexicon,
+                root=root_path,
+                baseline_path=baseline_path,
+            )
+        except BaselineError as exc:
+            _error(f"Invalid baseline: {exc}")
+            return 1
 
     if as_json:
         print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
