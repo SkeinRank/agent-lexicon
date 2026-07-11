@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import signal
 import sys
 from pathlib import Path
 from typing import Mapping
@@ -1587,7 +1588,34 @@ def _scan_hint_for_root(root: Path) -> str:
     return "agent-lexicon scan <files or directories>"
 
 
+def _configure_sigpipe() -> None:
+    """Use the platform pipe behavior when the CLI is part of a shell pipeline."""
+    if not hasattr(signal, "SIGPIPE"):
+        return
+    try:
+        signal.signal(signal.SIGPIPE, signal.SIG_IGN)
+    except (OSError, RuntimeError, ValueError):
+        return
+
+
+def _close_stdout_after_broken_pipe() -> None:
+    """Prevent Python's shutdown flush from printing a second broken-pipe error."""
+    try:
+        sys.stdout.close()
+    except Exception:
+        return
+
+
 def main(argv: list[str] | None = None) -> int:
+    _configure_sigpipe()
+    try:
+        return _run(argv)
+    except BrokenPipeError:
+        _close_stdout_after_broken_pipe()
+        return 0
+
+
+def _run(argv: list[str] | None = None) -> int:
     parser = build_parser()
     _maybe_enable_completion(parser)
     args = parser.parse_args(argv)
