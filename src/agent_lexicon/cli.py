@@ -18,6 +18,7 @@ from .config import (
     effective_include_globs,
     effective_max_file_bytes,
     effective_respect_gitignore,
+    validate_scope_bindings,
     load_project_config,
 )
 from .dictionary import (
@@ -2698,8 +2699,12 @@ def _check_merge_command(
         resolved_lexicon_path = root_path / resolved_lexicon_path
     try:
         lexicon = load_lexicon(resolved_lexicon_path)
+        validate_scope_bindings(config, (scope.id for scope in lexicon.scopes))
     except AgentLexiconLoadError as exc:
         _error(f"Invalid lexicon: {exc}")
+        return 1
+    except AgentLexiconConfigError as exc:
+        _error(f"Invalid Agent Lexicon config: {exc}")
         return 1
 
     try:
@@ -2720,6 +2725,7 @@ def _check_merge_command(
             base=base,
             head=head,
             scopes=scopes,
+            scope_bindings=None if scopes else config.scope_bindings,
             include_deprecated=include_deprecated,
             include_globs=effective_include,
             exclude_globs=effective_exclude,
@@ -2835,6 +2841,7 @@ def _lint_diff_command(
             root=root_path,
             staged=staged,
             scopes=scopes,
+            scope_bindings=None if scopes else config.scope_bindings,
             include_globs=effective_include,
             exclude_globs=effective_exclude,
             respect_gitignore=effective_gitignore,

@@ -6,6 +6,7 @@ instead of requiring long CLI flags in every local run or CI job.
 
 from __future__ import annotations
 
+import fnmatch
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -183,6 +184,14 @@ DEFAULT_CONFIG_TEXT = """scan:
     - "**/*.map"
   respect_gitignore: true
   max_file_bytes: 1000000
+
+# Optional: activate lexicon scopes by repository path.
+# First matching rule wins. Files that do not match a rule use all scopes.
+# scope_bindings:
+#   - paths: ["pkg/kubelet/**"]
+#     scopes: [numa]
+#   - paths: ["**"]
+#     scopes: [core]
 """
 
 class AgentLexiconConfigError(ValueError):
@@ -221,16 +230,52 @@ class ScanConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class ScopeBinding:
+    """Path rule that activates a subset of lexicon scopes.
+
+    Bindings are evaluated in order. The first rule matching a relative file
+    path wins. Files with no matching rule keep the default behavior: all scopes
+    are active.
+    """
+
+    paths: tuple[str, ...]
+    scopes: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "paths", _clean_string_tuple(self.paths, field_name="scope_bindings.paths"))
+        object.__setattr__(self, "scopes", _clean_string_tuple(self.scopes, field_name="scope_bindings.scopes"))
+
+    def matches(self, path: str | Path) -> bool:
+        """Return whether this binding applies to a repository-relative path."""
+        normalized = _normalize_repo_path(path)
+        return any(_path_matches_scope_binding(normalized, pattern) for pattern in self.paths)
+
+    def to_dict(self) -> dict[str, object]:
+        """Return a JSON-serializable scope binding."""
+        return {
+            "paths": list(self.paths),
+            "scopes": list(self.scopes),
+        }
+
+
+
+@dataclass(frozen=True, slots=True)
 class AgentLexiconConfig:
     """Project-level Agent Lexicon configuration."""
 
     scan: ScanConfig = field(default_factory=ScanConfig)
+    scope_bindings: tuple[ScopeBinding, ...] = ()
     path: str | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not isinstance(self.scan, ScanConfig):
             raise AgentLexiconConfigError("scan must be a ScanConfig")
+        if not isinstance(self.scope_bindings, tuple):
+            object.__setattr__(self, "scope_bindings", tuple(self.scope_bindings))
+        for binding in self.scope_bindings:
+            if not isinstance(binding, ScopeBinding):
+                raise AgentLexiconConfigError("scope_bindings must contain ScopeBinding objects")
         if self.path is not None:
             object.__setattr__(self, "path", _clean_string(str(self.path), field_name="path"))
         if not isinstance(self.metadata, Mapping):
@@ -241,6 +286,7 @@ class AgentLexiconConfig:
         """Return a JSON-serializable project config."""
         return {
             "scan": self.scan.to_dict(),
+            "scope_bindings": [binding.to_dict() for binding in self.scope_bindings],
             "path": self.path,
             "metadata": dict(self.metadata),
         }
@@ -289,7 +335,8 @@ def load_project_config(root: str | Path = ".", *, config_path: str | Path | Non
         respect_gitignore=_optional_bool(scan_payload.get("respect_gitignore"), default=DEFAULT_RESPECT_GITIGNORE, field_name="scan.respect_gitignore"),
         max_file_bytes=int(scan_payload.get("max_file_bytes", DEFAULT_MAX_FILE_BYTES)),
     )
-    return AgentLexiconConfig(scan=scan, path=str(path), metadata={"source": "file"})
+    scope_bindings = _optional_scope_bindings(payload.get("scope_bindings"))
+    return AgentLexiconConfig(scan=scan, scope_bindings=scope_bindings, path=str(path), metadata={"source": "file"})
 
 
 def effective_scan_paths(
@@ -367,6 +414,57 @@ def _optional_string_sequence(value: Any, *, default: tuple[str, ...], field_nam
 
 
 
+def scopes_for_path(config: AgentLexiconConfig, path: str | Path) -> tuple[str, ...] | None:
+    """Return active scopes for a path, or None when all scopes should be active."""
+    for binding in config.scope_bindings:
+        if binding.matches(path):
+            return binding.scopes
+    return None
+
+
+def validate_scope_bindings(config: AgentLexiconConfig, known_scope_ids: Iterable[str]) -> None:
+    """Validate that configured scope bindings only reference declared scopes."""
+    known = set(known_scope_ids)
+    for binding in config.scope_bindings:
+        for scope_id in binding.scopes:
+            if scope_id not in known:
+                raise AgentLexiconConfigError(f"scope_bindings reference unknown scope {scope_id!r}")
+
+
+def _optional_scope_bindings(value: Any) -> tuple[ScopeBinding, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, Mapping) or isinstance(value, str) or not isinstance(value, Iterable):
+        raise AgentLexiconConfigError("scope_bindings must be a list of mappings")
+    bindings: list[ScopeBinding] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, Mapping):
+            raise AgentLexiconConfigError(f"scope_bindings[{index}] must be a mapping")
+        paths = _optional_string_sequence(item.get("paths"), default=(), field_name=f"scope_bindings[{index}].paths")
+        scopes = _optional_string_sequence(item.get("scopes"), default=(), field_name=f"scope_bindings[{index}].scopes")
+        bindings.append(ScopeBinding(paths=paths, scopes=scopes))
+    return tuple(bindings)
+
+
+def _normalize_repo_path(path: str | Path) -> str:
+    normalized = str(path).replace("\\", "/").strip()
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized.lstrip("/")
+
+
+def _path_matches_scope_binding(path: str, pattern: str) -> bool:
+    normalized_pattern = pattern.replace("\\", "/").strip()
+    if normalized_pattern.startswith("/"):
+        normalized_pattern = normalized_pattern[1:]
+    if not normalized_pattern:
+        return False
+    if normalized_pattern == "**":
+        return True
+    return fnmatch.fnmatch(path, normalized_pattern) or fnmatch.fnmatch(Path(path).name, normalized_pattern)
+
+
+
 def _optional_bool(value: Any, *, default: bool, field_name: str) -> bool:
     if value is None:
         return bool(default)
@@ -410,11 +508,14 @@ __all__ = [
     "DEFAULT_SCAN_EXCLUDE_GLOBS",
     "DEFAULT_SCAN_PATHS",
     "ScanConfig",
+    "ScopeBinding",
     "effective_exclude_globs",
     "effective_include_globs",
     "effective_max_file_bytes",
     "effective_respect_gitignore",
     "effective_scan_paths",
+    "scopes_for_path",
+    "validate_scope_bindings",
     "init_project_config",
     "load_project_config",
     "project_config_path",
