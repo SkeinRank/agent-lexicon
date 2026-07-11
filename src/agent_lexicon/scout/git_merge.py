@@ -19,6 +19,7 @@ from typing import Any, Iterable, Mapping, Sequence
 from agent_lexicon.core.matcher import SurfaceMatcher
 from agent_lexicon.core.models import Lexicon
 from agent_lexicon.core.snapshots import lexicon_runtime_metadata
+from agent_lexicon.config import ScopeBinding, scopes_for_path
 from agent_lexicon.scout.near_miss import (
     NearMissError,
     NearMissSuggestion,
@@ -510,6 +511,7 @@ def check_git_merge_terminology(
     base: str = "main",
     head: str = "HEAD",
     scopes: Iterable[str] | None = None,
+    scope_bindings: Sequence[ScopeBinding] | None = None,
     include_deprecated: bool = True,
     include_globs: Sequence[str] | None = None,
     exclude_globs: Sequence[str] | None = None,
@@ -548,6 +550,7 @@ def check_git_merge_terminology(
         head=head,
         diff_ref=diff_ref,
         scopes=scopes,
+        scope_bindings=scope_bindings,
         include_deprecated=include_deprecated,
         max_suggestions_per_identifier=max_suggestions_per_identifier,
         min_confidence=min_confidence,
@@ -571,6 +574,7 @@ def build_git_merge_terminology_report(
     head: str = "HEAD",
     diff_ref: str | None = None,
     scopes: Iterable[str] | None = None,
+    scope_bindings: Sequence[ScopeBinding] | None = None,
     include_deprecated: bool = True,
     max_suggestions_per_identifier: int = 3,
     min_confidence: float = 0.42,
@@ -589,6 +593,8 @@ def build_git_merge_terminology_report(
         raise GitMergeCheckError("min_confidence must be between 0.0 and 1.0")
 
     line_tuple = tuple(added_lines)
+    global_scopes = tuple(scopes) if scopes is not None else None
+    binding_config = _scope_binding_config(scope_bindings)
     matcher = SurfaceMatcher.from_lexicon(lexicon, include_deprecated=include_deprecated)
     known_occurrences: list[GitMergeKnownOccurrence] = []
     unknown_identifiers: list[GitMergeUnknownIdentifier] = []
@@ -597,7 +603,8 @@ def build_git_merge_terminology_report(
     seen_unknown: set[tuple[str, int, str]] = set()
 
     for line in line_tuple:
-        for match in matcher.match(line.text, scopes=scopes, include_deprecated=include_deprecated, longest_only=True):
+        active_scopes = global_scopes if global_scopes is not None else scopes_for_path(binding_config, line.path)
+        for match in matcher.match(line.text, scopes=active_scopes, include_deprecated=include_deprecated, longest_only=True):
             term = lexicon.get_term(match.term_id)
             if term is None:
                 continue
@@ -621,7 +628,7 @@ def build_git_merge_terminology_report(
         for surface in discover_unknown_identifier_surfaces(line.text, max_surfaces=25):
             if not _is_merge_identifier_surface(surface):
                 continue
-            if _surface_is_known(surface, matcher, scopes=scopes, include_deprecated=include_deprecated):
+            if _surface_is_known(surface, matcher, scopes=active_scopes, include_deprecated=include_deprecated):
                 continue
             key = (line.path, line.line_number, surface)
             if key in seen_unknown:
@@ -631,7 +638,7 @@ def build_git_merge_terminology_report(
                 near_miss_report = suggest_near_misses(
                     lexicon,
                     surface,
-                    scopes=scopes,
+                    scopes=active_scopes,
                     include_deprecated=include_deprecated,
                     max_suggestions=max_suggestions_per_identifier,
                     min_confidence=min_confidence,
@@ -658,6 +665,7 @@ def build_git_merge_terminology_report(
     report_metadata: dict[str, Any] = dict(metadata or {})
     report_metadata.update(lexicon_runtime_metadata(lexicon, source_path=lexicon_path))
     report_metadata["include_unresolved_unknowns"] = include_unresolved_unknowns
+    report_metadata["scope_bindings_active"] = bool(binding_config.scope_bindings and global_scopes is None)
     report_metadata["hidden_unresolved_count"] = hidden_unresolved_count
     report_metadata["cold_start"] = len(lexicon.terms) < 5 and sum(
         1 for identifier in unknown_identifiers if identifier.review_kind == GitMergeReviewKind.LIKELY_NEW_TERM
@@ -788,6 +796,13 @@ def _clean_ref(value: str, *, field_name: str) -> str:
     if any(char.isspace() for char in cleaned):
         raise GitMergeCheckError(f"{field_name} must not contain whitespace")
     return cleaned
+
+
+def _scope_binding_config(scope_bindings: Sequence[ScopeBinding] | None):
+    from agent_lexicon.config import AgentLexiconConfig
+
+    return AgentLexiconConfig(scope_bindings=tuple(scope_bindings or ()))
+
 
 
 def _surface_is_known(

@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from agent_lexicon.core import Lexicon
+from agent_lexicon.config import ScopeBinding
 from agent_lexicon.scout.git_merge import (
     GitMergeCheckError,
     GitMergeReviewKind,
@@ -173,6 +174,7 @@ def lint_working_diff(
     root: str | Path = ".",
     staged: bool = False,
     scopes: Iterable[str] | None = None,
+    scope_bindings: Sequence[ScopeBinding] | None = None,
     include_globs: Sequence[str] | None = None,
     exclude_globs: Sequence[str] | None = None,
     respect_gitignore: bool = True,
@@ -205,6 +207,7 @@ def lint_working_diff(
             head="WORKING",
             diff_ref="working-tree",
             scopes=scopes,
+            scope_bindings=scope_bindings,
             include_deprecated=True,
             min_confidence=min_confidence,
             include_unresolved_unknowns=False,

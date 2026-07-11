@@ -9,11 +9,14 @@ from .config import (
     DEFAULT_CONFIG_TEXT,
     DEFAULT_SCAN_EXCLUDE_GLOBS,
     ScanConfig,
+    ScopeBinding,
     effective_exclude_globs,
     effective_include_globs,
     effective_max_file_bytes,
     effective_respect_gitignore,
     effective_scan_paths,
+    scopes_for_path,
+    validate_scope_bindings,
     init_project_config,
     load_project_config,
     project_config_path,
@@ -365,11 +368,14 @@ __all__ = [
     "DEFAULT_CONFIG_TEXT",
     "DEFAULT_SCAN_EXCLUDE_GLOBS",
     "ScanConfig",
+    "ScopeBinding",
     "effective_exclude_globs",
     "effective_include_globs",
     "effective_max_file_bytes",
     "effective_respect_gitignore",
     "effective_scan_paths",
+    "scopes_for_path",
+    "validate_scope_bindings",
     "init_project_config",
     "load_project_config",
     "project_config_path",
@@ -686,7 +692,7 @@ __all__ = [
     "resolve_text",
 ]
 
-__version__ = "0.10.0"
+__version__ = "0.11.0"
 
 
 def about() -> str:
