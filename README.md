@@ -19,6 +19,8 @@
   <a href="#how-it-works">How it works</a>
 </p>
 
+![agent-lexicon demo](docs/assets/demo.gif)
+
 When many agents work a long coding session, each one quietly invents its own names. One branch writes `accessToken`, another `authToken`, a third `bearer_token` — all the same concept. By merge time the service speaks five dialects of itself. Agent Lexicon gives every agent a single canonical vocabulary to read from, resolves the words they actually use back to that canon, and flags terminology that drifted before it lands in `main`.
 
 It is dependency-free, runs locally, and is deterministic by design: the same input always produces the same output, and every decision carries a reason you can audit.
@@ -157,6 +159,19 @@ agent-lexicon init                      # create lexicon/, workspace, policy, an
 agent-lexicon scan                      # discover candidate terms from configured paths
 agent-lexicon scan README.md docs src   # or override paths explicitly
 agent-lexicon review                    # open the local web inbox to accept/reject
+```
+<picture>
+  <source
+    media="(prefers-color-scheme: dark)"
+    srcset="docs/assets/review-ui-dark.png"
+  >
+  <img
+    alt="agent-lexicon review UI"
+    src="docs/assets/review-ui-light.png"
+  >
+</picture>
+
+```bash
 agent-lexicon publish --update-lexicon  # publish accepted decisions and update lexicon.yaml
 agent-lexicon resolve <lexicon> "text"  # resolve terminology in any text
 agent-lexicon guard   <lexicon> "text" --tool <name>   # gate a tool call
