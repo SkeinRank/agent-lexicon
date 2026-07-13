@@ -34,6 +34,24 @@ class AgentLexiconLoadError(ValueError):
 
 SUPPORTED_FORMATS = {"json", "yaml", "yml"}
 
+_ALIAS_FIELDS = frozenset({
+    "surface",
+    "term_id",
+    "scopes",
+    "case_sensitive",
+    "deprecated",
+    "metadata",
+})
+_ALIAS_METADATA_SHADOW_FIELDS = frozenset({
+    "surface",
+    "term_id",
+    "scopes",
+    "case_sensitive",
+    "deprecated",
+    "is_deprecated",
+})
+_ALIAS_LIFECYCLE_METADATA_FIELDS = frozenset({"status", "state", "lifecycle"})
+
 
 def load_lexicon(path: str | Path, *, document_format: str | None = None) -> Lexicon:
     """Load a lexicon document from a JSON or YAML file."""
@@ -302,22 +320,62 @@ def _parse_term(payload: Any, *, index: int) -> Term:
 
 
 def _parse_alias(payload: Any, *, term_id: str, index: int) -> Alias:
+    field_name = f"alias[{index}]"
     if isinstance(payload, str):
         item: Mapping[str, Any] = {"surface": payload}
     else:
-        item = _mapping(payload, field_name=f"alias[{index}]")
+        item = _mapping(payload, field_name=field_name)
+        _reject_unknown_fields(item, allowed_fields=_ALIAS_FIELDS, field_name=field_name)
+    metadata = _mapping(item.get("metadata", {}), field_name=f"{field_name}.metadata")
+    _validate_alias_metadata(metadata, field_name=f"{field_name}.metadata")
     alias_term_id = str(item.get("term_id", term_id))
     try:
         return Alias(
-            surface=_required(item, "surface", field_name=f"alias[{index}].surface"),
+            surface=_required(item, "surface", field_name=f"{field_name}.surface"),
             term_id=alias_term_id,
-            scopes=tuple(_list(item.get("scopes", []), field_name=f"alias[{index}].scopes")),
+            scopes=tuple(_list(item.get("scopes", []), field_name=f"{field_name}.scopes")),
             case_sensitive=bool(item.get("case_sensitive", False)),
             deprecated=bool(item.get("deprecated", False)),
-            metadata=_mapping(item.get("metadata", {}), field_name=f"alias[{index}].metadata"),
+            metadata=metadata,
         )
     except AgentLexiconModelError as exc:
         raise AgentLexiconLoadError(str(exc)) from exc
+
+
+def _reject_unknown_fields(
+    item: Mapping[str, Any],
+    *,
+    allowed_fields: frozenset[str],
+    field_name: str,
+) -> None:
+    unknown_fields = sorted(str(key) for key in item if str(key) not in allowed_fields)
+    if not unknown_fields:
+        return
+    rendered = ", ".join(repr(field) for field in unknown_fields)
+    suffix = "field" if len(unknown_fields) == 1 else "fields"
+    raise AgentLexiconLoadError(
+        f"{field_name} contains unknown {suffix}: {rendered}; "
+        "store custom alias data under metadata"
+    )
+
+
+def _validate_alias_metadata(metadata: Mapping[str, Any], *, field_name: str) -> None:
+    shadowed = sorted(str(key) for key in metadata if str(key) in _ALIAS_METADATA_SHADOW_FIELDS)
+    for key in sorted(str(key) for key in metadata if str(key) in _ALIAS_LIFECYCLE_METADATA_FIELDS):
+        value = metadata.get(key)
+        if isinstance(value, str) and value.strip().casefold() == "deprecated":
+            shadowed.append(key)
+    if not shadowed:
+        return
+    key = sorted(set(shadowed))[0]
+    if key in {"status", "state", "lifecycle", "deprecated", "is_deprecated"}:
+        raise AgentLexiconLoadError(
+            f"{field_name}.{key} does not deprecate the alias; use deprecated: true "
+            "on the alias itself"
+        )
+    raise AgentLexiconLoadError(
+        f"{field_name}.{key} shadows the alias field {key!r}; move it to the alias itself"
+    )
 
 
 def _parse_evidence(payload: Any, *, field_name: str) -> EvidenceSpan:

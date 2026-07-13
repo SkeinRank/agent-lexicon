@@ -136,7 +136,7 @@ Git merge terminology check: 1 files, 6 added lines
 Range: main...feature-branch
 Lexicon: lexicon/lexicon.yaml
 Lexicon snapshot: sha256:98b7c5324a20c58926ea8e3413f87851c6d8c354e93197a69c56f1e142ea962e
-Summary: known=2, likely_alias=0, likely_new_term=3, unresolved_unknown=0, hidden_unresolved=1
+Summary: known=2, deprecated=0, likely_alias=0, likely_new_term=3, unresolved_unknown=0, hidden_unresolved=1
 Known terminology:
 - auth.py:2 'authToken' -> auth.access_token (access token) scopes=auth
 New terminology candidates:
@@ -146,7 +146,7 @@ New terminology candidates:
 Hidden unresolved identifiers: 1. Use --include-unresolved-unknowns to inspect low-signal identifiers.
 ```
 
-Add `--fail-on-review` to make this a blocking CI check that returns a non-zero exit code when unreviewed drift appears.
+Add `--fail-on-review` to make this a blocking CI check. It returns a non-zero exit code for deprecated terminology and unreviewed drift.
 
 ---
 
@@ -176,7 +176,7 @@ agent-lexicon publish --update-lexicon  # publish accepted decisions and update 
 agent-lexicon resolve <lexicon> "text"  # resolve terminology in any text
 agent-lexicon guard   <lexicon> "text" --tool <name>   # gate a tool call
 agent-lexicon context <lexicon>         # print the canonical vocabulary brief for an agent
-agent-lexicon lint-diff --stdin         # lint a working diff for terminology drift
+agent-lexicon lint-diff                 # lint the working-tree diff for terminology drift
 agent-lexicon check-merge --base main --head <branch>  # detect drift at merge
 agent-lexicon check-merge --base main --head <branch> --semantic-check  # CI-style pass/fail
 ```
@@ -200,7 +200,7 @@ agent-lexicon context lexicon/lexicon.yaml
 **During a task** — check a working diff for terminology drift before it is committed, with layered severity:
 
 ```bash
-git diff | agent-lexicon lint-diff --stdin
+git diff | agent-lexicon lint-diff
 # Terminology lint: 2 files, 18 added lines
 #
 # Deprecated terms (fail):
@@ -226,7 +226,7 @@ agent-lexicon check-merge --base main --head HEAD --semantic-check
 # (exit code 1, so CI fails)
 ```
 
-Both are deterministic: they flag terms the lexicon *already declares* (deprecated aliases and near-misses to canonical terms), never guesses.
+Both are deterministic: they flag terms the lexicon *already declares* (deprecated aliases and near-misses to canonical terms), never guesses. `lint-diff` detects a piped unified diff automatically; `--stdin` remains available when an explicit input mode is preferred.
 
 **Python library** — call the same logic inline.
 
@@ -330,7 +330,7 @@ jobs:
       - run: poetry run agent-lexicon check-merge --root . --base origin/${{ github.base_ref }} --head HEAD
 ```
 
-The checked-in workflow is review-first by default: it prints terminology drift without blocking every PR. Set `base_ref`, `head_ref`, and `fail_on_review=true` for an on-demand blocking run, or add `--fail-on-review` when your team is ready to make terminology review a required merge gate.
+The checked-in workflow is review-first by default: it prints terminology drift without blocking every PR. Set `base_ref`, `head_ref`, and `fail_on_review=true` for an on-demand blocking run, or add `--fail-on-review` when deprecated terminology and unreviewed drift should become required merge checks.
 
 ---
 

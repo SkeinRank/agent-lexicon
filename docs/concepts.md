@@ -63,7 +63,7 @@ A term can declare which **tools** are allowed to act on it. The guard takes res
 
 In a long multi-agent session, branches accumulate independent naming decisions. At merge, `check-merge` reads the added lines between two git refs and sorts every identifier into:
 
-- **known** — already a canonical term or alias.
+- **known** — already a canonical term or alias. Deprecated aliases remain known, but are marked as blocking findings for `--fail-on-review`.
 - **likely alias** — close to an existing term; probably a new alias to approve.
 - **likely new term** — a genuinely new concept nobody reviewed. This is the class that matters most: a coined name with no canonical neighbour, surfaced by default so it does not slip into `main` unnoticed.
 
@@ -75,5 +75,5 @@ This boundary is deliberate. It is what lets every committed decision be reprodu
 
 ## CI merge gate
 
-The GitHub Actions workflow keeps local review and pull-request review aligned. It uses the repository scan configuration, validates the dictionary, and runs `check-merge` against the PR diff. By default it reports drift without failing the PR; teams can turn on `--fail-on-review` once their lexicon review process is ready to become a merge requirement.
+The GitHub Actions workflow keeps local review and pull-request review aligned. It uses the repository scan configuration, validates the dictionary, and runs `check-merge` against the PR diff. By default it reports drift without failing the PR; teams can turn on `--fail-on-review` once deprecated terminology and unreviewed drift should become merge-blocking findings.
 

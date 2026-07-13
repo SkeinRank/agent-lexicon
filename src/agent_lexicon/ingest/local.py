@@ -16,6 +16,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from agent_lexicon.path_globs import repo_path_matches
+
 
 class LocalIngestError(ValueError):
     """Raised when local ingest receives an invalid path or option."""
@@ -576,7 +578,7 @@ def _is_supported_file(
         return True
     relative = _relative_or_absolute(path, root)
     normalized = relative.replace("\\", "/")
-    return any(fnmatch.fnmatchcase(normalized, pattern) for pattern in include_globs)
+    return any(repo_path_matches(normalized, pattern) for pattern in include_globs)
 
 
 

@@ -477,7 +477,7 @@ def build_parser() -> argparse.ArgumentParser:
     lint_diff_parser.add_argument(
         "--stdin",
         action="store_true",
-        help="Read the unified diff from stdin (e.g. `git diff | alex lint-diff --stdin`).",
+        help="Read the unified diff from stdin explicitly. Piped diffs are detected automatically.",
     )
     lint_diff_parser.add_argument(
         "--staged",
@@ -2823,6 +2823,8 @@ def _lint_diff_command(
     diff_text: str | None = None
     if read_stdin:
         diff_text = sys.stdin.read()
+    elif not staged:
+        diff_text = _read_piped_diff_if_available()
 
     try:
         semantic_backend = _semantic_backend_from_cli(
@@ -2872,6 +2874,24 @@ def _lint_diff_command(
     else:
         print(report.to_text(strict=strict))
     return report.exit_code(strict=strict)
+
+
+def _read_piped_diff_if_available() -> str | None:
+    """Return a piped diff without changing normal terminal behavior.
+
+    Non-interactive test runners and CI commonly expose an unreadable or empty
+    stdin stream. Those cases deliberately fall back to the working-tree diff.
+    """
+    try:
+        if sys.stdin.isatty():
+            return None
+    except (AttributeError, OSError, ValueError):
+        return None
+    try:
+        text = sys.stdin.read()
+    except (OSError, ValueError):
+        return None
+    return text if text.strip() else None
 
 
 def _print_metric(label: str, value: float | None) -> None:

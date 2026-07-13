@@ -27,6 +27,7 @@ from agent_lexicon.scout.near_miss import (
     suggest_near_misses,
 )
 from agent_lexicon.ingest.local import GitIgnoreRule, load_gitignore_rules, relative_path_matches_gitignore
+from agent_lexicon.path_globs import repo_path_matches
 from agent_lexicon.scout.semantic import SemanticNearMissBackend
 from agent_lexicon.text import normalized_fragment_surface, surface_fragments
 
@@ -304,9 +305,23 @@ class GitMergeTerminologyReport:
         return max(count, 0)
 
     @property
+    def deprecated_occurrences(self) -> tuple[GitMergeKnownOccurrence, ...]:
+        """Return deprecated aliases that should block a merge gate."""
+        return tuple(
+            occurrence
+            for occurrence in self.known_occurrences
+            if occurrence.deprecated and occurrence.matched_text != occurrence.canonical
+        )
+
+    @property
+    def deprecated_occurrence_count(self) -> int:
+        """Return the number of blocking deprecated terminology occurrences."""
+        return len(self.deprecated_occurrences)
+
+    @property
     def has_review_items(self) -> bool:
-        """Return whether the report contains items that should be reviewed."""
-        return self.needs_review_count > 0
+        """Return whether the report contains blocking or reviewable drift."""
+        return self.deprecated_occurrence_count > 0 or self.needs_review_count > 0
 
     @property
     def cold_start(self) -> bool:
@@ -325,6 +340,7 @@ class GitMergeTerminologyReport:
             "added_line_count": self.added_line_count,
             "known_occurrence_count": self.known_occurrence_count,
             "unknown_identifier_count": self.unknown_identifier_count,
+            "deprecated_occurrence_count": self.deprecated_occurrence_count,
             "needs_review_count": self.needs_review_count,
             "likely_alias_count": self.likely_alias_count,
             "likely_new_term_count": self.likely_new_term_count,
@@ -334,6 +350,7 @@ class GitMergeTerminologyReport:
             "cold_start": self.cold_start,
             "added_lines": [line.to_dict() for line in self.added_lines],
             "known_occurrences": [occurrence.to_dict() for occurrence in self.known_occurrences],
+            "deprecated_occurrences": [occurrence.to_dict() for occurrence in self.deprecated_occurrences],
             "needs_review": [identifier.to_dict() for identifier in self.needs_review],
             "likely_aliases": [identifier.to_dict() for identifier in self.likely_aliases],
             "likely_new_terms": [identifier.to_dict() for identifier in self.likely_new_terms],
@@ -351,6 +368,7 @@ class GitMergeTerminologyReport:
             f"Lexicon snapshot: {self.metadata.get('lexicon_snapshot_ref', 'unknown')}",
             "Summary: "
             f"known={self.known_occurrence_count}, "
+            f"deprecated={self.deprecated_occurrence_count}, "
             f"likely_alias={self.likely_alias_count}, "
             f"likely_new_term={self.likely_new_term_count}, "
             f"unresolved_unknown={self.unresolved_unknown_count}, "
@@ -851,7 +869,7 @@ def _path_selected(
     gitignore_rules: tuple[GitIgnoreRule, ...] = (),
 ) -> bool:
     normalized = path.replace("\\", "/")
-    included = True if not include_patterns else any(fnmatch.fnmatch(normalized, pattern) for pattern in include_patterns)
+    included = True if not include_patterns else any(repo_path_matches(normalized, pattern) for pattern in include_patterns)
     if not included:
         return False
     if _path_excluded(normalized, exclude_patterns):
