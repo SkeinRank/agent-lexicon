@@ -24,7 +24,7 @@ def _subprocess_env() -> dict[str, str]:
 
 class AgentLexiconSmokeTests(unittest.TestCase):
     def test_version_is_initialized(self) -> None:
-        self.assertEqual(agent_lexicon.__version__, "0.11.1")
+        self.assertEqual(agent_lexicon.__version__, "0.11.2")
 
     def test_about_mentions_agent_lexicon(self) -> None:
         self.assertIn("Agent Lexicon", agent_lexicon.about())
@@ -40,7 +40,7 @@ class AgentLexiconSmokeTests(unittest.TestCase):
             capture_output=True,
             env=_subprocess_env(),
         )
-        self.assertEqual(completed.stdout.strip(), "0.11.1")
+        self.assertEqual(completed.stdout.strip(), "0.11.2")
 
     def test_cli_match_example(self) -> None:
         completed = subprocess.run(

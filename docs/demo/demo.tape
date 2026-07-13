@@ -18,7 +18,7 @@ Show
 Type "# An AI agent just wrote code. Did it use OUR terminology?"
 Enter
 Sleep 0.8s
-Type "git diff | agent-lexicon lint-diff --stdin --lexicon lexicon.yaml"
+Type "git diff | agent-lexicon lint-diff --lexicon lexicon.yaml"
 Enter
 Sleep 6s
 

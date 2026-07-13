@@ -156,11 +156,11 @@ Before a branch lands, check what terminology it introduced. The report includes
 agent-lexicon check-merge --base main --head feature-branch --include 'src/**'
 ```
 
-Add `--fail-on-review` in CI to block a merge when unreviewed terminology appears.
+Add `--fail-on-review` in CI to block a merge when deprecated terminology or unreviewed drift appears.
 
 ## 8. Add the GitHub Actions workflow
 
 The project ships a pull-request workflow at `.github/workflows/agent-lexicon.yml`. It validates `lexicon/lexicon.yaml` and reviews merge-time terminology drift with the same `check-merge` command you run locally.
 
-The workflow is non-blocking by default so a team can introduce terminology review without breaking every PR. Run it manually with `base_ref`, `head_ref`, and `fail_on_review=true`, or add `--fail-on-review` to make unreviewed drift a required merge gate.
+The workflow is non-blocking by default so a team can introduce terminology review without breaking every PR. Run it manually with `base_ref`, `head_ref`, and `fail_on_review=true`, or add `--fail-on-review` to make deprecated terminology and unreviewed drift a required merge gate.
 
